@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.39 — 2026-11-23 (Nightly)
+
+- agy (Google Antigravity CLI) support. Settings › Agents & notifications
+  › Agent status has an agy switch: Deck adds one entry, `deck-status`, to
+  `~/.gemini/config/hooks.json` (everything else in the file stays as it
+  is), and an agy card then shows when a turn starts and when it ends,
+  with Needs attention and away notifications like other agents. agy has
+  no hook for a question to you, so an agy card keeps showing "Agent
+  working" while agy waits for your permission or answer, and after Esc
+  until the next turn; the card's "?" explains this.
+- Automatic sends to a freshly started agy wait until agy has reported a
+  turn (before its first prompt agy may ask whether you trust the folder,
+  and Enter would answer that); Send now still works.
+- MCP worker types may be `agy` (with simple arguments and an optional
+  model list) while the agy switch is on, so an orchestrator can start and
+  drive agy worker cards. Their lines are typed like Claude's, under the
+  same gate and the client's worker first-send choice. `deck_worker_reply`
+  does not read agy's final message.
+- A Claude Code card no longer stays "Input requested" after you answer a
+  permission question or an AskUserQuestion: Deck now also listens to
+  Claude Code's PostToolUse on the main thread and ends that request as
+  soon as the approved tool has run (before, it lasted until the turn
+  ended, over an hour on a long turn). A subagent's tools do not count,
+  and Deck drops the extra events without reading anything for them. The
+  status hooks gain the PostToolUse entry by themselves after this update.
+
 ## 0.8.38 — 2026-11-23 (Nightly)
 
 - An Agent you let work while you are away can leave the questions that
