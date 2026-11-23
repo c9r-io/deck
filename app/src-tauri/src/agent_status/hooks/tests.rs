@@ -565,6 +565,64 @@ fn the_config_write_goes_through_a_link_and_refuses_what_it_may_not_write() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// An install made before PostToolUse joined (three entries) still reads
+/// as installed, so the Settings toggle stays on and the boot migration
+/// visits it; it is not current, and the migration's install adds the
+/// after-tool hook in exec form beside the three, for every Claude table.
+#[test]
+fn an_install_from_before_post_tool_use_is_installed_and_migrates_to_it() {
+    for specs in [
+        CLAUDE_HOOKS,
+        CLAUDE_HOOKS_WITH_REPLY,
+        CLAUDE_HOOKS_WITH_WORKER_REPLY,
+    ] {
+        let older: Vec<HookSpec> = specs
+            .iter()
+            .copied()
+            .filter(|(event, _, _)| *event != "PostToolUse")
+            .collect();
+        assert_eq!(older.len(), specs.len() - 1);
+        let old = hooks_with_install(
+            serde_json::json!({}),
+            &older,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert!(old["hooks"].get("PostToolUse").is_none());
+        assert!(hooks_installed(&old, specs), "still installed");
+        assert!(!hooks_are_current(
+            &old,
+            specs,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
+        let migrated =
+            hooks_with_install(old, specs, "claude-code", HookStyle::Exec, HELPER).unwrap();
+        assert!(hooks_are_current(
+            &migrated,
+            specs,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
+        let hook = &migrated["hooks"]["PostToolUse"][0];
+        assert!(hook.get("matcher").is_none(), "every tool");
+        assert_eq!(hook["hooks"][0]["command"], HELPER);
+        assert_eq!(
+            hook["hooks"][0]["args"],
+            serde_json::json!(["claude-code", "working", "--after-tool"])
+        );
+    }
+    // a file with PostToolUse alone is not an install
+    let alone = serde_json::json!({ "hooks": { "PostToolUse": [
+        { "hooks": [ { "type": "command", "command": HELPER, "args": ["claude-code", "working", "--after-tool"] } ] }
+    ] } });
+    assert!(!hooks_installed(&alone, CLAUDE_HOOKS));
+}
+
 /// A hook the user keeps in the SAME group as deck's is theirs. It does
 /// not make deck's hook stale (so the boot migration leaves the file
 /// alone), and install and uninstall take deck's hook out from beside it:

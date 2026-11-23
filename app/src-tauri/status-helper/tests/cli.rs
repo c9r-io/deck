@@ -232,6 +232,44 @@ fn only_the_flagged_claude_stop_sends_the_final_message() {
 }
 
 #[test]
+fn after_a_tool_only_the_main_thread_with_an_id_reaches_deck() {
+    let home = Private::new();
+    let socket = home.0.join("status.sock");
+    let listener = home.listen(&socket);
+    let environment = [
+        ("TMUX", TMUX),
+        ("TMUX_PANE", "%7"),
+        ("DECK_STATUS_SOCK", socket.to_str().unwrap()),
+    ];
+    let args = ["claude-code", "working", "--after-tool"];
+    // the main thread's tool: the v2 line with the after-tool mark, no content
+    let main_thread = format!(
+        r#"{{"prompt_id":"{ID}","tool_name":"Bash","tool_input":{{"command":"SENTINEL"}}}}"#
+    );
+    let child = run(helper(&home, &args, &environment), &main_thread);
+    let mut stream = accept(&listener, Duration::from_secs(3)).expect("the helper connects");
+    let line = read_line(&mut stream);
+    drop(stream);
+    assert_silent_success(&finish(child, Duration::from_secs(3)));
+    assert_eq!(
+        line,
+        format!("{{\"v\":2,\"source\":\"claude-code\",\"state\":\"working\",\"socket\":\"deck-dev\",\"server_pid\":4242,\"pane\":\"%7\",\"interaction\":\"{ID}\",\"after_tool\":true}}\n")
+    );
+    // a subagent's tool, or no usable id: the helper never connects
+    for payload in [
+        format!(r#"{{"prompt_id":"{ID}","agent_id":"a1701cd0d377b085d"}}"#),
+        r#"{"tool_name":"Bash"}"#.to_string(),
+    ] {
+        let child = run(helper(&home, &args, &environment), &payload);
+        assert_silent_success(&finish(child, Duration::from_secs(3)));
+        assert!(
+            accept(&listener, Duration::from_millis(300)).is_none(),
+            "{payload}"
+        );
+    }
+}
+
+#[test]
 fn a_payload_without_a_usable_id_falls_back_to_the_first_wire_version() {
     let home = Private::new();
     let socket = home.0.join("status.sock");

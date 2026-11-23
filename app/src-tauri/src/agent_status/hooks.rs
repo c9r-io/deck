@@ -132,11 +132,28 @@ type HookSpec = (&'static str, Option<&'static str>, &'static str);
 /// which is already on screen. `Stop` does not fire on user interrupt
 /// (documented behavior) — foreground reconciliation and the next
 /// `UserPromptSubmit` heal that gap.
+///
+/// `PostToolUse` (main thread only, `--after-tool`) ends a permission
+/// question once it is answered: Claude Code goes on inside the same prompt
+/// and sends no other hook until `Stop`, so without it a card stayed
+/// "needs input" for the rest of a long turn. Runtime proof (2.1.330): the
+/// permission Notification, the PostToolUse of the approved tool (an
+/// AskUserQuestion's included) and Stop carry the same top-level
+/// `prompt_id`; a subagent's PostToolUse carries `agent_id` and may run
+/// while another subagent's question is open, so the helper drops it.
+/// `PreToolUse` is unusable: it fires BEFORE the permission question.
 const CLAUDE_HOOKS: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     ("Notification", Some("permission_prompt"), "needs-input"),
+    ("PostToolUse", None, "working --after-tool"),
     ("Stop", None, "turn-done"),
 ];
+
+/// Events added to a spec table after it first shipped. An install made
+/// before one joined still counts as installed (`hooks_installed`), so the
+/// boot migration and the Settings toggle see it and the migration adds the
+/// event; whether it is CURRENT still needs every event (`hooks_are_current`).
+const JOINED_LATER: &[&str] = &["PostToolUse"];
 
 /// The flag the Stop hook carries while turn summaries are on: with it the
 /// helper also forwards Claude's final message (`turn_summary.rs`).
@@ -149,6 +166,7 @@ const REPLY_FLAG: &str = "--reply";
 const CLAUDE_HOOKS_WITH_REPLY: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     ("Notification", Some("permission_prompt"), "needs-input"),
+    ("PostToolUse", None, "working --after-tool"),
     ("Stop", None, "turn-done --reply"),
 ];
 
@@ -163,6 +181,7 @@ const WORKERS_WORD: &str = "workers";
 const CLAUDE_HOOKS_WITH_WORKER_REPLY: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     ("Notification", Some("permission_prompt"), "needs-input"),
+    ("PostToolUse", None, "working --after-tool"),
     ("Stop", None, "turn-done --reply workers"),
 ];
 
@@ -502,8 +521,9 @@ fn hooks_with_uninstall_of(family: Family, mut root: serde_json::Value) -> serde
     root
 }
 
-/// Installed = every deck hook event carries a marker hook; a partial
-/// install reads as OFF so re-enabling repairs it.
+/// Installed = every deck hook event carries a marker hook, except an event
+/// that joined later (`JOINED_LATER`); a partial install reads as OFF so
+/// re-enabling repairs it.
 pub(crate) fn hooks_installed(root: &serde_json::Value, specs: &[HookSpec]) -> bool {
     hooks_installed_of(Family::Signal, root, specs)
 }
@@ -513,7 +533,11 @@ fn hooks_installed_of(family: Family, root: &serde_json::Value, specs: &[HookSpe
     let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
         return false;
     };
-    specs.iter().all(|(event, _, _)| {
+    // an event that joined later is not needed: the migration adds it
+    let mut required = specs
+        .iter()
+        .filter(|(event, _, _)| !JOINED_LATER.contains(event));
+    required.all(|(event, _, _)| {
         hooks
             .get(*event)
             .and_then(|l| l.as_array())

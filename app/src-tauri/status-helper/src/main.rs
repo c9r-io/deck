@@ -25,6 +25,14 @@
 //! source or word, or when the value is not a string or its key repeats,
 //! nothing of it is read or sent.
 //!
+//! A second, narrower exception, also written into the hook by deck: Claude
+//! Code's PostToolUse hook runs `claude-code working --after-tool`. For it
+//! the helper also notes whether the TOP-LEVEL key `agent_id` is present
+//! (a subagent's tool; its value is never read). A subagent's tool, or a
+//! payload without a valid id, sends nothing; otherwise the v2 line carries
+//! `"after_tool":true`, which tells deck the word may only end that same
+//! interaction's input request (`agent_status.rs`, "After a tool").
+//!
 //! Wire: v1 `{v:1, source, state, socket, server_pid, pane}`; v2 adds
 //! `interaction` (a source id, never synthesized); v3 adds `reply` (with or
 //! without `interaction`). deck accepts all three; it takes `reply` off
@@ -56,6 +64,24 @@ const REPLY_SOURCES: [&str; 2] = ["claude-code", "codex"];
 
 /// The reply only where deck put the flag, and only on the turn-done of a
 /// source that has a final message.
+/// The argument deck adds to Claude Code's PostToolUse hook; honoured for
+/// `claude-code working` only.
+const AFTER_TOOL_FLAG: &str = "--after-tool";
+
+/// The top-level key a subagent's hook payload carries (Claude Code
+/// 2.1.330: present on a subagent's PreToolUse/PostToolUse, absent on the
+/// main thread's and on the permission Notification). Only its presence is
+/// read.
+const SUBAGENT_FIELD: &str = "agent_id";
+
+/// Whether this is the PostToolUse hook deck wrote.
+fn after_tool(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("claude-code")
+        && args.get(2).map(String::as_str) == Some("working")
+        && args.get(3).map(String::as_str) == Some(AFTER_TOOL_FLAG)
+        && args.len() == 4
+}
+
 fn wants_reply(args: &[String]) -> bool {
     args.get(3).map(String::as_str) == Some(REPLY_FLAG)
         && args
@@ -102,6 +128,8 @@ fn uuid_ok(s: &str) -> bool {
 struct Fields {
     id: Option<String>,
     reply: Option<String>,
+    /// The presence key was there (its value skipped, never kept).
+    present: bool,
 }
 
 /// Reads a JSON document whose top level is an object, keeping only the
@@ -112,6 +140,8 @@ struct Fields {
 struct TopLevel {
     id: &'static str,
     reply: Option<&'static str>,
+    /// A key whose presence alone is noted (`SUBAGENT_FIELD`).
+    presence: Option<&'static str>,
 }
 
 impl<'de> Visitor<'de> for TopLevel {
@@ -142,6 +172,9 @@ impl<'de> Visitor<'de> for TopLevel {
                     _ => None,
                 };
             } else {
+                if Some(key.as_ref()) == self.presence {
+                    found.present = true;
+                }
                 map.next_value::<IgnoredAny>()?;
             }
         }
@@ -178,10 +211,22 @@ fn interaction_from(source: &str, payload: &[u8]) -> Option<String> {
     fields_from(source, payload, false).id
 }
 
-/// The id and, with `reply` (the `--reply` flag on Claude Code's
-/// `turn-done`), the final message, from ONE pass over the payload. Any
-/// failure of the pass yields neither.
+/// `fields_with` without a presence key (the tests' shorthand).
+#[cfg(test)]
 fn fields_from(source: &str, payload: &[u8], reply: bool) -> Fields {
+    fields_with(source, payload, reply, None)
+}
+
+/// The id, with `reply` (the `--reply` flag on Claude Code's `turn-done`)
+/// the final message, and with `presence` (`--after-tool`) whether that
+/// top-level key is there, from ONE pass over the payload. Any failure of
+/// the pass yields none of them.
+fn fields_with(
+    source: &str,
+    payload: &[u8],
+    reply: bool,
+    presence: Option<&'static str>,
+) -> Fields {
     let Some(field) = identity_field(source) else {
         return Fields::default();
     };
@@ -195,6 +240,7 @@ fn fields_from(source: &str, payload: &[u8], reply: bool) -> Fields {
     let visitor = TopLevel {
         id: field,
         reply: reply.then_some(REPLY_FIELD),
+        presence,
     };
     let Ok(found) = (&mut de).deserialize_map(visitor) else {
         return Fields::default();
@@ -205,6 +251,7 @@ fn fields_from(source: &str, payload: &[u8], reply: bool) -> Fields {
     Fields {
         id: found.id.filter(|id| uuid_ok(id)),
         reply: found.reply.filter(|text| !text.trim().is_empty()),
+        present: found.present,
     }
 }
 
@@ -297,6 +344,19 @@ fn build_message(
     })
 }
 
+/// The PostToolUse line: the v2 line with `"after_tool":true`. Nothing for
+/// a subagent's tool or without a valid id: such an event could never end
+/// an input request deck can pair it with.
+fn build_after_tool_message(tmux: &str, pane: &str, fields: &Fields) -> Option<String> {
+    if fields.present {
+        return None;
+    }
+    let id = fields.id.as_deref().filter(|id| uuid_ok(id))?;
+    let plain = build_message("claude-code", "working", tmux, pane, Some(id))?;
+    let base = plain.strip_suffix("}\n")?;
+    Some(format!("{base},\"after_tool\":true}}\n"))
+}
+
 /// The v3 line: `build_message`'s line with `reply` (JSON-escaped by
 /// serde_json, the only escaped field) added, cut further until the line
 /// fits `MAX_WIRE_LINE`; the plain line when no cut of the reply fits.
@@ -332,14 +392,21 @@ fn main() {
     let (Some(source), Some(state)) = (args.get(1), args.get(2)) else {
         return;
     };
+    let after_tool = after_tool(&args);
     let wants_reply = wants_reply(&args);
-    let fields = fields_from(source, &payload, wants_reply);
+    let fields = fields_with(
+        source,
+        &payload,
+        wants_reply,
+        after_tool.then_some(SUBAGENT_FIELD),
+    );
     drop(payload);
     let (Ok(tmux), Ok(pane)) = (std::env::var("TMUX"), std::env::var("TMUX_PANE")) else {
         return; // not inside tmux — the agent runs outside deck; do nothing
     };
     let interaction = fields.id.as_deref();
     let message = match fields.reply.as_deref() {
+        _ if after_tool => build_after_tool_message(&tmux, &pane, &fields),
         Some(reply) => build_reply_message(source, state, &tmux, &pane, interaction, reply),
         None => build_message(source, state, &tmux, &pane, interaction),
     };
@@ -535,7 +602,7 @@ mod tests {
             fields_from("claude-code", payload.as_bytes(), false),
             Fields {
                 id: Some(ID.into()),
-                reply: None
+                ..Fields::default()
             }
         );
         // a reply that is not a string, or only space, is not kept; the id is
@@ -552,7 +619,7 @@ mod tests {
                 found,
                 Fields {
                     id: Some(ID.into()),
-                    reply: None
+                    ..Fields::default()
                 },
                 "{other}"
             );
@@ -576,8 +643,8 @@ mod tests {
         assert_eq!(
             fields_from("claude-code", alone.as_bytes(), true),
             Fields {
-                id: None,
-                reply: Some("Done.".into())
+                reply: Some("Done.".into()),
+                ..Fields::default()
             }
         );
     }
@@ -800,5 +867,90 @@ mod tests {
             "workers",
             "--reply"
         ])));
+    }
+
+    #[test]
+    fn after_tool_only_on_the_main_thread_of_claude_code_with_an_id() {
+        let args = |words: &[&str]| -> Vec<String> {
+            std::iter::once("helper")
+                .chain(words.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        assert!(after_tool(&args(&[
+            "claude-code",
+            "working",
+            "--after-tool"
+        ])));
+        assert!(!after_tool(&args(&["claude-code", "working"])));
+        assert!(!after_tool(&args(&["codex", "working", "--after-tool"])));
+        assert!(!after_tool(&args(&[
+            "claude-code",
+            "needs-input",
+            "--after-tool"
+        ])));
+        assert!(!after_tool(&args(&[
+            "claude-code",
+            "turn-done",
+            "--after-tool"
+        ])));
+        assert!(!after_tool(&args(&[
+            "claude-code",
+            "working",
+            "--after-tool",
+            "x"
+        ])));
+
+        let main_thread = format!(
+            r#"{{"prompt_id":"{ID}","tool_name":"Bash","tool_input":{{"command":"secret"}},"tool_response":"say"}}"#
+        );
+        let found = fields_with(
+            "claude-code",
+            main_thread.as_bytes(),
+            false,
+            Some(SUBAGENT_FIELD),
+        );
+        assert_eq!(found.id.as_deref(), Some(ID));
+        assert!(!found.present);
+        let line = build_after_tool_message("/t/deck,9,0", "%1", &found).unwrap();
+        assert_eq!(
+            line,
+            format!(
+                "{{\"v\":2,\"source\":\"claude-code\",\"state\":\"working\",\"socket\":\"deck\",\"server_pid\":9,\"pane\":\"%1\",\"interaction\":\"{ID}\",\"after_tool\":true}}\n"
+            )
+        );
+        for leaked in ["secret", "say", "Bash"] {
+            assert!(!line.contains(leaked), "{leaked} in {line}");
+        }
+
+        // a subagent's tool: its presence alone stops the line
+        let subagent = format!(r#"{{"prompt_id":"{ID}","agent_id":"a1701cd0d377b085d"}}"#);
+        let found = fields_with(
+            "claude-code",
+            subagent.as_bytes(),
+            false,
+            Some(SUBAGENT_FIELD),
+        );
+        assert!(found.present);
+        assert_eq!(build_after_tool_message("/t/deck,9,0", "%1", &found), None);
+        // whatever its value, and only at the top level
+        let odd = format!(r#"{{"prompt_id":"{ID}","agent_id":null}}"#);
+        assert!(fields_with("claude-code", odd.as_bytes(), false, Some(SUBAGENT_FIELD)).present);
+        let nested = format!(r#"{{"prompt_id":"{ID}","x":{{"agent_id":"a"}}}}"#);
+        assert!(
+            !fields_with(
+                "claude-code",
+                nested.as_bytes(),
+                false,
+                Some(SUBAGENT_FIELD)
+            )
+            .present
+        );
+        // without an id there is nothing to pair with: no line, no v1 fallback
+        let no_id = r#"{"tool_name":"Bash"}"#;
+        let found = fields_with("claude-code", no_id.as_bytes(), false, Some(SUBAGENT_FIELD));
+        assert_eq!(build_after_tool_message("/t/deck,9,0", "%1", &found), None);
+        // presence is not read unless asked
+        assert!(!fields_from("claude-code", subagent.as_bytes(), false).present);
     }
 }

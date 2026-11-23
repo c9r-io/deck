@@ -142,6 +142,11 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),
     ("agent_status.rs", "admit", "WORKING", 2, Producer),
+    // After a tool (Claude Code's main-thread PostToolUse): the parser takes
+    // the mark on a `working` only, and the one state it may end is the
+    // same interaction's `needs-input` — it narrows admission, grants nothing
+    ("agent_status.rs", "parse_event", "WORKING", 1, Producer),
+    ("agent_status.rs", "asks_in", "NEEDS_INPUT", 1, Producer),
     // ingest forwards a word to the desktop attention loop only from the
     // session's Signal target pane; `renotify` re-projects (reconcile on
     // target changes, ingest when a Codex generation turns ambiguous)

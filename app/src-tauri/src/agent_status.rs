@@ -190,8 +190,9 @@
 //! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
 //! (card statuses `attention`/`done`; a working agent never shows amber). The
 //! Settings toggle is the user-driven writer of `~/.claude/settings.json`
-//! (three entries: UserPromptSubmit→working, Notification matcher
-//! `permission_prompt` ONLY→needs-input, Stop→turn-done, written in
+//! (four entries: UserPromptSubmit→working, Notification matcher
+//! `permission_prompt` ONLY→needs-input, PostToolUse→`working --after-tool`
+//! (see "After a tool" below), Stop→turn-done, written in
 //! Claude Code's EXEC form — bare helper path in `command`, words in
 //! `args` — so Claude Code spawns the signed helper directly and no `sh -c`
 //! runs per event; Codex stays shell-form + `async`, exec form being
@@ -220,6 +221,29 @@
 //! early. Adding an agent module = one `AgentAdapter` (registered in
 //! `extensions.rs`) whose spec table calls the same helper with its own
 //! source word, behind its own Settings toggle.
+//!
+//! # After a tool
+//! Once a permission question (or an AskUserQuestion) is answered, Claude
+//! Code goes on INSIDE the same prompt: no UserPromptSubmit, no other hook
+//! until Stop, so a card stayed `needs-input` for the rest of a long turn.
+//! The main thread's PostToolUse is the authoritative fact that the turn got
+//! past the question. Its line is a v2 Claude `working` carrying
+//! `"after_tool":true` (anything else with the key is `bad-after-tool`), and
+//! it may do ONE thing: end the `needs-input` of the same interaction in the
+//! same pane generation (`Entry::asks_in`); otherwise it is
+//! `after-tool-unpaired` and changes nothing — it never starts, bootstraps
+//! or re-arms an interaction. Because it comes once per tool call, `dispatch`
+//! drops it before reading the process table or listing tmux panes when the
+//! claimed pane has no such request (`after_tool_may_matter`; the claim is
+//! read only to drop). A subagent's PostToolUse (top-level `agent_id`) is
+//! dropped by the helper: it may run while another subagent's question is
+//! open. Ordering is safe: Claude Code waits for the hook, the helper waits
+//! for deck to close the connection, and one dispatcher takes connections in
+//! order, so a tool's word cannot overtake the next question. Known gaps:
+//! a denied tool has no PostToolUse (documented semantics, not probed; the
+//! next tool or Stop ends the request); a question raised by a background subagent after the main
+//! thread's Stop carries the ENDED prompt id and is refused as stale, so no
+//! `needs-input` is shown for it at all (Claude Code 2.1.330).
 //!
 //! # A second, separate family on the same socket and the same edit engine
 //! Re-entry (`agent_reentry`) needs a native session id, which the status
@@ -342,6 +366,10 @@ pub(crate) struct Event {
     /// v2 only: the source's own interaction id (Codex `turn_id`, Claude
     /// Code `prompt_id`), a lowercase UUID the helper validated.
     interaction: Option<String>,
+    /// Claude Code's main-thread PostToolUse (`"after_tool":true`, a v2
+    /// Claude `working` only): it may end its own interaction's input
+    /// request and nothing else (`admit_after_tool`).
+    after_tool: bool,
 }
 
 /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase hex — the one shape an
@@ -445,6 +473,17 @@ struct Entry {
     /// (`agent_pi::transport`): the one observation that lease's loss
     /// withdraws. `None` for a word a hook reported.
     pi: Option<PiWriter>,
+}
+
+impl Entry {
+    /// Whether this observation is `needs-input` of `interaction`, its
+    /// tracker's current one: the one state an after-tool word may end.
+    fn asks_in(&self, interaction: Option<&str>) -> bool {
+        self.state == NEEDS_INPUT
+            && self.pi.is_none()
+            && interaction.is_some()
+            && self.interactions.current.as_deref() == interaction
+    }
 }
 
 /// The Pi observer lease that wrote an observation, and the execution
@@ -1082,6 +1121,19 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
                 && p[1..].bytes().all(|b| b.is_ascii_digit())
         })
         .ok_or("bad-pane")?;
+    // only `true`, only on a v2 Claude Code `working`
+    let after_tool = match obj.get("after_tool") {
+        None => false,
+        Some(serde_json::Value::Bool(true))
+            if *state == WORKING
+                && interaction.is_some()
+                && crate::extensions::agent(source)
+                    .is_some_and(|adapter| adapter.class == SignalClass::Claude) =>
+        {
+            true
+        }
+        Some(_) => return Err("bad-after-tool"),
+    };
     Ok(Event {
         source: source.to_string(),
         state,
@@ -1089,6 +1141,7 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
         server_pid,
         pane: pane.to_string(),
         interaction,
+        after_tool,
     })
 }
 
@@ -1399,6 +1452,16 @@ pub(crate) fn ingest_accepted(
                 && entry.pane_pid == row.pane_pid
                 && entry.generation == generation
         });
+        // After a tool: only the input request of this very interaction, in
+        // this very generation, may end; refused, it changes nothing
+        if event.after_tool
+            && !(same_generation
+                && agents
+                    .get(&key)
+                    .is_some_and(|entry| entry.asks_in(event.interaction.as_deref())))
+        {
+            return Err("after-tool-unpaired");
+        }
         if identity_absent(&event.source, event.interaction.is_some(), !same_generation) {
             applog(&format!("[agent-status] {} identity-absent", event.source));
         }
@@ -2280,6 +2343,15 @@ fn dispatch(
         }
         return;
     }
+    // An after-tool word arrives once per tool call of every Claude Code
+    // session, and almost always nothing waits for it: unless the pane it
+    // names asks for input in that interaction right now, it is dropped
+    // here, before the process table and the tmux listing are read and
+    // without a log line. The check reads the claim only to DROP; a word
+    // that passes is admitted in full below.
+    if !after_tool_may_matter(&line) {
+        return;
+    }
     // The helper stays connected until deck closes the stream, so its
     // ancestry and the pane's foreground generation are read from one
     // snapshot while it is alive; the (slow) pane listing runs after the
@@ -2293,6 +2365,26 @@ fn dispatch(
     // must not be able to grow app.log without limit
     let result = ingest_line(&line, &origin, || crate::tmux::list_panes().ok());
     note(drops, result.err());
+}
+
+/// False only for an after-tool line whose claimed pane has no `needs-input`
+/// of that interaction in the store: nothing such a word could change. Any
+/// other line, or one that does not parse, goes on to the full admission
+/// (which also refuses what does not parse).
+fn after_tool_may_matter(line: &str) -> bool {
+    let Ok(event) = parse_event(line) else {
+        return true;
+    };
+    if !event.after_tool {
+        return true;
+    }
+    with_agents(|agents| {
+        agents.iter().any(|(key, entry)| {
+            key.server_pid == event.server_pid
+                && key.pane_id == event.pane
+                && entry.asks_in(event.interaction.as_deref())
+        })
+    })
 }
 
 /// One Signal line as `dispatch` takes it. While the turn-summary switch is
@@ -4092,6 +4184,87 @@ mod tests {
             t.end(&format!("0199aaaa-bbbb-7ccc-8ddd-{i:012}"));
         }
         assert_eq!(t.ended.len(), ENDED_CAP);
+    }
+
+    fn after_tool(id: &str) -> String {
+        event_v2("working", "%3", id).replace("}", ",\"after_tool\":true}")
+    }
+
+    #[test]
+    fn after_tool_is_a_v2_claude_working_only() {
+        assert!(parse_event(&after_tool(A)).unwrap().after_tool);
+        assert!(
+            !parse_event(&event_v2("working", "%3", A))
+                .unwrap()
+                .after_tool
+        );
+        for line in [
+            event_line("working", "%3").replace("}", ",\"after_tool\":true}"),
+            event_v2("needs-input", "%3", A).replace("}", ",\"after_tool\":true}"),
+            event_v2("turn-done", "%3", A).replace("}", ",\"after_tool\":true}"),
+            after_tool(A).replace("claude-code", "codex"),
+            after_tool(A).replace("true}", "false}"),
+            after_tool(A).replace("true}", "\"yes\"}"),
+        ] {
+            assert_eq!(parse_event(&line), Err("bad-after-tool"), "{line}");
+        }
+    }
+
+    /// The regression: a permission question was answered, Claude Code went
+    /// on inside the same prompt, and the card said "needs input" until the
+    /// turn's Stop. The main thread's PostToolUse ends exactly that request
+    /// and nothing else.
+    #[test]
+    fn after_a_tool_only_the_same_interactions_input_request_ends() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+        let session = "deck-card-after";
+        let rows = [row(session, "$1", "%3", 300, true, "claude")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        let send = |line: String| {
+            ingest(
+                &line,
+                &Origin {
+                    peer: Some(320),
+                    table: table.clone(),
+                },
+                || Some(rows.to_vec()),
+            )
+        };
+        let episode = || with_agents(|agents| agents.values().next().map(|entry| entry.episode));
+        // nothing observed yet: no bootstrap from a tool
+        assert!(!after_tool_may_matter(&after_tool(A)));
+        assert_eq!(send(after_tool(A)), Err("after-tool-unpaired"));
+        assert_eq!(projection(&rows, session), None);
+        // working: nothing to end, the episode stays
+        assert_eq!(send(event_v2("working", "%3", A)), Ok(()));
+        let working = episode();
+        assert!(!after_tool_may_matter(&after_tool(A)));
+        assert_eq!(send(after_tool(A)), Err("after-tool-unpaired"));
+        assert_eq!(episode(), working);
+        // the question: another interaction's tool cannot end it
+        assert_eq!(send(event_v2("needs-input", "%3", A)), Ok(()));
+        assert!(!after_tool_may_matter(&after_tool(B)));
+        assert_eq!(send(after_tool(B)), Err("after-tool-unpaired"));
+        assert_eq!(projection(&rows, session), Some("needs-input"));
+        // nor a tool claimed for another pane
+        assert!(!after_tool_may_matter(&after_tool(A).replace("%3", "%4")));
+        // its own interaction's tool ends it
+        assert!(after_tool_may_matter(&after_tool(A)));
+        assert_eq!(send(after_tool(A)), Ok(()));
+        assert_eq!(projection(&rows, session), Some("working"));
+        let (states, _, _) = crate::notify::snapshot_for_tests();
+        assert_eq!(states.get(session), Some(&"working"));
+        // the next tool of the same turn finds nothing to end
+        assert!(!after_tool_may_matter(&after_tool(A)));
+        // the turn still ends as before, and a late tool after it is nothing
+        assert_eq!(send(event_v2("turn-done", "%3", A)), Ok(()));
+        assert_eq!(send(after_tool(A)), Err("after-tool-unpaired"));
+        assert_eq!(projection(&rows, session), Some("turn-done"));
+        // every other line is left to the full admission
+        assert!(after_tool_may_matter(&event_v2("working", "%3", B)));
+        assert!(after_tool_may_matter("not json"));
     }
 
     /// The side-effect-relevant regression: B asks for input, then a late
