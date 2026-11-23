@@ -216,7 +216,10 @@
 //! start chose, byte for byte, appended as `--model <the listed entry>`,
 //! never a model the client wrote: `MODEL_NOT_LISTED`, approved 2026-11-21)
 //! through a `worker-start` Board intent the webview commits,
-//! in a project of the client's scope and a column it names only under the
+//! in the project of the client's scope whose directory holds the start's
+//! required `dir` (`workers::start_project`: none `PATH_NOT_ACCESSIBLE`,
+//! several `PATH_AMBIGUOUS` until `project_id` names one; never where the
+//! caller runs, never the deepest) and a column it names only under the
 //! organize-cards choice (else beside its orchestrator card, else the
 //! project's new-card column; a type has no column);
 //! its first line is the run's head row, sent without interaction evidence

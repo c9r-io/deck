@@ -22,8 +22,10 @@
 //!   `deck_worker_start` names a type (never a command) and optionally one
 //!   of its listed models (byte for byte, else `MODEL_NOT_LISTED`; the card's
 //!   command is the type's plus `--model <the listed entry>`,
-//!   `start_command`), a project in the client's scope,
-//!   optionally a directory inside that project's and, only under the
+//!   `start_command`), its required absolute directory, which alone decides
+//!   the project (`start_project`: the one of the client's scope whose
+//!   directory holds it; none `PATH_NOT_ACCESSIBLE`, several
+//!   `PATH_AMBIGUOUS` until `project_id` names one) and, only under the
 //!   organize-cards choice (`Choice::CardEdits`, the one delegation that
 //!   places a card), one of that project's columns (`named_column`: a wrong
 //!   one is `COLUMN_NOT_FOUND`, never a fallback). Unnamed, the card opens
@@ -1527,6 +1529,70 @@ fn column_not_permitted() -> Value {
     )
 }
 
+/// The project a worker card opens in, decided by its directory alone
+/// (approved 2026-11-23): the caller may run anywhere, so where it runs
+/// decides nothing. The directory must exist; the projects this client
+/// reaches whose directory holds it are the candidates. None:
+/// `PATH_NOT_ACCESSIBLE`. One: that project. Several (nested or shared
+/// directories): `PATH_AMBIGUOUS` with each candidate, never the deepest
+/// one — the project also decides which environment variables the shell
+/// gets, so Deck never picks among them. `project_id` only chooses among
+/// the candidates: a reached project whose directory does not hold `dir`
+/// is `PATH_NOT_ACCESSIBLE` too.
+fn start_project(
+    client: &Client,
+    dir: &str,
+    named: Option<&str>,
+) -> Result<Result<ProjectScope, Value>, DeckError> {
+    let not_accessible = |message: &str| {
+        Ok(Err(error_value(
+            "PATH_NOT_ACCESSIBLE",
+            message,
+            "Use an existing directory inside one of the projects deck_capabilities authorizedWorkspaces lists, or ask the local Deck user to give this client that project.",
+        )))
+    };
+    let Some(path) = std::fs::canonicalize(dir).ok().filter(|p| p.is_dir()) else {
+        return not_accessible("that directory does not exist");
+    };
+    let holds = |scope: &ProjectScope| {
+        scope.roots.iter().any(|root| {
+            std::fs::canonicalize(root)
+                .ok()
+                .is_some_and(|root| path.starts_with(root))
+        })
+    };
+    if let Some(id) = named {
+        let scope = scoped_project(client, id)?;
+        return if holds(&scope) {
+            Ok(Ok(scope))
+        } else {
+            not_accessible("that directory is not inside the project named")
+        };
+    }
+    let mut candidates: Vec<ProjectScope> =
+        client_scopes(client).into_iter().filter(holds).collect();
+    match candidates.len() {
+        0 => not_accessible("that directory is not inside any project this client reaches"),
+        1 => Ok(Ok(candidates.remove(0))),
+        _ => {
+            let names: HashMap<String, String> = crate::documents::board_layout()
+                .into_iter()
+                .map(|p| (p.id, p.name))
+                .collect();
+            Ok(Err(json!({"ok": false, "error": {
+                "code": "PATH_AMBIGUOUS",
+                "message": "that directory lies inside more than one project",
+                "nextAction": "Ask or decide which project the card belongs to, and start again with its project_id and the same dir.",
+                "projects": candidates.iter().map(|c| json!({
+                    "projectId": c.project_id,
+                    "project": names.get(&c.project_id),
+                    "roots": c.roots,
+                })).collect::<Vec<_>>(),
+            }})))
+        }
+    }
+}
+
 /// A start's named column: the client may organize cards, the Board is the
 /// current one (never one recovered from its backup) and the column is one
 /// of the project's the card opens in; otherwise refused, a wrong column
@@ -1573,6 +1639,7 @@ pub(super) fn worker_start(
     let args: WorkerStartArgs = parse(arguments)?;
     if !valid_id(&args.request_id)
         || args.column_id.as_deref().is_some_and(|id| !valid_id(id))
+        || !std::path::Path::new(&args.dir).is_absolute()
         || args.text.trim().is_empty()
         || args.text.len() > MAX_SEND_BYTES
         || args
@@ -1582,36 +1649,23 @@ pub(super) fn worker_start(
     {
         return Err(error_value(
             "INVALID_ARGUMENTS",
-            "request id, column id, text or title is out of shape or bounds",
-            "Send a first line of at most 16 KiB, an optional title of at most 80 characters, an optional column_id from deck_cards_snapshot (projects[].columns), and a fresh request id.",
+            "request id, directory, column id, text or title is out of shape or bounds",
+            "Send the absolute directory the card works in (dir), a first line of at most 16 KiB, an optional title of at most 80 characters, an optional column_id from deck_cards_snapshot (projects[].columns), and a fresh request id.",
         ));
     }
     let hash = request_hash("deck_worker_start", &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
-    // the project: the one named, else the orchestrator card's, else (from
-    // no card) the client's first (resolved before the write: a client of all projects
-    // reads the project's directory from disk)
-    let card_project = orchestrator.and_then(|card| {
-        crate::documents::card_targets(false)?
-            .get(card)
-            .map(|t| t.project_id.clone())
-    });
+    // the project comes from the directory, never from where the caller
+    // runs (resolved before the write: a client of all projects reads the
+    // project's directory from disk)
     let scope = runtime
-        .read(|doc| -> Result<ProjectScope, DeckError> {
+        .read(|doc| -> Result<Result<ProjectScope, Value>, DeckError> {
             let client = permitted(doc, client_id, Choice::Workers)?;
-            // an orchestrator card in a project out of reach starts nothing
-            // elsewhere unless it names a project it reaches
-            match (args.project_id.as_deref(), card_project.as_deref()) {
-                (Some(id), _) | (None, Some(id)) => scoped_project(client, id),
-                (None, None) => client_scopes(client)
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| DeckError::new(ErrorKind::Perm, "client has no project")),
-            }
+            start_project(client, &args.dir, args.project_id.as_deref())
         })
         .map_err(map_error)?
-        .map_err(map_error)?;
+        .map_err(map_error)??;
     let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
     if let Some(operation) = replay {
         return Ok(operation_view(&operation));
@@ -1677,16 +1731,8 @@ pub(super) fn worker_start(
                 return Err(DeckError::new(ErrorKind::Invalid, TYPE_COMMAND_INVALID));
             }
             let project = &scope;
-            let dir = match args.dir.as_deref() {
-                Some(dir) => canonical_scope(dir, &project.roots)?,
-                None => {
-                    let root = project
-                        .roots
-                        .first()
-                        .ok_or_else(|| DeckError::new(ErrorKind::Perm, "client has no root"))?;
-                    canonical_scope(root, &project.roots)?
-                }
-            };
+            // checked again under the write: the directory still lies inside
+            let dir = canonical_scope(&args.dir, &project.roots)?;
             if let Err(full) = room_for_worker(doc, client_id, orchestrator) {
                 return Ok(Err(full));
             }

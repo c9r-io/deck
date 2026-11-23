@@ -143,8 +143,11 @@ def main():
         if args.card:
             trig = None
         elif args.start_type:
+            # a start names its directory: this client's first project's
+            _, caps = call("deck_capabilities", {})
+            root = ((caps.get("authorizedWorkspaces") or [{}])[0].get("roots") or [""])[0]
             ok, trig = call("deck_worker_start", {
-                "request_id": f"wstart_{tag}", "send_sequence": sequence, "type": args.start_type,
+                "request_id": f"wstart_{tag}", "send_sequence": sequence, "type": args.start_type, "dir": root,
                 "text": first_line, "title": f"worker {tag}"})
             step("worker-start-accepted", ok and trig.get("kind") == "worker-start" and "text" not in (trig.get("result") or {}))
             sequence += 1

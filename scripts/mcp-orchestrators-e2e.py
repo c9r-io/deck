@@ -113,8 +113,10 @@ def main():
         trig_seq = autos.get("nextTriggerSequence", 0)
         step("own-sequences", ok and ok_a and send_seq == 0 and trig_seq == 0 and bool(auto.get("revision")),
              send=send_seq, trigger=trig_seq)
+        # a start names its directory: this client's one project's
+        root = ((caps.get("authorizedWorkspaces") or [{}])[0].get("roots") or [""])[0]
         ok, started = call("deck_worker_start", {"request_id": f"start_{role}_{tag}", "send_sequence": send_seq,
-                                                 "type": "claude", "title": f"{role} typed",
+                                                 "type": "claude", "title": f"{role} typed", "dir": root,
                                                  "text": f"Orchestrator {role}: say hello."})
         step("start-accepted", ok and started.get("result", {}).get("orchestratorCardId") == card["cardId"])
         ok, handed = call("deck_automation_trigger", {"request_id": f"trig_{role}_{tag}", "trigger_sequence": trig_seq,

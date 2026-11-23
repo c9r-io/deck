@@ -155,7 +155,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_worker_report` | Called by the agent IN a worker card: hands Deck a text (at most 8192 bytes) for the orchestrator that started the card. It names no card and no recipient; Deck sees which card the call comes from. `NOT_A_WORKER_CARD` anywhere else. |
 | `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence and time; `after` for newer ones only). Durable; needs the **replies** choice. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 32 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
-| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the project named by `project_id` (default: the orchestrator card's, else the client's first), optionally in `dir` inside that project's directory, with its first line, and optionally one of the type's listed `models` (`model`, byte for byte: the card's command is the type's plus `--model <that entry>`; any other is `MODEL_NOT_LISTED`, listing the type's models, and starts nothing). It opens beside the orchestrator card, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
+| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the absolute directory `dir` (required), which decides the project: the one whose directory holds it (`PATH_NOT_ACCESSIBLE` when none does; `PATH_AMBIGUOUS`, listing the candidates, when several do — start again naming one with `project_id`), with its first line, and optionally one of the type's listed `models` (`model`, byte for byte: the card's command is the type's plus `--model <that entry>`; any other is `MODEL_NOT_LISTED`, listing the type's models, and starts nothing). It opens beside the orchestrator card when that is in the same project, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most 8 worker cards per orchestrator card on the Board (callers from no card together), 32 per client. |
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
 | `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |
@@ -471,10 +471,12 @@ cannot claim another card. That card is the call's **orchestrator card**:
   not list them, and a send to one is `WORKER_NOT_FOUND`. Worker cards that
   belong to no orchestrator card (started before this, or by an agent
   outside Deck) stay listed for every orchestrator of the client.
-- A worker card opens in the project `deck_worker_start` names
-  (`project_id`), else in the orchestrator card's project (refused when the
-  client does not reach it), else, for a caller from no card, in the
-  client's first. At most 8 worker cards per
+- A worker card opens in the project whose directory holds the `dir` the
+  start gives (required, absolute), whatever card or directory the caller
+  runs in: none is `PATH_NOT_ACCESSIBLE`; several (nested or shared
+  directories) is `PATH_AMBIGUOUS`, listing them, and the caller starts
+  again naming one (`project_id`) — Deck never picks the deepest, since the
+  project also decides the shell's environment variables. At most 8 worker cards per
   orchestrator card are on the Board (callers from no card count
   together), 32 per client.
 - Trigger and send sequences (`nextTriggerSequence`, `nextSendSequence`)

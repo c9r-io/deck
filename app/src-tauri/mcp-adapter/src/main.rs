@@ -222,16 +222,17 @@ struct WorkerStartInput {
     r#type: Option<String>,
     /// The worker's first line: its task (at most 16 KiB).
     text: String,
-    /// An absolute directory inside the project's authorized directory;
-    /// that directory itself when omitted.
-    #[serde(default)]
-    dir: Option<String>,
+    /// The absolute directory the card works in (required). It decides
+    /// the project: the one of deck_capabilities authorizedWorkspaces whose
+    /// roots hold it, whatever card or directory you run in.
+    /// PATH_NOT_ACCESSIBLE when no project holds it.
+    dir: String,
     /// The card's title (at most 80 characters).
     #[serde(default)]
     title: Option<String>,
-    /// The project the card opens in (an id from deck_capabilities
-    /// authorizedWorkspaces); default the Deck card you run in, else your
-    /// first project.
+    /// Only when the start answered PATH_AMBIGUOUS (dir lies inside several
+    /// projects): the projectId of the one the card belongs to, from that
+    /// answer's projects; dir must lie inside it.
     #[serde(default)]
     project_id: Option<String>,
     /// The column the card opens in: a columnId of that project from
@@ -857,7 +858,7 @@ impl DeckServer {
             ),
             tool::<WorkerStartInput>(
                 "deck_worker_start",
-                "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. When the type lists models (workerTypes[].models) you may pick one for this card (model, exactly as listed; MODEL_NOT_LISTED otherwise); the card keeps it, so start another card for another model. It opens in the project you run in (or project_id), beside your own card, else where the user's new cards open in that project; if the user lets you organize cards (deck_capabilities mayEditCards) you may choose its column instead (column_id, a column of that project from deck_cards_snapshot). Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards per orchestrator card on the Board, 32 per client. A Codex worker's final message is readable only while the user lets Deck forward it (else REPLY_GONE): prefer files for large results.",
+                "Start one worker card of one of the worker types the local user offers this client (deck_worker_list workerTypes: each type's description says what it is good at, e.g. writing code or generating images). Deck opens the card with the user's own command for that type and types `text` as its first line when the agent is ready. When the type lists models (workerTypes[].models) you may pick one for this card (model, exactly as listed; MODEL_NOT_LISTED otherwise); the card keeps it, so start another card for another model. Give the absolute directory the card works in (dir, required): Deck opens the card in the project whose directory holds it, whatever card or directory you run in (PATH_NOT_ACCESSIBLE when none does; PATH_AMBIGUOUS lists the projects when several do: start again with the right project_id). It opens beside your own card when that is in the same project, else where the user's new cards open in that project; if the user lets you organize cards (deck_capabilities mayEditCards) you may choose its column instead (column_id, a column of that project from deck_cards_snapshot). Returns an operation to poll (deck_operation_get: committed with cardId); the card then appears in deck_worker_list. At most 8 worker cards per orchestrator card on the Board, 32 per client. A Codex worker's final message is readable only while the user lets Deck forward it (else REPLY_GONE): prefer files for large results.",
                 mutating.clone(),
             ),
             tool::<Empty>(

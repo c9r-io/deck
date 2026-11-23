@@ -621,8 +621,11 @@ class Run:
                 first = (f"{first}: call the deck_worker_report tool once with exactly this text: {token}. "
                          f"Then reply with exactly: DONE. Use no other tool.")
                 second, third = (f"{line}: reply with exactly: OK. Use no tool." for line in (second, third))
+            # a start names its directory: this client's first project's
+            _, caps = call("deck_capabilities", {})
+            root = ((caps.get("authorizedWorkspaces") or [{}])[0].get("roots") or [""])[0]
             start = {"request_id": f"pw_{self.suffix}", "send_sequence": sequence,
-                     "type": "pi", "text": first, "title": "pi worker"}
+                     "type": "pi", "text": first, "title": "pi worker", "dir": root}
             if self.choose:
                 # first a model the type does not list: refused, nothing started, no sequence taken
                 ok_bad, refused = call("deck_worker_start", {**start, "request_id": f"pwx_{self.suffix}",

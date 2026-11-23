@@ -108,12 +108,13 @@ pub(super) struct WorkerStartArgs {
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub(super) r#type: Option<String>,
     pub(super) text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) dir: Option<String>,
+    /// The card's working directory, absolute and required: it decides the
+    /// project (`workers::start_project`), never where the caller runs.
+    pub(super) dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) title: Option<String>,
-    /// The project the card opens in; default the orchestrator card's,
-    /// else the client's first.
+    /// Only to choose among the projects whose directories all hold `dir`
+    /// (`PATH_AMBIGUOUS`); `dir` must still lie inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) project_id: Option<String>,
     /// The column the card opens in, one of that project's; only for a

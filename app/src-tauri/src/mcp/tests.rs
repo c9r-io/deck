@@ -6026,9 +6026,9 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
     let (runtime, _runner, root) = fixture("worker-types", "svc_test");
     let _board = crate::documents::test_door::hold();
     let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let home = root.display().to_string();
     let start = |request: &str, sequence: u64, extra: Value| {
-        let mut args =
-            json!({"request_id": request, "send_sequence": sequence, "text": "fix the bug"});
+        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "fix the bug", "dir": home});
         args.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
@@ -6089,7 +6089,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
     );
     assert_eq!(
         start("req_s2", 0, json!({"dir": "/"}))["error"]["code"],
-        "PERMISSION_DENIED"
+        "PATH_NOT_ACCESSIBLE"
     );
     assert_eq!(
         start("req_s3", 5, json!({}))["error"]["code"],
@@ -6262,9 +6262,9 @@ fn a_worker_start_chooses_one_of_its_types_listed_models() {
     let (runtime, _runner, root) = fixture("worker-models", "svc_test");
     let _board = crate::documents::test_door::hold();
     let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    let home = root.display().to_string();
     let start = |request: &str, sequence: u64, extra: Value| {
-        let mut args =
-            json!({"request_id": request, "send_sequence": sequence, "text": "fix the bug"});
+        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "fix the bug", "dir": home});
         args.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
@@ -6467,7 +6467,7 @@ fn a_worker_start_names_its_column_only_when_the_client_may_organize_cards() {
     crate::documents::test_door::commit(board.clone(), true);
     let start = |request: &str, sequence: u64, column: Option<&str>| {
         let _as = super::origin::enter_as(Some("OA"));
-        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "go"});
+        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "go", "dir": root.display().to_string()});
         if let Some(column) = column {
             args["column_id"] = json!(column);
         }
@@ -7489,7 +7489,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         let _as = super::origin::enter_as(card);
         call(
             "deck_worker_start",
-            json!({"request_id": request, "send_sequence": 0, "text": "fix it"}),
+            json!({"request_id": request, "send_sequence": 0, "text": "fix it", "dir": root.display().to_string()}),
         )
     };
     let a = start(Some("OA"), "req_a1");
@@ -7499,10 +7499,12 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
     let b = start(Some("OB"), "req_b1");
     assert_eq!(b["state"], "accepted", "B's own sequence: {b}");
     assert_eq!(b["result"]["columnId"], "CB");
-    // an orchestrator card in a project the client does not reach starts
-    // nothing elsewhere
+    // where the caller runs decides no project: an orchestrator card in a
+    // project the client does not reach starts in the one its directory
+    // names, not beside it
     let x = start(Some("OX"), "req_x1");
-    assert_eq!(x["error"]["code"], "PERMISSION_DENIED", "{x}");
+    assert_eq!(x["result"]["projectId"], "P1", "{x}");
+    assert!(x["result"]["columnId"].is_null(), "{x}");
     // a caller from no card keeps the client's sequence, untouched by A and B
     let none = start(None, "req_n1");
     assert!(
@@ -7603,7 +7605,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         let _as = super::origin::enter_as(Some("OA"));
         call(
             "deck_worker_start",
-            json!({"request_id": "req_a2", "send_sequence": 1, "text": "again"}),
+            json!({"request_id": "req_a2", "send_sequence": 1, "text": "again", "dir": root.display().to_string()}),
         )
     };
     assert_eq!(kept["state"], "accepted", "{kept}");
@@ -7659,8 +7661,8 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
 /// at the sticky all-projects version; a scope edited to a list withdraws
 /// everything in a project that left it (its grants end, its managed
 /// sessions go to the user, its pending starts are rejected, its worker
-/// cards are the user's); a worker opens in the orchestrator card's
-/// project, else the one named, else the first.
+/// cards are the user's); a worker opens in the project its directory
+/// names (`a_worker_start_takes_its_project_from_its_directory`).
 #[test]
 fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
     let (runtime, _runner, root) = fixture("all-projects", "svc_test");
@@ -7735,21 +7737,24 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
         ]}),
         true,
     );
-    let start = |card: Option<&str>, request: &str, sequence: u64, project: Option<&str>| {
-        let _as = super::origin::enter_as(card);
-        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "go"});
-        if let Some(project) = project {
-            args["project_id"] = json!(project);
-        }
-        call("deck_worker_start", args)
-    };
-    let beside = start(Some("OA"), "req_p1", 0, None);
+    let start =
+        |card: Option<&str>, request: &str, sequence: u64, dir: &str, project: Option<&str>| {
+            let _as = super::origin::enter_as(card);
+            let mut args =
+                json!({"request_id": request, "send_sequence": sequence, "text": "go", "dir": dir});
+            if let Some(project) = project {
+                args["project_id"] = json!(project);
+            }
+            call("deck_worker_start", args)
+        };
+    let beside = start(Some("OA"), "req_p1", 0, &d2, None);
     assert_eq!(beside["result"]["projectId"], "P2", "{beside}");
     assert_eq!(beside["result"]["dir"], d2);
-    let named = start(None, "req_p2", 0, Some("P1"));
+    assert_eq!(beside["result"]["columnId"], "CA", "beside its own card");
+    let named = start(None, "req_p2", 0, &d1, None);
     assert_eq!(named["result"]["projectId"], "P1", "{named}");
     assert_eq!(
-        start(None, "req_p3", 1, Some("P3"))["error"]["code"],
+        start(None, "req_p3", 1, &d1, Some("P3"))["error"]["code"],
         "PERMISSION_DENIED"
     );
     // a list of projects: P1 leaves, and everything of it is withdrawn
@@ -7820,6 +7825,137 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
         })
         .unwrap();
     assert_eq!(kept.as_deref(), Some("accepted"));
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// `deck_worker_start` takes its project from its directory alone
+/// (`workers::start_project`, approved 2026-11-23): never from where the
+/// caller runs; a directory no reached project holds is
+/// `PATH_NOT_ACCESSIBLE`; one inside several (nested or shared) is
+/// `PATH_AMBIGUOUS`, listing them, never the deepest, until `project_id`
+/// names one that holds it. No refusal moves the send sequence.
+#[test]
+fn a_worker_start_takes_its_project_from_its_directory() {
+    let (runtime, _runner, root) = fixture("start-dir", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let dir = |name: &str| {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(&path).unwrap().display().to_string()
+    };
+    let (outer, inner, shared, own) = (dir("outer"), dir("outer/inner"), dir("shared"), dir("own"));
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(vec![
+            ("PO".into(), outer.clone()),
+            ("PI".into(), inner.clone()),
+            ("PS1".into(), shared.clone()),
+            ("PS2".into(), shared.clone()),
+            ("PW".into(), own.clone()),
+        ])
+    });
+    let column = |id: &str| json!([{"id": format!("C{id}"), "name": "Doing"}]);
+    crate::documents::test_door::commit(
+        json!({"projects": [
+            {"id": "PO", "name": "Outer", "columns": column("PO")},
+            {"id": "PI", "name": "Inner", "columns": column("PI")},
+            {"id": "PS1", "name": "Shared one", "columns": column("PS1")},
+            {"id": "PS2", "name": "Shared two", "columns": column("PS2")},
+            {"id": "PW", "name": "Own", "columns": column("PW")}
+        ], "cards": [
+            {"id": "OW", "session": "deck-ow", "title": "Orch", "cmd": "", "dir": own, "projectId": "PW", "columnId": "CPW"}
+        ]}),
+        true,
+    );
+    let call = |tool: &str, args: Value| route(&runtime, request(tool, args));
+    client_permissions(
+        &runtime,
+        "client_a",
+        super::commands::PermissionsInput {
+            allow_workers: true,
+            worker_types: vec![WorkerType {
+                name: "claude".into(),
+                cmd: "claude".into(),
+                description: "Write code".into(),
+                models: Vec::new(),
+            }],
+            all_projects: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let start = |request: &str, sequence: u64, dir: Option<&str>, project: Option<&str>| {
+        let _as = super::origin::enter_as(Some("OW"));
+        let mut args = json!({"request_id": request, "send_sequence": sequence, "text": "go"});
+        if let Some(dir) = dir {
+            args["dir"] = json!(dir);
+        }
+        if let Some(project) = project {
+            args["project_id"] = json!(project);
+        }
+        call("deck_worker_start", args)
+    };
+    let code = |view: Value| {
+        view["error"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // the directory is required and absolute
+    assert_eq!(code(start("req_d0", 0, None, None)), "INVALID_ARGUMENTS");
+    assert_eq!(
+        code(start("req_d1", 0, Some("outer"), None)),
+        "INVALID_ARGUMENTS"
+    );
+    // none holds it, or it does not exist
+    assert_eq!(
+        code(start("req_d2", 0, Some("/"), None)),
+        "PATH_NOT_ACCESSIBLE"
+    );
+    let missing = root.join("outer/missing").display().to_string();
+    assert_eq!(
+        code(start("req_d3", 0, Some(&missing), None)),
+        "PATH_NOT_ACCESSIBLE"
+    );
+    // nested: inside both Outer and Inner, never the deepest
+    let nested = start("req_d4", 0, Some(&inner), None);
+    assert_eq!(code(nested.clone()), "PATH_AMBIGUOUS", "{nested}");
+    assert_eq!(
+        nested["error"]["projects"],
+        json!([
+            {"projectId": "PO", "project": "Outer", "roots": [outer]},
+            {"projectId": "PI", "project": "Inner", "roots": [inner]}
+        ])
+    );
+    // shared: the same directory for two projects
+    let both = start("req_d5", 0, Some(&shared), None);
+    assert_eq!(code(both.clone()), "PATH_AMBIGUOUS", "{both}");
+    assert_eq!(both["error"]["projects"].as_array().unwrap().len(), 2);
+    // a named project must hold the directory
+    assert_eq!(
+        code(start("req_d6", 0, Some(&shared), Some("PO"))),
+        "PATH_NOT_ACCESSIBLE"
+    );
+    assert_eq!(
+        code(start("req_d7", 0, Some(&shared), Some("P9"))),
+        "PERMISSION_DENIED"
+    );
+    // the refusals moved no sequence; naming one of the candidates settles it
+    let chosen = start("req_d8", 0, Some(&inner), Some("PI"));
+    assert_eq!(chosen["state"], "accepted", "{chosen}");
+    assert_eq!(chosen["result"]["projectId"], "PI");
+    assert_eq!(chosen["result"]["dir"], inner);
+    let outer_too = start("req_d9", 1, Some(&inner), Some("PO"));
+    assert_eq!(outer_too["result"]["projectId"], "PO", "{outer_too}");
+    // the caller runs in Own: a directory of Outer alone opens in Outer,
+    // not beside the caller's card
+    let away = start("req_d10", 2, Some(&outer), None);
+    assert_eq!(away["result"]["projectId"], "PO", "{away}");
+    assert!(away["result"]["columnId"].is_null(), "{away}");
+    // its own project's directory: beside its card
+    let home = start("req_d11", 3, Some(&own), None);
+    assert_eq!(home["result"]["projectId"], "PW", "{home}");
+    assert_eq!(home["result"]["columnId"], "CPW");
     super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
     drop(root);
 }

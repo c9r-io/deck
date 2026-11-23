@@ -9,8 +9,9 @@ must be a DEBUG deck-mcp build (the --socket / --credential-fd seams).
 Phase `first`: deck_capabilities says allProjects, lists A and B among
 authorizedWorkspaces (each with its default directory) and the first
 project, which has none, in projectsWithoutDirectory; a start named there
-is refused; a start without a project opens in this card's project, in
-that project's directory. In "Orch A" only, where its worker cards open
+is refused; a start given this card's project directory opens in that
+project. A start's project comes from its directory alone (`dir`), never
+from the card it runs in. In "Orch A" only, where its worker cards open
 (the client may organize cards, so it may name a column): a start in B
 naming no column decides none (the page sees it where the user's new cards
 open in B), one of A's columns for B is COLUMN_NOT_FOUND listing exactly
@@ -21,7 +22,7 @@ the shown card's close is accepted and then rejected `card-shown`, and "A to
 B" closes (committed). The shown card goes first and is settled before the
 second close, so the page's own wait cannot race it.
 Phase `after` (in "Orch B", once the page narrowed the client to A): A
-alone is reached, a start from B's card is refused, and B's own worker
+alone is reached, a start in B's directory is PATH_NOT_ACCESSIBLE, and B's own worker
 reads as taken over by the user.
 
 Prints closed facts only. Exit 0 when every expectation held, 1 otherwise.
@@ -75,19 +76,26 @@ def main():
         spaces = caps.get("authorizedWorkspaces") or []
         ok_l, listed = call("deck_worker_list")
 
-        def start(request, project=None, column=None, title=None):
+        # the work directories are siblings (`work/a`, `work/b`): this card's
+        # own is known even once its project is out of reach
+        base = os.path.dirname((spaces[0].get("roots") or ["/"])[0]) if spaces else "/"
+        own_dir = os.path.join(base, role.lower())
+        root_of = lambda project: next(((s.get("roots") or [""])[0] for s in spaces if s["projectId"] == project), own_dir)
+
+        def start(request, project=None, column=None, title=None, named=None):
             # this card's lane moves with every accepted start: read it each time
             sequence = call("deck_worker_list")[1].get("nextSendSequence", 0)
             return call("deck_worker_start", dict(
                 {"request_id": f"{request}_{role}_{args.tag}", "send_sequence": sequence, "type": "claude",
-                 "title": title or f"{role} worker", "text": f"Orchestrator {role}: say hello."},
-                **({"project_id": project} if project else {}), **({"column_id": column} if column else {})))
+                 "title": title or f"{role} worker", "text": f"Orchestrator {role}: say hello.",
+                 "dir": root_of(project) if project else own_dir},
+                **({"project_id": named} if named else {}), **({"column_id": column} if column else {})))
         if args.phase == "first":
             without = caps.get("projectsWithoutDirectory") or []
             step("all-projects", ok and caps.get("allProjects") is True and len(spaces) >= 2 and len(without) >= 1
                  and all(s.get("roots") for s in spaces), reached=len(spaces), without=len(without))
             step("orchestrator-card", role in ("A", "B"), role=role)
-            ok, refused = start("nodir", without[0] if without else "none")
+            ok, refused = start("nodir", named=without[0] if without else "none")
             step("no-directory-refused", not ok and code(refused) == "PERMISSION_DENIED", code=code(refused))
             ok, started = start("start")
             result = started.get("result") or {}
@@ -151,7 +159,7 @@ def main():
         else:
             step("narrowed", ok and caps.get("allProjects") is False and len(spaces) == 1, reached=len(spaces))
             ok, refused = start("after")
-            step("out-of-reach-refused", not ok and code(refused) == "PERMISSION_DENIED", code=code(refused))
+            step("out-of-reach-refused", not ok and code(refused) == "PATH_NOT_ACCESSIBLE", code=code(refused))
             own = [w for w in listed.get("workers", []) if w.get("title") == f"{role} worker"]
             step("own-worker-held", ok_l and len(own) == 1 and own[0].get("takenOver") is True)
     except Exception as error:  # a failed step is reported, never hidden

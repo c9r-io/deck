@@ -688,14 +688,17 @@ fn the_board_door_owns_the_committed_board_and_tells_one_observer() {
     // `card_update` and a worker start's `named_column` read them only to
     // REFUSE before journaling a Board intent: a column that is not the
     // target project's, and a Board recovered from its backup. The
-    // webview's transaction decides again.
+    // webview's transaction decides again. A worker start's
+    // `start_project` reads only the names it lists in PATH_AMBIGUOUS:
+    // presentation, the refusal is decided from the directories.
     assert_eq!(
         callers_of("board_layout("),
         [
             "mcp/cards.rs card_update",
             "mcp/cards.rs cards_snapshot",
             "mcp/cards.rs ordered",
-            "mcp/workers.rs named_column"
+            "mcp/workers.rs named_column",
+            "mcp/workers.rs start_project"
         ]
     );
     assert_eq!(
