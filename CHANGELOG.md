@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.40 — 2026-11-23 (Nightly)
+
+- An agy worker card's first line no longer disappears into agy's "Do you
+  trust the contents of this project?" question. agy asks it once for each
+  directory (a trusted parent folder does not count), and Enter answers
+  "Yes": before, the line was lost and its Enter trusted the folder for
+  you. Now, until agy has run a turn in the card, a line for an agy whose
+  folder agy has not been told to trust waits, whatever first-send choice
+  it carries, and Needs attention says "agy is asking whether to trust this
+  folder". Answer agy in the card; once you trust it, the line goes on its
+  own. Deck only reads agy's list of trusted folders and never writes it;
+  if it cannot read it, the line waits.
+- MCP: `deck_worker_start` now requires `dir`, the absolute directory the
+  worker card works in, and that directory alone decides the project: the
+  one of the client's projects whose directory holds it, wherever the
+  orchestrator itself runs. A directory no project holds is
+  `PATH_NOT_ACCESSIBLE`; one inside several projects (nested or shared
+  directories) is `PATH_AMBIGUOUS`, listing them, and the orchestrator
+  starts again naming one with `project_id`. Deck never picks the deepest
+  one, since the project also decides which environment variables the
+  shell gets. An orchestrator that leaves `dir` out is refused
+  (`INVALID_ARGUMENTS`) and told what to send.
+
 ## 0.8.39 — 2026-11-23 (Nightly)
 
 - agy (Google Antigravity CLI) support. Settings › Agents & notifications
