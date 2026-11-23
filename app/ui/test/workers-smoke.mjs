@@ -700,6 +700,42 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await pause(5_000);
     await report('done', !failed, 1, 8);
   };
+  /* `agy-trust` (approved 2026-11-23, agent_agy.rs "Folder trust"): one
+     agy worker type and the first-send choice. The operator's client starts
+     one agy worker in `work`, a directory agy has never trusted. Its first
+     line must wait at `agy-trust`, undelivered, however long, until the
+     person answers agy's trust question in the card; then it goes on its
+     own. Nothing here types into the card. */
+  const agyTrustRun = async ({ project, work }) => {
+    await inv('mcp_enable');
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: false,
+        workerTypes: [{ name: 'agy', cmd: 'agy --mode auto', description: 'agy' }], workerFirstSend: true } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id && value.allowWorkers) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed && client.workerTypes?.[0]?.name === 'agy' && client.workerFirstSend === true);
+    await report('workers-armed', true);
+    const card = await until(() => workerCards()[0] || null, 900_000);
+    if (!card) throw new Error('no worker card');
+    await report('agy-card', card.cmd.startsWith('agy ') && card.dir === work);
+    const held = await until(async () => {
+      const s = await queue(card.session);
+      const row = s.mine[0];
+      return row && s.plan(row)?.stage === 'agy-trust' && !s.delivered.length ? s : null;
+    }, 180_000, 1000);
+    await pause(20_000);
+    const still = await queue(card.session);
+    await report('agy-held', !!held && !still.delivered.length && still.mine.length === 1
+      && still.plan(still.mine[0])?.stage === 'agy-trust');
+    const sent = await until(async () => {
+      const s = await queue(card.session);
+      return s.delivered.length ? s : null;
+    }, 1_800_000, 1000);
+    await report('agy-delivered', !!sent);
+    await report('done', !failed, 1, 9);
+  };
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
@@ -708,7 +744,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
       : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes'].includes(scenario)) throw new Error('scenario');
+    if (!['live', 'codex', 'types', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -728,6 +764,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     if (scenario === 'mentions') { await mentionsRun({ project, column, work }); return; }
     if (scenario === 'cards') { await cardsRun({ project, column, work, fixture }); return; }
     if (scenario === 'notes') { await notesRun({ project, column, work, fixture }); return; }
+    if (scenario === 'agy-trust') { await agyTrustRun({ project, work }); return; }
     if (scenario === 'projects') {
       await projectsRun({ work, cmd: 'claude --setting-sources project', fixture });
       return;
