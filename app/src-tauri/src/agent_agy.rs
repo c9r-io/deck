@@ -46,6 +46,21 @@
 //! - **Only from a stable install**, as every hook write
 //!   (`agent_status::installed_helper_path`). The boot migration rewrites an
 //!   entry that is there to this bundle's helper and enrolls nobody.
+//! - **Folder trust refuses, never releases** (approved 2026-11-23). agy
+//!   asks "Do you trust the contents of this project?" the first time it
+//!   runs in a directory — trust is kept per EXACT directory
+//!   (`trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`; a
+//!   trusted parent does not cover its children, probed on 1.5.14 and
+//!   1.5.15) — and Enter there answers "Yes, I trust this folder": a typed
+//!   line is dropped and its Enter grants trust (seen on a worker card,
+//!   2026-11-23). So before agy has reported a turn, a row for an agy
+//!   whose working directory (the pane's current path) is not in that list
+//!   holds at `Hold::AgyUntrusted` (`scheduler/select.rs`), whatever
+//!   first-send override it carries; the user answers agy in the card and
+//!   the row goes on its own. The list is read only to refuse: unreadable,
+//!   unparsable or missing reads as untrusted, and a trusted directory is
+//!   no readiness evidence — it only returns the row to the gates that
+//!   held it before. Deck never writes that file.
 //! - **Recognition only.** An accepted agy word marks the pane generation
 //!   `agy_interaction` (`agent_status::GenerationEvidence`), the evidence the
 //!   scheduler's first-interaction gate asks for an agy row
@@ -90,6 +105,46 @@ fn refused(kind: ErrorKind, code: &'static str) -> DeckError {
 /// `~/.gemini/config/hooks.json`, agy's global customization root.
 fn config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".gemini").join("config").join("hooks.json"))
+}
+
+/// agy's own settings, where it records the directories the user trusted.
+fn agy_settings_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| {
+        home.join(".gemini")
+            .join("antigravity-cli")
+            .join("settings.json")
+    })
+}
+
+/// The directories agy was told to trust, canonical where they still
+/// exist (`/tmp` is `/private/tmp`). `None` when the file is missing,
+/// unreadable or not the shape agy writes: nothing is trusted then.
+pub(crate) fn trusted_folders() -> Option<Vec<PathBuf>> {
+    let text = std::fs::read_to_string(agy_settings_path()?).ok()?;
+    trusted_from(&text)
+}
+
+fn trusted_from(text: &str) -> Option<Vec<PathBuf>> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let list = value.get("trustedWorkspaces")?.as_array()?;
+    Some(
+        list.iter()
+            .filter_map(Value::as_str)
+            .filter(|entry| Path::new(entry).is_absolute())
+            .map(|entry| std::fs::canonicalize(entry).unwrap_or_else(|_| PathBuf::from(entry)))
+            .collect(),
+    )
+}
+
+/// Whether agy trusts exactly `dir` (a pane's current path): the same
+/// directory, never a parent of it.
+pub(crate) fn trusts(trusted: &[PathBuf], dir: &str) -> bool {
+    let dir = Path::new(dir);
+    if !dir.is_absolute() {
+        return false;
+    }
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    trusted.contains(&dir)
 }
 
 /// Deck's entry for `helper`: the turn's first model call and its end.

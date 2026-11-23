@@ -192,6 +192,17 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   never sent to. **Send now** stays the user's own act under every
   existing target, foreground and paste guard. Pi is no remote agent:
   `admission.rs` does not know it.
+- **An agy row waits for its folder to be trusted** (`agent_agy.rs`,
+  approved 2026-11-23). agy asks whether to trust a directory the first
+  time it runs there, per exact directory, and Enter answers "Yes": a
+  pasted prompt is dropped and its Enter grants the trust. Until agy has
+  reported a turn, an automatic row for an agy whose pane directory is not
+  in `trustedWorkspaces` of agy's own settings is held at stage `agy-trust`,
+  whatever first-send override it carries; the list unreadable counts as
+  untrusted. It is a delivery wait the user acts on (Needs attention): they
+  answer agy in the card, and the row then goes on the gates and override
+  it had before. A trusted folder is no readiness evidence. Send now stays
+  the user's own act.
 - **The pass that starts a new agent never sends its first prompt.**
   When a successful pane listing shows the session absent, the scheduler
   may start it (a clock automation's card starts this way), bind its pane
@@ -209,7 +220,8 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   names each hold as its own closed stage — `agent` (an input or permission
   request), `external` (external content no approval covers), `codex-signal`
   (Codex Signal cannot be attributed to this process), `pi-input-unverified`
-  (the target is a Pi), `first-send` — and
+  (the target is a Pi), `agy-trust` (agy asks whether to trust the folder),
+  `first-send` — and
   says whether the row carries an approval ("Approved step · …"); the hook
   observation is shown beside it.
 

@@ -33,6 +33,7 @@
 //!   time, agent, external, codex-signal, first-send, authority-unverified,
 //!   quiet, context, channel-stopped, channel-unverified, pi-input-unverified,
 //!   pi-handover (a Pi worker's line waits for its observer between two runs),
+//!   agy-trust (an agy row waits for the user to trust its folder in agy),
 //!   human, unknown) with its observation time and whether the row carries content
 //!   authority, so the webview never derives readiness from hook state.
 //! - `delivery_waits` is the same projection read for attention: per session,
@@ -500,6 +501,7 @@ pub(crate) fn plan_item(
             Hold::PiInputUnverified => "pi-input-unverified",
             Hold::PiHandover => "pi-handover",
             Hold::Human => "human",
+            Hold::AgyUntrusted => "agy-trust",
         }
     } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"
@@ -544,7 +546,7 @@ pub(crate) struct DeliveryWait {
 /// returns by the next tick, and is a wait only once it has lasted
 /// (`track_unverified`). Mirrored by the webview (`limits.json`
 /// `delivery_waits`).
-pub(crate) const DELIVERY_WAIT_STAGES: [&str; 10] = [
+pub(crate) const DELIVERY_WAIT_STAGES: [&str; 11] = [
     "ambiguous",
     "failed",
     "review",
@@ -554,6 +556,7 @@ pub(crate) const DELIVERY_WAIT_STAGES: [&str; 10] = [
     "first-send",
     "codex-signal",
     "pi-input-unverified",
+    "agy-trust",
     UNVERIFIED_STAGE,
 ];
 

@@ -161,6 +161,11 @@ pub(crate) struct Observed {
     /// The Signal target is a recognized agy (`agent_status::Evidence::agy`):
     /// it only ever ADDS the first-interaction gate.
     pub(crate) agy: bool,
+    /// Not Signal: agy's own settings list the Signal target's current
+    /// directory as trusted (`agent_agy::trusts`, `mark_agy_trusted`). Read
+    /// only to refuse: false (unread, unreadable, not listed) holds an agy
+    /// row that has no agy word yet at `Hold::AgyUntrusted`.
+    pub(crate) agy_trusted: bool,
     /// The Signal target is a recognized Pi (`agent_status::Evidence::pi`):
     /// a proven observer of its current foreground generation, or Pi's name
     /// on that foreground. Recognition only: it holds, and proves nothing.
@@ -222,13 +227,51 @@ pub(crate) fn mark_channel_unverified(seen: &mut Observations) {
 pub(crate) type Observations = HashMap<String, Observed>;
 
 pub(crate) fn observe(rows: Vec<PaneRow>) -> Observations {
+    let targets = target_paths(&rows);
     let mut seen = observe_with(
         rows,
         crate::agent_status::live_generation,
         crate::agent_status::foreground_name,
     );
     mark_human_held(&mut seen, &crate::mcp::held_worker_sessions());
+    // agy's settings are read only while some session's target is an agy
+    if seen.values().any(|o| o.agy) {
+        mark_agy_trusted(
+            &mut seen,
+            &targets,
+            crate::agent_agy::trusted_folders().as_deref(),
+        );
+    }
     seen
+}
+
+/// Session → the current directory of the pane delivery pastes into (its
+/// current window's active pane, `tmux::pane_target`).
+pub(crate) fn target_paths(rows: &[PaneRow]) -> HashMap<String, String> {
+    rows.iter()
+        .filter(|row| row.window_active && row.pane_active)
+        .map(|row| (row.session_name.clone(), row.path.clone()))
+        .collect()
+}
+
+/// Mark the recognized agy targets whose directory agy trusts
+/// (`agent_agy` "Folder trust"): `trusted` None (agy's settings could not
+/// be read) marks none.
+pub(crate) fn mark_agy_trusted(
+    seen: &mut Observations,
+    targets: &HashMap<String, String>,
+    trusted: Option<&[std::path::PathBuf]>,
+) {
+    let Some(trusted) = trusted else {
+        return;
+    };
+    for (session, observed) in seen.iter_mut() {
+        if observed.agy {
+            observed.agy_trusted = targets
+                .get(session)
+                .is_some_and(|dir| crate::agent_agy::trusts(trusted, dir));
+        }
+    }
 }
 
 /// The worker cards the user took over: their sessions hold every row a
@@ -271,6 +314,7 @@ pub(crate) fn observe_with(
                 claude_interaction: evidence.get(session).is_some_and(|e| e.claude_interaction),
                 agy_interaction: evidence.get(session).is_some_and(|e| e.agy_interaction),
                 agy: evidence.get(session).is_some_and(|e| e.agy),
+                agy_trusted: false,
                 pi: evidence.get(session).is_some_and(|e| e.pi),
                 pi_ready: evidence
                     .get(session)
@@ -315,6 +359,11 @@ pub(crate) enum Hold {
     /// a delegated client's row for a worker card the user took over and
     /// has not handed back (plan stage `human`); send-now still works
     Human,
+    /// a row for an agy that has reported no turn yet, in a directory agy
+    /// does not list as trusted: its trust question would take the line and
+    /// Enter would grant the trust (plan stage `agy-trust`). No first-send
+    /// override lifts it; the user answering agy in the card does.
+    AgyUntrusted,
 }
 
 /// The recognized interactive agent a row is configured for, if any.
@@ -488,9 +537,22 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
     // agy (`agent_agy`): a row configured for it, or any row whose target is
     // a recognized agy, waits for an agy word of this generation — agy
     // shows a folder-trust question before its first prompt that Enter
-    // answers, and reports no question at all
-    if (row_agy(i) || o.agy) && !o.agy_interaction && !overridden {
-        return Some(Hold::FirstInteraction);
+    // answers, and reports no question at all. Before that word, an agy in
+    // a directory its settings do not list as trusted holds whatever
+    // override the row carries (the trust question is certain there); a
+    // trusted one is back to the gate and its override, nothing more.
+    if (row_agy(i) || o.agy) && !o.agy_interaction {
+        if !o.agy {
+            // not (yet) the pane's foreground: nothing to check, and the
+            // paste needs agy in front anyway
+            return Some(Hold::FirstInteraction);
+        }
+        if !o.agy_trusted {
+            return Some(Hold::AgyUntrusted);
+        }
+        if !overridden {
+            return Some(Hold::FirstInteraction);
+        }
     }
     None
 }

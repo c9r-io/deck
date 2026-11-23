@@ -3304,6 +3304,7 @@ mod tests {
             claude_interaction: false,
             agy_interaction: false,
             agy: false,
+            agy_trusted: false,
             pi: false,
         };
         crate::scheduler::agent_holds(&owner, Some(&seen))
@@ -3594,6 +3595,7 @@ mod tests {
             claude_interaction: false,
             agy_interaction: false,
             agy: false,
+            agy_trusted: false,
             pi: false,
         };
         assert!(!crate::scheduler::agent_holds(

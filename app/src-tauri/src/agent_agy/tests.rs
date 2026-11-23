@@ -206,3 +206,39 @@ fn the_edits_install_refuse_migrate_and_remove_only_decks_entry() {
     }
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ broken");
 }
+
+/// agy's trust list (`trusted_folders`): only `trustedWorkspaces` of the
+/// shape agy writes; anything else trusts nothing. A directory is trusted
+/// only by its exact entry, symlinks resolved (`/tmp` is `/private/tmp`).
+#[test]
+fn agy_trusts_only_the_exact_directories_its_settings_list() {
+    let root = crate::test_dir::TestDir::new("agy-trusted");
+    let canonical = |name: &str| {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(&path).unwrap()
+    };
+    let (project, child) = (canonical("p"), canonical("p/child"));
+    let text = json!({"trustedWorkspaces": [project.display().to_string(), "relative/dir", 7], "other": true})
+        .to_string();
+    let list = trusted_from(&text).unwrap();
+    assert_eq!(
+        list,
+        vec![project.clone()],
+        "relative and non-string entries dropped"
+    );
+    assert!(trusts(&list, &project.display().to_string()));
+    assert!(
+        !trusts(&list, &child.display().to_string()),
+        "a parent covers no child"
+    );
+    assert!(!trusts(&list, "p"), "a relative path is never trusted");
+    // the same directory through a link
+    let link = root.join("link");
+    std::os::unix::fs::symlink(&project, &link).unwrap();
+    assert!(trusts(&list, &link.display().to_string()));
+    // not agy's shape: nothing is trusted
+    for bad in ["", "[]", "{\"trustedWorkspaces\": \"/\"}", "{}", "not json"] {
+        assert!(trusted_from(bad).is_none(), "{bad}");
+    }
+}

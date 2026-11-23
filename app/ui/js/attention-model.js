@@ -55,7 +55,8 @@ import { openAgentNotes } from './buffer-model.js';
 //   (`first-send`) or because Codex Signal cannot be attributed
 //   (`codex-signal`), or withdrawn channel permission (`channel-stopped`),
 //   or because the target is a recognized Pi, which nothing but Send now
-//   sends to (`pi-input-unverified`), and the model accepts these stage words
+//   sends to (`pi-input-unverified`), or an agy line held until the user
+//   trusts the card's folder in agy (`agy-trust`, agent_agy.rs), and the model accepts these stage words
 //   for a row still in the queue. An approval Deck could not re-read
 //   (`authority-unverified` or `channel-unverified`) usually passes by itself and stays in the panel;
 //   it is a held delivery only when the backend's plan marks it `lasting`
@@ -99,9 +100,9 @@ export const ATTENTION_SECTION_LABELS = Object.freeze({
   done: 'attention.filter.done', notes: 'attention.section.notes', reminder: 'attention.filter.reminder', followed: 'attention.filter.followed',
 });
 /* most pressing first: one reason per session */
-export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'pi-input-unverified', 'authority-unverified']);
+export const DELIVERY_WAITS = Object.freeze(['ambiguous', 'failed', 'review', 'channel-stopped', 'channel-unverified', 'external', 'first-send', 'codex-signal', 'pi-input-unverified', 'agy-trust', 'authority-unverified']);
 /* the ones the backend's plan decides; never read from hook state here */
-const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal', 'pi-input-unverified', 'channel-stopped']);
+const LIVE_DELIVERY_WAITS = Object.freeze(['first-send', 'codex-signal', 'pi-input-unverified', 'agy-trust', 'channel-stopped']);
 /* the third, only once the backend says the hold has lasted */
 const liveWait = plan => LIVE_DELIVERY_WAITS.includes(plan.stage)
   || (['authority-unverified', 'channel-unverified'].includes(plan.stage) && plan.lasting === true);

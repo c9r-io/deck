@@ -2954,6 +2954,7 @@ fn seen_codex(
             claude_interaction: false,
             agy_interaction: false,
             agy: false,
+            agy_trusted: false,
             pi: false,
             authority_unverified: false,
             board_unverified: false,
@@ -10494,6 +10495,146 @@ fn a_worker_types_first_line_override_rests_on_the_clients_choice() {
         hold_reason(&q.items[0], fresh.get("s")),
         Some(Hold::FirstInteraction)
     );
+}
+
+/// An agy worker's line (`agent_agy` "Folder trust", approved 2026-11-23):
+/// before agy reports a turn, a directory agy does not list as trusted
+/// holds the row at `agy-trust` whatever override it carries — agy's trust
+/// question would take the line and Enter would grant the trust. A trusted
+/// one is back to the first-interaction gate and its override; once agy
+/// reported a turn the list is not consulted.
+#[test]
+fn an_agy_line_waits_for_the_user_to_trust_its_folder() {
+    let rule = format!("{}agy", crate::mcp::WORKER_TYPE_RULE_PREFIX);
+    let mut head = qi("a0", "at");
+    head.at = Some(0);
+    head.external = true;
+    head.expected_process = Some("agy".into());
+    head.authority = Some(StepAuthority {
+        rule: rule.clone(),
+        grant: String::new(),
+        step: 0,
+        class: ContentClass::Delegated,
+        trigger: TriggerClass::Agent,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    });
+    head.readiness_override = Some(ReadinessOverride {
+        rule,
+        trigger: first_send::FirstSendOrigin::Agent,
+        clock_target: None,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    });
+    let seen = |agy: bool, trusted: bool, interaction: bool| Observed {
+        agy,
+        agy_trusted: trusted,
+        agy_interaction: interaction,
+        ..Observed::default()
+    };
+    // agy not in front yet: the gate, nothing to check
+    assert_eq!(
+        hold_reason(&head, Some(&seen(false, false, false))),
+        Some(Hold::FirstInteraction)
+    );
+    // untrusted: held, the override lifts nothing
+    let untrusted = seen(true, false, false);
+    assert_eq!(
+        hold_reason(&head, Some(&untrusted)),
+        Some(Hold::AgyUntrusted)
+    );
+    assert!(!relies_on_readiness_override(&head, Some(&untrusted)));
+    // trusted: the override goes on as before
+    let trusted = seen(true, true, false);
+    assert_eq!(hold_reason(&head, Some(&trusted)), None);
+    assert!(relies_on_readiness_override(&head, Some(&trusted)));
+    // after a turn the list is not read
+    assert_eq!(hold_reason(&head, Some(&seen(true, false, true))), None);
+    // without an override: the trust question first, then the gate
+    let mut plain = head.clone();
+    plain.readiness_override = None;
+    assert_eq!(
+        hold_reason(&plain, Some(&untrusted)),
+        Some(Hold::AgyUntrusted)
+    );
+    assert_eq!(
+        hold_reason(&plain, Some(&trusted)),
+        Some(Hold::FirstInteraction)
+    );
+    // the panel names it, and it is a wait the user acts on
+    let q = QueueState {
+        items: vec![head.clone()],
+        ..QueueState::default()
+    };
+    let observations = HashMap::from([("s".to_string(), untrusted)]);
+    assert_eq!(
+        serde_json::to_value(plan_item(&q, &q.items[0], 1, 0, Some(&observations))).unwrap()
+            ["stage"],
+        "agy-trust"
+    );
+    assert!(DELIVERY_WAIT_STAGES.contains(&"agy-trust"));
+}
+
+/// `mark_agy_trusted`: only a recognized agy target is marked, by its
+/// pane's exact directory; agy's settings unread marks none.
+#[test]
+fn agy_trust_marks_the_exact_directory_of_an_agy_target() {
+    let root = crate::test_dir::TestDir::new("agy-trust");
+    let dir = |name: &str| {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(&path).unwrap()
+    };
+    let (trusted, child, other) = (dir("t"), dir("t/child"), dir("o"));
+    let seen = || -> Observations {
+        HashMap::from([
+            (
+                "a".to_string(),
+                Observed {
+                    agy: true,
+                    ..Observed::default()
+                },
+            ),
+            (
+                "b".to_string(),
+                Observed {
+                    agy: true,
+                    ..Observed::default()
+                },
+            ),
+            (
+                "c".to_string(),
+                Observed {
+                    agy: true,
+                    ..Observed::default()
+                },
+            ),
+            ("d".to_string(), Observed::default()),
+        ])
+    };
+    let targets: HashMap<String, String> = [
+        ("a", &trusted),
+        ("b", &child),
+        ("c", &other),
+        ("d", &trusted),
+    ]
+    .into_iter()
+    .map(|(s, p)| (s.to_string(), p.display().to_string()))
+    .collect();
+    let list = vec![trusted.clone()];
+    let mut marked = seen();
+    mark_agy_trusted(&mut marked, &targets, Some(&list));
+    assert!(marked["a"].agy_trusted);
+    assert!(!marked["b"].agy_trusted, "a trusted parent covers no child");
+    assert!(!marked["c"].agy_trusted);
+    assert!(!marked["d"].agy_trusted, "not an agy target");
+    let mut unread = seen();
+    mark_agy_trusted(&mut unread, &targets, None);
+    assert!(unread.values().all(|o| !o.agy_trusted));
 }
 
 /// A worker card's later line (`deck_worker_send`) carries the client's
