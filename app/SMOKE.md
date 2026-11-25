@@ -452,6 +452,39 @@ report and the text read back. Keep the screen unlocked and
 the window in front: a locked screen or a covered window freezes the page's
 timers (its takeover and hand-back steps then never come).
 
+## A second account's worker (WKWebView mode `workers-account`)
+
+The `types` run of `workers` with the Claude worker type under a second
+Claude Code config folder, a second account (2026-11-25): the same carrier
+and fixture (`copy_agent.py`, `work/`, `worker-hooks.json`) and one more
+file, `<data>/translation-fixture/account-root`, holding the absolute path
+of a config folder the operator signed in beforehand
+(`CLAUDE_CONFIG_DIR=<folder> claude` in `work/`, the login and the folder
+trust answered there; Claude Code keeps that sign-in under that exact path,
+so it is not a link). The worker type is
+`CLAUDE_CONFIG_DIR=<folder> claude --setting-sources project
+--permission-mode acceptEdits --settings <fixture>/worker-hooks.json`; the
+client runs `scripts/mcp-worker-e2e.py --start-type claude` and the page
+runs part A as for `types`. Judge with `scripts/smoke-verdict <data>
+workers-account`. Afterwards sign the folder out (`CLAUDE_CONFIG_DIR=<folder>
+claude auth logout`) and remove it.
+
+## Worker capacity (WKWebView mode `workers-capacity`)
+
+One orchestrator's worker capacity in the real window: the same carrier
+and fixture as `workers` (`copy_agent.py`, `work/`; no hooks file). The
+page authorizes one client with one Claude worker type (`claude
+--setting-sources project`) and no first-send choice, so no worker takes
+a turn, and reports `workers-armed`. `scripts/mcp-capacity-e2e.py`
+(adapter, socket, credential arguments as `mcp-worker-e2e.py`, `--evidence`
+a file) starts 17 workers from no card: 16 accepted and committed, the 17th
+`CAPACITY_EXCEEDED`; one wait follows all 16 and one naming 65 cards is
+refused. The page checks `capacity-cards` (exactly 16 worker cards),
+`capacity-held` (still 16 after 30 s) and `capacity-closed` (all closed).
+Judge with `scripts/smoke-verdict <data> workers-capacity` and the script's
+PASS line. Sixteen idle Claude Code processes: check the machine's memory
+first.
+
 ## agy folder trust (WKWebView mode `agy-trust`)
 
 The same carrier and fixture as `workers` (`copy_agent.py` and `work/`; no
@@ -681,13 +714,18 @@ the screen unlocked.
 clients started with the launch options a worker card's command carries:
 the same carrier as `orchestrators` (debug only, isolated data dir under
 `/private/tmp`, the fixture's `copy_agent.py` and `work/`), the user's own
-signed-in Claude Code. The page starts seven plain-shell cards, each typed
-one command (`claude`; `--permission-mode acceptEdits`;
+signed-in Claude Code, and `<data>/translation-fixture/account-root` naming
+an existing config folder (it need not be signed in: the preview reads how
+a client started, never what it shows). The page starts nine plain-shell
+cards, each typed one command (`claude`; `--permission-mode acceptEdits`;
 `--dangerously-skip-permissions`; `--permission-mode auto`; `--effort
-high`; `--setting-sources user,project`; `--settings {}`), waits 25 s and asks
-for ONE preview (read-only: nothing restarts, nothing is typed into a
-client). Every card must be a candidate (`shape-*` a=1; -2 is the old
-`launch-shape` refusal). Judge with `scripts/smoke-verdict <data>
+high`; `--setting-sources user,project`; `--settings {}`;
+`CLAUDE_CONFIG_DIR=<folder> claude --settings {}`; `CLAUDE_CONFIG_DIR=<folder>
+claude`), waits 25 s and asks for ONE preview (read-only: nothing restarts,
+nothing is typed into a client). Every card must be a candidate (`shape-*`
+a=1; -2 is the old `launch-shape` refusal) except the last, which must be
+refused, named by `CLAUDE_CONFIG_DIR` (`shape-account-hookless` a=1: no
+settings of its own, so Deck's hooks would not load). Judge with `scripts/smoke-verdict <data>
 reentry-shapes`. The restart itself with those options carried is the Rust
 test `a_worker_launch_reopens_with_its_own_launch_options` (real tmux and
 zsh, the fake agent); a real Claude restart is `reentry-live`.
@@ -1509,8 +1547,10 @@ person's home.
       (carrier at `home/Applications/deck.app`, its own keychain, Claude
       signed in, `home/work/{a,b}` trusted, the bypass warning accepted,
       `home/work/d` existing, no Deck hook in the home's settings). Do NOT
-      set `CLAUDE_CONFIG_DIR`: Deck refuses to record a client that runs with
-      it (`recovery-not-supported`), as restart re-entry does. Scenario word
+      set `CLAUDE_CONFIG_DIR` for the home: the cards' clients would run under
+      another config folder, which Deck records only with a `--settings` of
+      the launch's own (a second account's worker: its folder and options
+      are recorded and typed again). Scenario word
       `rclive-<12 hex>`; launch with `--smoke-wkwebview recovery-live`.
 - [ ] The page switches observation on (`rclive-observe`), starts A
       (`claude`, a turn, `/clear`, a turn), B (`claude

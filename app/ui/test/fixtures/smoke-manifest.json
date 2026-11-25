@@ -933,6 +933,35 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "workers-account": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "workers-rule": {},
+        "workers-armed": {},
+        "workers-card": {},
+        "workers-first": {},
+        "workers-send": {},
+        "workers-attention": {},
+        "workers-taken": {},
+        "workers-held": {},
+        "workers-handed-back": {},
+        "workers-withdrawn": {},
+        "workers-closed": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
+    "workers-capacity": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "workers-armed": {},
+        "capacity-cards": {},
+        "capacity-held": {},
+        "capacity-closed": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "agy-trust": {
       "terminal": "done",
       "checks": {
@@ -954,7 +983,9 @@
         "shape-auto": {},
         "shape-effort": {},
         "shape-setting-sources": {},
-        "shape-settings": {}
+        "shape-settings": {},
+        "shape-account": {},
+        "shape-account-hookless": {}
       }
     },
     "projects": {

@@ -242,11 +242,11 @@
 //! (`commands::close_admit`) decides again on the card as it is then and
 //! records a refusal with its closed code.
 //! Withdrawing `allow_workers`, revoking the client or disabling MCP takes
-//! the key out under `storage::settings_fence`. Capacity: 8 worker cards on
-//! the Board per orchestrator card (callers from no card together), 32 per
+//! the key out under `storage::settings_fence`. Capacity: 16 worker cards on
+//! the Board per orchestrator card (callers from no card together), 64 per
 //! client, counting starts and handovers accepted that have no card yet (a
 //! further start is `CAPACITY_EXCEEDED`), 4
-//! unsent lines per card, 30 lines a minute. A ledger holding any of this is
+//! unsent lines per card, 60 lines a minute. A ledger holding any of this is
 //! written at `STATE_VERSION_WORKERS` (sticky); one holding a type's model
 //! list or a card started with a model at `STATE_VERSION_WORKER_MODELS`.
 //!

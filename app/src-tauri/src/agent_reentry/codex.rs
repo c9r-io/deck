@@ -109,6 +109,7 @@ const GRAMMAR: LaunchGrammar = LaunchGrammar {
     directories: "--add-dir",
     refused_env: &["CODEX_HOME"],
     refused_env_prefixes: &["OPENAI_"],
+    carried_env: None,
 };
 
 /// The argument words of an exact-id request: `resume --no-daemon`, the

@@ -5976,6 +5976,77 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
     .unwrap();
 }
 
+/// A Claude worker type under its own config folder (a second account):
+/// the folder must exist, and one other than `~/.claude` needs a
+/// `--settings` of the command's own (Deck's hooks are in `~/.claude`);
+/// the type list hands the orchestrator no command, so no folder.
+#[test]
+fn a_claude_worker_type_may_run_under_its_own_config_folder() {
+    let dir = crate::test_dir::TestDir::new("mcp-config-root");
+    let work = dir.join("claude-work");
+    std::fs::create_dir(&work).unwrap();
+    let typed = |cmd: String, models: &[&str]| WorkerType {
+        name: "work".into(),
+        cmd,
+        description: "Write code on the second account".into(),
+        models: models.iter().map(|m| (*m).to_string()).collect(),
+    };
+    let check = |cmd: String, models: &[&str]| {
+        validate_worker_types(&[typed(cmd, models)]).map_err(|e| e.message().to_string())
+    };
+    let root = work.display().to_string();
+    let settings = "--settings /Users/u/.claude/settings.json";
+    assert_eq!(
+        check(format!("CLAUDE_CONFIG_DIR={root} claude {settings}"), &[]),
+        Ok(())
+    );
+    assert_eq!(
+        check(
+            format!("CLAUDE_CONFIG_DIR={root} claude --settings=/x.json --permission-mode auto"),
+            &["opus", "sonnet"]
+        ),
+        Ok(()),
+        "a model list on top: each start is still the folder's Claude"
+    );
+    assert_eq!(
+        check(format!("CLAUDE_CONFIG_DIR={root} claude"), &[]),
+        Err(TYPE_CONFIG_HOOKS.into()),
+        "no settings of its own: Deck's hooks would never load"
+    );
+    assert_eq!(
+        check(
+            format!("CLAUDE_CONFIG_DIR={root}/missing claude {settings}"),
+            &[]
+        ),
+        Err(TYPE_CONFIG_ROOT.into())
+    );
+    assert_eq!(
+        check(format!("CLAUDE_CONFIG_DIR={root} codex --no-daemon"), &[]),
+        Err(TYPE_COMMAND_INVALID.into())
+    );
+    assert_eq!(
+        check("claude-work".into(), &[]),
+        Err(TYPE_COMMAND_INVALID.into()),
+        "a shell alias: Deck cannot see what it runs"
+    );
+    let with_model = start_command(
+        &typed(
+            format!("CLAUDE_CONFIG_DIR={root} claude {settings}"),
+            &["opus"],
+        ),
+        Some("opus"),
+    );
+    assert_eq!(
+        crate::admission::worker_agent_command(&with_model),
+        Some("claude")
+    );
+    assert_eq!(
+        crate::context::expected_from_command(&with_model).as_deref(),
+        Some("claude"),
+        "the row waits for Claude in the pane's foreground"
+    );
+}
+
 /// Worker types (`workers.rs`): the user's commands only, Codex only with
 /// --no-daemon, bounded; `deck_worker_start` names a type, stays inside the
 /// authorized directory, journals a Board intent the webview commits, and
@@ -8187,8 +8258,8 @@ fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
     drop(root);
 }
 
-/// Worker capacity: 8 per orchestrator card (callers from no card count
-/// together), 32 per client.
+/// Worker capacity: `MAX_LIVE_WORKERS` (16) per orchestrator card (callers
+/// from no card count together), `MAX_CLIENT_WORKERS` (64) per client.
 #[test]
 fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
     let (runtime, _runner, root) = fixture("worker-room", "svc_test");
@@ -8196,7 +8267,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
     let mut cards: Vec<Value> = Vec::new();
     runtime
         .write(|doc| {
-            for i in 0..8 {
+            for i in 0..MAX_LIVE_WORKERS {
                 let id = format!("WA{i}");
                 cards.push(json!({"id": id, "session": format!("deck-wa{i}"), "title": "w", "cmd": "claude", "dir": "/tmp"}));
                 doc.workers.push(Worker {
@@ -8223,11 +8294,11 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
     assert!(!room(Some("OA")), "OA is full");
     assert!(room(Some("OB")), "another orchestrator card has room");
     assert!(room(None));
-    // eight starts and handovers of OB accepted, no card yet: OB is full,
+    // a full set of starts and handovers of OB accepted, no card yet: OB is full,
     // and nobody else's room is taken by them
     runtime
         .write(|doc| {
-            for i in 0..8 {
+            for i in 0..MAX_LIVE_WORKERS {
                 doc.operations.push(Operation {
                     operation_id: format!("op_pending_{i}"),
                     request_id: format!("req_pending_{i}"),
@@ -8253,10 +8324,10 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
             Ok(())
         })
         .unwrap();
-    // 24 more on three other orchestrator cards: the client bound
+    // the rest on other orchestrator cards: the client bound
     runtime
         .write(|doc| {
-            for i in 0..24 {
+            for i in 0..MAX_CLIENT_WORKERS - MAX_LIVE_WORKERS {
                 let id = format!("WX{i}");
                 cards.push(json!({"id": id, "session": format!("deck-wx{i}"), "title": "w", "cmd": "claude", "dir": "/tmp"}));
                 doc.workers.push(Worker {
@@ -8266,7 +8337,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     automation_id: "claude".into(),
                     created_at: 1,
                     held: false,
-                    orchestrator: Some(format!("O{}", i / 8)),
+                    orchestrator: Some(format!("O{}", i / MAX_LIVE_WORKERS)),
                     reported: 0,
                     model: None,
                 });
@@ -8275,7 +8346,10 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
         })
         .unwrap();
     crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
-    assert!(!room(Some("OB")), "32 on the Board: the client is full");
+    assert!(
+        !room(Some("OB")),
+        "the client bound on the Board: the client is full"
+    );
     assert!(!room(None));
     drop(root);
 }

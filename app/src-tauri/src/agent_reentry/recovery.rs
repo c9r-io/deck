@@ -49,9 +49,14 @@
 //! - **The launch is re-entry's.** The executable at the recorded path is
 //!   read and validated in full as Claude Code now (the old image is gone;
 //!   this is a weaker identity than a restart's, which binds the running
-//!   client). The request is always the plain `--resume <exact id>`: no
-//!   bypass, whatever the old client was started with — a record written
-//!   before a crash is no authorization. Shell, readiness, Board fence,
+//!   client). The request is the client's carried launch options and its
+//!   config folder as its launch image had them (`procinfo::Reduced`; the
+//!   record keeps them, so a second account's session reopens on that
+//!   account, with the settings that bring Deck's hooks) and `--resume
+//!   <exact id>`: never the bypass, whatever the old client was started
+//!   with — a record written before a crash is no authorization. A file
+//!   holding any carried words is written at `VERSION_CARRIED`, so a build
+//!   that could not type them refuses it untouched. Shell, readiness, Board fence,
 //!   single slot, receipts and confirmation are `Plan::reopen` unchanged.
 //! - **Privacy.** The file holds native ids and paths; views and logs carry
 //!   card id, session, closed codes and counts only.
@@ -76,7 +81,13 @@ use crate::tmux::PaneRow;
 const FILE: &str = "agent-recovery.json";
 const LABEL: &str = "agent recovery records";
 const VERSION: u64 = 1;
-const MAX_BYTES: usize = 64 * 1024;
+/// The version of a file any of whose records carries launch options or a
+/// config folder (`Record::carried`, `Record::env`): a build that cannot
+/// carry them refuses the file untouched instead of resuming plain.
+const VERSION_CARRIED: u64 = 2;
+const MAX_BYTES: usize = 256 * 1024;
+/// The most a record's carried launch words may hold, together.
+const MAX_CARRIED_BYTES: usize = 3 * 1024;
 pub(crate) const MAX_RECORDS: usize = 64;
 /// The source word of the one adapter whose sessions are recorded.
 const SOURCE: &str = "claude-code";
@@ -132,6 +143,14 @@ pub(crate) struct Record {
     pub(crate) executable: PathBuf,
     pub(crate) cwd: PathBuf,
     pub(crate) recorded_at: u64,
+    /// The client's carried launch options (`procinfo::Reduced::carried`;
+    /// never the bypass), typed again before `--resume`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) carried: Vec<String>,
+    /// Its carried environment entry (`procinfo::Reduced::env`: Claude's
+    /// config folder, `CLAUDE_CONFIG_DIR=<absolute path>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) env: Vec<String>,
 }
 
 impl Record {
@@ -156,6 +175,24 @@ impl Record {
             && self.cwd.is_absolute()
             && self.executable.as_os_str().len() <= 1024
             && self.cwd.as_os_str().len() <= 1024
+            && self.carried.len() <= 64
+            && self.carried.iter().map(String::len).sum::<usize>() <= MAX_CARRIED_BYTES
+            && self
+                .carried
+                .iter()
+                .all(|word| !word.is_empty() && !word.chars().any(char::is_control))
+            && self.env.len() <= 1
+            && self.env.iter().all(|entry| {
+                entry
+                    .strip_prefix(crate::admission::CONFIG_ROOT)
+                    .and_then(|rest| rest.strip_prefix("=/"))
+                    .is_some_and(|path| path.len() < 1024 && !path.chars().any(char::is_control))
+            })
+    }
+
+    /// Whether this record needs the carrying version (`VERSION_CARRIED`).
+    fn carries(&self) -> bool {
+        !self.carried.is_empty() || !self.env.is_empty()
     }
 }
 
@@ -184,8 +221,8 @@ fn load_at(path: &Path) -> Result<Vec<Record>, &'static str> {
         Err(_) => return Err("recovery-records-unreadable"),
     };
     match value.get("v").and_then(serde_json::Value::as_u64) {
-        Some(VERSION) => {}
-        Some(v) if v > VERSION => return Err("recovery-records-future"),
+        Some(VERSION | VERSION_CARRIED) => {}
+        Some(v) if v > VERSION_CARRIED => return Err("recovery-records-future"),
         _ => return Err("recovery-records-unreadable"),
     }
     let doc: Doc = serde_json::from_value(value).map_err(|_| "recovery-records-unreadable")?;
@@ -206,14 +243,13 @@ fn update_at(
     if !change(&mut records) {
         return Ok(false);
     }
-    let bytes = crate::ledger::encode(
-        &Doc {
-            v: VERSION,
-            records,
-        },
-        LABEL,
-    )
-    .map_err(|_| "recovery-records-encode")?;
+    let v = if records.iter().any(Record::carries) {
+        VERSION_CARRIED
+    } else {
+        VERSION
+    };
+    let bytes =
+        crate::ledger::encode(&Doc { v, records }, LABEL).map_err(|_| "recovery-records-encode")?;
     crate::ledger::write_bounded(path, &bytes, MAX_BYTES, LABEL)
         .map_err(|_| "recovery-records-write")?;
     Ok(true)
@@ -405,6 +441,8 @@ pub(crate) fn observe(
         executable: standing.image,
         cwd: standing.cwd.path().to_path_buf(),
         recorded_at: (rec.now)(),
+        carried: standing.carried,
+        env: standing.env,
     };
     if !record.valid() {
         return Err("recovery-not-supported");
@@ -879,6 +917,7 @@ pub(crate) fn run(
                 (record.client.pid, record.client.birth()),
                 executable,
                 cwd,
+                (record.carried, record.env),
             )),
             Err(why) => entries.push(Recovered::refused_session(
                 card,

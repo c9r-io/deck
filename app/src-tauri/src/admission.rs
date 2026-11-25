@@ -33,7 +33,16 @@ pub(crate) fn channel_agent_command(cmd: &str) -> Option<&'static str> {
 /// like Claude's, under the scheduler's first-interaction gate for an agy
 /// row (`scheduler/select.rs` `row_agy`), and remote admission still does
 /// not list it.
+///
+/// A Claude worker may run under another Claude Code config folder (a second
+/// account, approved 2026-11-25): the command may begin with ONE
+/// `CLAUDE_CONFIG_DIR=<absolute path>` (`config_root`), followed by a command
+/// remote admission accepts as Claude. Only this name, only before `claude`,
+/// and only here: remote admission (`channel_agent_command`) never takes it.
 pub(crate) fn worker_agent_command(cmd: &str) -> Option<&'static str> {
+    if let Some((_, rest)) = config_root(cmd) {
+        return (channel_agent_command(rest) == Some("claude")).then_some("claude");
+    }
     if let Some(agent) = channel_agent_command(cmd) {
         return Some(agent);
     }
@@ -50,6 +59,30 @@ pub(crate) fn worker_agent_command(cmd: &str) -> Option<&'static str> {
                     })
             })
         })
+}
+
+/// The one environment name a worker type's command may set (Claude Code's
+/// config folder: its account, settings and sessions).
+pub(crate) const CONFIG_ROOT: &str = "CLAUDE_CONFIG_DIR";
+
+/// A worker command's leading `CLAUDE_CONFIG_DIR=<path> `: the path and the
+/// rest of the command. The path is absolute, its segments are neither
+/// empty nor `.`/`..`, and it uses the simple alphabet without `=` — so the
+/// word reaches the pane's shell as one literal assignment, with no
+/// expansion (`~`, `$`), quoting or second command. Whether the folder
+/// exists is the caller's question (`mcp::workers::validate_worker_types`).
+pub(crate) fn config_root(cmd: &str) -> Option<(&str, &str)> {
+    let (word, rest) = cmd.split_once(' ')?;
+    let path = word.strip_prefix(CONFIG_ROOT)?.strip_prefix('=')?;
+    let segments = path.strip_prefix('/')?;
+    (path.len() <= 1024
+        && segments
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./:+,@".contains(&b)))
+    .then_some((path, rest))
 }
 
 /// Deck's closed set of recognized interactive agents, by executable
@@ -101,6 +134,57 @@ pub(crate) fn strip_invisible(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Claude worker under another config folder: one literal absolute
+    /// `CLAUDE_CONFIG_DIR=` before `claude`, nowhere else and for nothing else.
+    #[test]
+    fn a_claude_worker_may_name_its_config_folder_and_nothing_else_may() {
+        let work = "CLAUDE_CONFIG_DIR=/Users/u/.claude-work claude --settings /Users/u/.claude/settings.json";
+        assert_eq!(worker_agent_command(work), Some("claude"));
+        assert_eq!(
+            config_root(work),
+            Some((
+                "/Users/u/.claude-work",
+                "claude --settings /Users/u/.claude/settings.json"
+            ))
+        );
+        assert_eq!(
+            worker_agent_command("CLAUDE_CONFIG_DIR=/w claude --model opus"),
+            Some("claude")
+        );
+        for refused in [
+            // never before another agent
+            "CLAUDE_CONFIG_DIR=/w codex --no-daemon",
+            "CLAUDE_CONFIG_DIR=/w pi",
+            "CLAUDE_CONFIG_DIR=/w agy",
+            // never a word the shell would expand or a relative folder
+            "CLAUDE_CONFIG_DIR=$HOME/.claude-work claude",
+            "CLAUDE_CONFIG_DIR=~/.claude-work claude",
+            "CLAUDE_CONFIG_DIR=.claude-work claude",
+            "CLAUDE_CONFIG_DIR= claude",
+            "CLAUDE_CONFIG_DIR=/ claude",
+            "CLAUDE_CONFIG_DIR=/a/../b claude",
+            "CLAUDE_CONFIG_DIR=/a//b claude",
+            "CLAUDE_CONFIG_DIR=/a/./b claude",
+            "CLAUDE_CONFIG_DIR=/a/ claude",
+            "CLAUDE_CONFIG_DIR='/a' claude",
+            "CLAUDE_CONFIG_DIR=/a=b claude",
+            "CLAUDE_CONFIG_DIR=/a;b claude",
+            // one assignment, only this name, never alone
+            "CLAUDE_CONFIG_DIR=/a CLAUDE_CONFIG_DIR=/b claude",
+            "ANTHROPIC_API_KEY=x claude",
+            "CLAUDE_CONFIG_DIRS=/a claude",
+            "CLAUDE_CONFIG_DIR=/a",
+            "CLAUDE_CONFIG_DIR=/a claude-work",
+            "CLAUDE_CONFIG_DIR=/a claude $(id)",
+            "claude-work",
+            "env CLAUDE_CONFIG_DIR=/a claude",
+        ] {
+            assert_eq!(worker_agent_command(refused), None, "{refused}");
+        }
+        // remote admission never takes it
+        assert_eq!(channel_agent_command("CLAUDE_CONFIG_DIR=/w claude"), None);
+    }
 
     #[test]
     fn a_worker_card_may_also_run_pi_and_nothing_else_admits_it() {

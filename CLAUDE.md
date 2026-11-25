@@ -261,7 +261,10 @@ evolution; it makes scope expansion deliberate.
   handed back); it starts only the worker types the user listed (Codex only
   with `--no-daemon`; agy, approved 2026-11-23, only while Deck's agy hooks
   entry is on, its lines typed like Claude's under agy's own
-  first-interaction gate, `agent_agy.rs`, `scheduler/select.rs` `row_agy`),
+  first-interaction gate, `agent_agy.rs`, `scheduler/select.rs` `row_agy`;
+  a Claude type perhaps under its own config folder, one literal
+  `CLAUDE_CONFIG_DIR=<absolute folder>` before `claude`, approved
+  2026-11-25, `admission::config_root`; remote admission never takes it),
   never a command it writes — it may pick one of the
   models the user listed for that type, which Deck appends as `--model`
   from the list, never a model it names (approved 2026-11-21,
@@ -508,7 +511,8 @@ Chromium testing of the mock catches none of these; verify in the real app.
   --no-daemon <native session>`) and the client's own carried launch
   options read from its launch image (Claude: ordinary permission mode,
   model, effort, settings, setting sources — never the bypass, never the
-  card's saved command), plus the bypass override only under that
+  card's saved command) after its config folder as the launch image had it
+  (`CLAUDE_CONFIG_DIR`, a second account, approved 2026-11-25), plus the bypass override only under that
   restart's Policy B, or the words that ask Codex for the ordinary profile
   under Policy A on a bypass launch. One attempt, never retried; a client is
   admitted by verified code identity, never a release list; a confirmed or
@@ -523,8 +527,9 @@ Chromium testing of the mock catches none of these; verify in the real app.
   a separate operation with its own dialog: after the shell service was
   LOST (server and client generations both gone), the user ticks cards from
   a record each Claude `SessionStart` wrote (`~/.deck/agent-recovery.json`);
-  each gets one plain `--resume <native session>` — never the bypass flag —
-  through the same post phase. Records are deleted before the launch; Codex
+  each gets `--resume <native session>` after the launch options and config
+  folder the record kept — never the bypass flag — through the same post
+  phase. Records are deleted before the launch; Codex
   is not recorded.
 - **A card is persisted only after its session started**
   (`provider.createStarted` kills the session if the write fails; a missing

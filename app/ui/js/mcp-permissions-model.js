@@ -34,6 +34,20 @@
 export const MAX_WORKER_TYPES = 8;
 const TYPE_NAME = /^[a-z0-9_-]{1,32}$/;
 const COMMAND_WORD = /^[A-Za-z0-9\-_./:=+,@]+$/;
+/* a Claude worker under its own config folder (a second account): one literal
+   absolute `CLAUDE_CONFIG_DIR=<folder>` before `claude` (twin of
+   admission.rs `config_root`); whether the folder exists only the backend
+   can say (`mcp-worker-type-config-root`) */
+const CONFIG_ROOT = /^CLAUDE_CONFIG_DIR=(\/[A-Za-z0-9\-_.:+,@]+(?:\/[A-Za-z0-9\-_.:+,@]+)*)$/;
+
+/* the command without its config folder, and the folder, or the command alone */
+function configRoot(words) {
+  const match = CONFIG_ROOT.exec(words[0] || '');
+  if (!match) return { root: null, words };
+  const root = match[1];
+  if (root.length > 1024 || root.split('/').slice(1).some(s => s === '.' || s === '..')) return { root: null, words: [] };
+  return { root, words: words.slice(1) };
+}
 export const MAX_TYPE_MODELS = 20;
 
 /* a model list as typed (separated by commas, ASCII or full-width, or by
@@ -114,11 +128,17 @@ export function workerTypesProblem(p) {
   for (const type of types) {
     if (!TYPE_NAME.test(type.name) || names.has(type.name)) return 'mcp.typeNameInvalid';
     names.add(type.name);
-    const words = type.cmd.split(' ');
+    const { root, words } = configRoot(type.cmd.split(' '));
     // a Pi worker's lines go through Deck's extension in Pi (agent_pi/handover.rs);
     // an agy worker's are typed under agy's first-interaction gate (agent_agy.rs)
-    if (!['claude', 'codex', 'pi', 'agy'].includes(words[0]) || !words.slice(1).every(word => COMMAND_WORD.test(word))) {
+    if (!['claude', 'codex', 'pi', 'agy'].includes(words[0]) || !words.slice(1).every(word => COMMAND_WORD.test(word))
+      || (root !== null && words[0] !== 'claude')) {
       return 'mcp.typeCommandInvalid';
+    }
+    // Deck's hooks are in ~/.claude: another folder needs settings of its own
+    if (root !== null && !root.endsWith('/.claude')
+      && !words.some(word => word === '--settings' || word.startsWith('--settings='))) {
+      return 'mcp.typeConfigHooks';
     }
     if (words[0] === 'codex' && !words.includes('--no-daemon')) return 'mcp.typeCodexDaemon';
     if ([...type.description].length > 200 || /\p{Cc}/u.test(type.description)) {
@@ -146,6 +166,8 @@ export function workerTypeErrorKey(error) {
   if (text.includes('mcp-worker-type-agy-signal')) return 'mcp.typeAgySignal';
   if (text.includes('mcp-worker-type-models')) return 'mcp.typeModelsInvalid';
   if (text.includes('mcp-worker-type-model-in-command')) return 'mcp.typeModelInCommand';
+  if (text.includes('mcp-worker-type-config-root')) return 'mcp.typeConfigRoot';
+  if (text.includes('mcp-worker-type-config-hooks')) return 'mcp.typeConfigHooks';
   return null;
 }
 

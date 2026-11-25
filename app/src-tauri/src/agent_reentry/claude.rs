@@ -11,8 +11,10 @@
 //! This module produces only `--resume <exact id>`, preceded by the bypass
 //! flag when the core says so. The core puts in front of them the closed
 //! carried options of `GRAMMAR.carried`, read from the old client's launch
-//! image; no directory, prompt, `--continue`, `--fork-session` or
-//! environment word can be produced, and no other observed argv is replayed.
+//! image, and the core puts before the executable the one carried
+//! environment entry (`GRAMMAR.carried_env`: the config folder); no
+//! directory, prompt, `--continue`, `--fork-session` or other environment
+//! word can be produced, and no other observed argv is replayed.
 //!
 //! # Compatibility: an identity and a narrow contract, not a list of releases
 //! Nothing here names a release. A client is admitted by FIVE separate
@@ -212,8 +214,8 @@ const RESUME: &str = "--resume";
 /// options were "launch-shape" and not offered). Anything else — a
 /// wrapper, an unknown flag, a positional prompt, a picker's search words,
 /// `--fork-session`, `--allow-dangerously-skip-permissions`,
-/// `--permission-mode bypassPermissions`, another config root, a provider
-/// or credential override — classifies as unsupported and is never
+/// `--permission-mode bypassPermissions`, a provider or credential
+/// override — classifies as unsupported and is never
 /// re-entered automatically; the preview names a flag of `named`. So does
 /// a value the request could not type as one word (empty, a control
 /// character), and setting sources that leave out the user's (where Deck's
@@ -221,6 +223,10 @@ const RESUME: &str = "--resume";
 /// receipt could arrive. What a carried settings file or JSON holds is the
 /// user's own and is NOT read: it may change the client's mode or hooks,
 /// and a re-entry is still only "entered", never a permission verified.
+/// Another config folder (`CLAUDE_CONFIG_DIR`, a worker type's second
+/// account, 2026-11-25) is carried too, typed again before the executable,
+/// and only with a `--settings` of the launch's own unless it is
+/// `~/.claude`: Deck's hooks are there (`carried_env`).
 const GRAMMAR: LaunchGrammar = LaunchGrammar {
     bypass: BYPASS,
     resume: &[RESUME, "-r"],
@@ -261,8 +267,12 @@ const GRAMMAR: LaunchGrammar = LaunchGrammar {
     ],
     switches: &["--continue", "-c"],
     directories: "--add-dir",
-    refused_env: &["CLAUDE_CONFIG_DIR"],
+    refused_env: &[],
     refused_env_prefixes: &["ANTHROPIC_", "CLAUDE_CODE_USE_", "AWS_BEARER_TOKEN_"],
+    // another config folder is another account (a worker type's second
+    // account, approved 2026-11-25): carried, and with a settings file of
+    // its own, since Deck's lifecycle hooks are in `~/.claude`
+    carried_env: Some((crate::admission::CONFIG_ROOT, ".claude")),
 };
 
 /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase hex: the one shape a
@@ -534,6 +544,45 @@ mod tests {
             ]),
             Some("--permission-mode")
         );
+    }
+
+    /// Another config folder (a second account) is carried as one
+    /// `NAME=value` entry when the launch brings settings of its own; the
+    /// default folder needs none; set twice, relative, or without settings
+    /// elsewhere it refuses the launch, named by the variable.
+    #[test]
+    fn a_config_folder_is_carried_with_settings_of_its_own() {
+        let reduce = |env: &[&str], args: &[&str]| {
+            let mut argv = vec!["claude"];
+            argv.extend_from_slice(args);
+            let mut env = env.to_vec();
+            env.push("HOME=/Users/u");
+            crate::procinfo::reduce_launch_full(&argv, &env, "/Users/u", &GRAMMAR)
+        };
+        let settings = ["--settings", "/Users/u/.claude/settings.json"];
+        let work = reduce(&["CLAUDE_CONFIG_DIR=/Users/u/.claude-work"], &settings);
+        assert_eq!(work.profile, crate::procinfo::LaunchProfile::Ordinary);
+        assert_eq!(work.env, ["CLAUDE_CONFIG_DIR=/Users/u/.claude-work"]);
+        assert_eq!(work.carried, settings);
+        let default = reduce(&["CLAUDE_CONFIG_DIR=/Users/u/.claude"], &[]);
+        assert_eq!(default.refused, None);
+        assert_eq!(default.env, ["CLAUDE_CONFIG_DIR=/Users/u/.claude"]);
+        assert_eq!(reduce(&[], &[]).env, Vec::<String>::new());
+        for (env, args) in [
+            (&["CLAUDE_CONFIG_DIR=/Users/u/.claude-work"][..], &[][..]),
+            (&["CLAUDE_CONFIG_DIR=relative"][..], &settings[..]),
+            (&["CLAUDE_CONFIG_DIR="][..], &settings[..]),
+            (
+                &["CLAUDE_CONFIG_DIR=/a", "CLAUDE_CONFIG_DIR=/b"][..],
+                &settings[..],
+            ),
+        ] {
+            assert_eq!(
+                reduce(env, args).refused,
+                Some("CLAUDE_CONFIG_DIR"),
+                "{env:?} {args:?}"
+            );
+        }
     }
 
     use super::*;

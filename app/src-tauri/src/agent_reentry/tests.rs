@@ -291,6 +291,7 @@ fn the_seal_refuses_nothing_and_says_per_card_why_an_entry_stops() {
             profile: Ordinary,
             additional_dirs: false,
             carried: Vec::new(),
+            env: Vec::new(),
             cwd: DirRef::for_tests(&std::env::temp_dir()),
             source: claude::CAPABILITY.source,
         },
@@ -414,6 +415,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
             profile: Bypass,
             additional_dirs: false,
             carried: Vec::new(),
+            env: Vec::new(),
             cwd: DirRef::for_tests(&std::env::temp_dir()),
             source: claude::CAPABILITY.source,
         },
@@ -4834,6 +4836,7 @@ fn native_step0_probe() {
             &crate::procinfo::LaunchExpectation {
                 executable,
                 words: &words,
+                env: &[],
                 home: &home,
                 grammar: capability.grammar,
                 cwd: &DirRef::for_tests(&cwd),
@@ -5646,7 +5649,7 @@ fn native_m1_transact() {
         let words = (capability.request)(ID_A, grant)
             .expect("the placeholder id")
             .words;
-        let line = launch::command_line(&client, &words).expect("a command line");
+        let line = launch::command_line(&client, &[], &words).expect("a command line");
         line.strip_suffix(ID_A).expect("the id last").to_string()
     };
     let (plain, overridden, lowered) = (
@@ -7820,6 +7823,8 @@ fn recorded(world: &World, card: &str, id: &str, server: recovery::Gen) -> recov
         executable: world.agent.clone(),
         cwd: world.base.join("cards").join(card),
         recorded_at: 1_800_000_000,
+        carried: Vec::new(),
+        env: Vec::new(),
     }
 }
 
@@ -7836,6 +7841,85 @@ fn lose_the_server(world: &World, clients: &[recovery::Gen]) {
     world
         .raw(&["start-server", ";", "set-option", "-g", "exit-empty", "off"])
         .expect("a fresh server");
+}
+
+/// A second account's session after a lost server: the record's config
+/// folder and launch options are typed again before `--resume`, and the
+/// entry is confirmed with exactly that folder.
+#[test]
+fn a_lost_second_account_session_is_recovered_on_its_own_config_folder() {
+    let world = World::new();
+    let folder = world.base.join("claude-work");
+    std::fs::create_dir_all(&folder).unwrap();
+    let folder = folder.display().to_string();
+    let settings = world.base.join("hooks.json");
+    std::fs::write(&settings, "{}").unwrap();
+    let settings = settings.display().to_string();
+    world.card(
+        "w",
+        &format!("session={ID_A}"),
+        Some(&format!(
+            "CLAUDE_CONFIG_DIR='{folder}' {{agent}} --settings '{settings}'"
+        )),
+    );
+    let old = world.server_pid();
+    let server = recovery::Gen::of(
+        old,
+        crate::procinfo::process_start(old).expect("the server's birth"),
+    );
+    let mut record = recorded(&world, "w", ID_A, server);
+    record.carried = vec!["--settings".into(), settings.clone()];
+    record.env = vec![format!("CLAUDE_CONFIG_DIR={folder}")];
+    let store = world.base.join("agent-recovery.json");
+    recovery::write_for_tests(&store, vec![record.clone()]);
+    lose_the_server(&world, &[record.client]);
+    let view = world
+        .with_env(|env| recovery::offer(env, &store))
+        .expect("an offer");
+    assert!(!serde_json::to_value(&view)
+        .unwrap()
+        .to_string()
+        .contains("claude-work"));
+    let token = view.token.clone().expect("a token");
+    let now = world.server_pid();
+    let _scope = crate::session_runtime::test_activity_scope();
+    let held = crate::session_runtime::exclusive().expect("the activity guard");
+    let approval = recovery::RecoveryApproval {
+        token,
+        cards: vec!["card-w".into()],
+    };
+    let result = world
+        .with_env(|env| {
+            recovery::run(
+                env,
+                &store,
+                "req-recover-work",
+                &approval,
+                now,
+                false,
+                &held,
+                &|_, _, _| {},
+            )
+        })
+        .expect("the recovery ran")
+        .expect("its result");
+    assert_eq!(entry(&result, "w").outcome, Outcome::Confirmed);
+    let pasted = world.pasted();
+    assert_eq!(pasted.len(), 1);
+    assert!(
+        pasted[0].starts_with(&format!("CLAUDE_CONFIG_DIR='{folder}' '")),
+        "{}",
+        pasted[0]
+    );
+    assert!(
+        pasted[0].ends_with(&format!(" --settings '{settings}' --resume {ID_A}")),
+        "{}",
+        pasted[0]
+    );
+    assert_eq!(
+        world.launches().last().unwrap(),
+        &format!("--settings {settings} --resume {ID_A}")
+    );
 }
 
 #[test]
@@ -8073,6 +8157,63 @@ fn a_worker_launch_reopens_with_its_own_launch_options() {
         &format!(
             "--permission-mode auto --effort high --settings {path} --setting-sources project --model opus --resume {ID_A}"
         )
+    );
+}
+
+/// A second account's worker (2026-11-25: a worker type
+/// `CLAUDE_CONFIG_DIR=<folder> claude --settings <file>`): the config folder
+/// is carried with its launch options, typed again as one quoted
+/// assignment before the executable, and the new client is confirmed only
+/// with exactly that folder. Without a settings file of its own, Deck's
+/// hooks are not in that folder and the launch is refused, named by it.
+#[test]
+fn a_second_account_worker_reopens_on_its_own_config_folder() {
+    let world = World::new();
+    let quoted = format!("'{}'", release(&world, NEW.0, NEW.1).display());
+    let folder = world.base.join("claude work");
+    std::fs::create_dir_all(&folder).unwrap();
+    let folder = folder.display().to_string();
+    let settings = world.base.join("hooks.json");
+    std::fs::write(&settings, "{}").unwrap();
+    let settings = settings.display().to_string();
+    world.card(
+        "work",
+        &format!("session={ID_A}"),
+        Some(&format!(
+            "CLAUDE_CONFIG_DIR='{folder}' {quoted} --settings '{settings}'"
+        )),
+    );
+    world.card(
+        "hookless",
+        &format!("session={ID_B}"),
+        Some(&format!("CLAUDE_CONFIG_DIR='{folder}' {quoted}")),
+    );
+    let (token, view) = world.preview();
+    let row = |card: &str| {
+        view["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["cardId"] == format!("card-{card}"))
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row("work")["kind"], "candidate", "{view}");
+    assert_eq!(row("hookless")["kind"], "unsupported");
+    assert_eq!(row("hookless")["launchRefused"], "CLAUDE_CONFIG_DIR");
+    let approval = world.approval(&token, &["work"], Policy::Ordinary);
+    let (_, _, result) = world.restart("req-work", &approval).expect("restart");
+    let result = result.unwrap();
+    assert_eq!(entry(&result, "work").outcome, Outcome::Confirmed);
+    assert_eq!(
+        world.pasted(),
+        [format!(
+            "CLAUDE_CONFIG_DIR='{folder}' {quoted} --settings '{settings}' --resume {ID_A}"
+        )]
+    );
+    assert_eq!(
+        world.launches().last().unwrap(),
+        &format!("--settings {settings} --resume {ID_A}")
     );
 }
 

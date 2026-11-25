@@ -401,6 +401,25 @@ pub(crate) fn smoke_native_scenario() -> Result<String, DeckError> {
         .collect())
 }
 
+/// A second Claude Code config folder the operator prepared for this run
+/// (`translation-fixture/account-root`: one absolute path), for the worker
+/// smokes of a second account: the folder when it exists and is a config
+/// folder a worker type may name (`admission::config_root`), else "".
+#[tauri::command]
+pub(crate) fn smoke_native_account_root() -> Result<String, DeckError> {
+    gate()?;
+    let text = std::fs::read_to_string(fixture_dir().join("account-root")).unwrap_or_default();
+    let root = text.trim();
+    let named =
+        crate::admission::config_root(&format!("{}={root} claude", crate::admission::CONFIG_ROOT))
+            .is_some_and(|(path, _)| path == root);
+    Ok(if named && std::path::Path::new(root).is_dir() {
+        root.to_owned()
+    } else {
+        String::new()
+    })
+}
+
 /// Where the isolated driver placed the deterministic `/copy` CLI fixture.
 #[tauri::command]
 pub(crate) fn smoke_native_fixture() -> Result<String, DeckError> {

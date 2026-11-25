@@ -78,6 +78,8 @@ fn record(card: &str, native_id: &str, client: Gen) -> Record {
         executable: "/Applications/claude".into(),
         cwd: "/work".into(),
         recorded_at: 1_800_000_000,
+        carried: Vec::new(),
+        env: Vec::new(),
     }
 }
 
@@ -89,6 +91,8 @@ struct Fake {
     cards: RefCell<Option<Vec<(String, String)>>>,
     now_table: RefCell<ProcessTable>,
     standing: Cell<bool>,
+    /// What the standing client's launch carries (words, environment).
+    carries: RefCell<(Vec<String>, Vec<String>)>,
     alive: RefCell<Vec<Gen>>,
 }
 
@@ -100,6 +104,7 @@ impl Fake {
             cards: RefCell::new(Some(vec![("A".into(), "deck-A".into())])),
             now_table: RefCell::new(table(CLIENT)),
             standing: Cell::new(true),
+            carries: RefCell::new((Vec::new(), Vec::new())),
             alive: RefCell::new(vec![Gen::of(SERVER, (5, 0)), client()]),
         }
     }
@@ -117,6 +122,8 @@ impl Fake {
             self.standing.get().then(|| StandingClient {
                 image: "/Applications/claude".into(),
                 cwd: DirRef::for_tests(Path::new("/work")),
+                carried: self.carries.borrow().0.clone(),
+                env: self.carries.borrow().1.clone(),
             })
         };
         let liveness = |g: Gen| {
@@ -368,6 +375,58 @@ fn one_record_per_card_client_and_session_and_the_oldest_goes_when_full() {
     assert!(full.iter().any(|r| r.card_id == "new"));
 }
 
+/// A second account's client (its config folder and the settings that
+/// bring Deck's hooks): the record keeps both, the file takes the carrying
+/// version only while a record carries anything, and a record whose folder
+/// is not an absolute path makes the file unusable.
+#[test]
+fn a_record_keeps_the_launch_options_and_config_folder_it_reopens_with() {
+    let fake = Fake::new();
+    let carried = vec![
+        "--settings".to_string(),
+        "/Users/u/.claude/settings.json".to_string(),
+    ];
+    let env = vec!["CLAUDE_CONFIG_DIR=/Users/u/.claude-work".to_string()];
+    *fake.carries.borrow_mut() = (carried.clone(), env.clone());
+    assert_eq!(
+        fake.observe(start(StartSource::Startup), ID),
+        Ok("recorded")
+    );
+    let kept = &fake.records()[0];
+    assert_eq!((&kept.carried, &kept.env), (&carried, &env));
+    let version = |path: &Path| {
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()["v"]
+            .clone()
+    };
+    assert_eq!(version(&fake.store()), 2, "a carrying record");
+    // the carrying record gone, the file is plain again
+    assert_eq!(
+        fake.observe(end(EndReason::PromptInputExit), ID),
+        Ok("ended")
+    );
+    *fake.carries.borrow_mut() = (Vec::new(), Vec::new());
+    assert_eq!(fake.observe(start(StartSource::Resume), ID), Ok("recorded"));
+    assert_eq!(version(&fake.store()), 1);
+    for bad in [
+        "CLAUDE_CONFIG_DIR=relative",
+        "CLAUDE_CONFIG_DIR=",
+        "ANTHROPIC_BASE_URL=/x",
+    ] {
+        let mut record = record("A", ID, client());
+        record.env = vec![bad.to_string()];
+        std::fs::write(
+            fake.store(),
+            serde_json::to_vec(&serde_json::json!({"v": 2, "records": [record]})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            load_at(&fake.store()),
+            Err("recovery-records-unreadable"),
+            "{bad}"
+        );
+    }
+}
+
 #[test]
 fn a_file_that_cannot_be_used_is_left_untouched_and_used_for_nothing() {
     let dir = TestDir::new("agent-recovery-load");
@@ -382,7 +441,7 @@ fn a_file_that_cannot_be_used_is_left_untouched_and_used_for_nothing() {
     );
     for (bytes, reason) in [
         (
-            r#"{"v":2,"records":[]}"#.to_string(),
+            r#"{"v":3,"records":[]}"#.to_string(),
             "recovery-records-future",
         ),
         ("not json".to_string(), "recovery-records-unreadable"),

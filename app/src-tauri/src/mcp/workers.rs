@@ -15,7 +15,10 @@
 //!   Deck's agy hooks entry is on, `agy`, with simple arguments,
 //!   `validate_worker_types`; a Pi worker's lines are handed to Pi by Deck's
 //!   observer, never typed: `agent_pi::handover`; an agy worker's are typed
-//!   under agy's first-interaction gate: `agent_agy`)
+//!   under agy's first-interaction gate: `agent_agy`; a Claude command may
+//!   begin with one literal `CLAUDE_CONFIG_DIR=<absolute folder>`, a second
+//!   account, approved 2026-11-25: `admission::config_root`,
+//!   `config_root_problem`, carried again by re-entry and crash recovery)
 //!   and a description the orchestrator reads, optionally with the models
 //!   a start may choose (`models`: single simple arguments, at most
 //!   `MAX_TYPE_MODELS`, only on a command that names no model itself).
@@ -85,16 +88,16 @@ pub(super) const WORKER_CLOSE_KIND: &str = "worker-close";
 /// Worker cards one orchestrator card (or the client's callers from no
 /// card, together) may have on the Board at once; a start beyond it is
 /// refused (`CAPACITY_EXCEEDED`).
-pub(super) const MAX_LIVE_WORKERS: usize = 8;
+pub(super) const MAX_LIVE_WORKERS: usize = 16;
 /// Worker cards one client may have on the Board at once, all its
 /// orchestrator cards together.
-pub(super) const MAX_CLIENT_WORKERS: usize = 32;
+pub(super) const MAX_CLIENT_WORKERS: usize = 64;
 /// Worker records kept in all (closed cards are pruned first).
 const MAX_WORKER_RECORDS: usize = 256;
 /// Unsent delegated lines one card may hold.
 const MAX_UNSENT_PER_CARD: usize = 4;
 /// Sends one client may make per minute.
-const SENDS_PER_MINUTE: usize = 30;
+const SENDS_PER_MINUTE: usize = 60;
 /// The longest line a client may send.
 pub(super) const MAX_SEND_BYTES: usize = 16 * 1024;
 /// Recent send operations reported per card.
@@ -296,12 +299,14 @@ pub(super) fn room_for_worker(
         )
     };
     if own + pending_own >= MAX_LIVE_WORKERS {
-        return Err(full(
-            "this orchestrator already has 8 worker cards on the Board",
-        ));
+        return Err(full(&format!(
+            "this orchestrator already has {MAX_LIVE_WORKERS} worker cards on the Board"
+        )));
     }
     if live.len() + pending >= MAX_CLIENT_WORKERS {
-        return Err(full("this client already has 32 worker cards on the Board"));
+        return Err(full(&format!(
+            "this client already has {MAX_CLIENT_WORKERS} worker cards on the Board"
+        )));
     }
     Ok(())
 }
@@ -660,10 +665,13 @@ pub(super) fn worker_wait(
 ) -> Result<Value, Value> {
     let args: WorkerWaitArgs = parse(arguments)?;
     let wait = args.wait_ms.unwrap_or(DEFAULT_WAIT_MS);
-    if wait > MAX_WAIT_MS || args.cards.is_empty() || args.cards.len() > MAX_LIVE_WORKERS * 4 {
+    // one wait may follow every worker card the client may have
+    if wait > MAX_WAIT_MS || args.cards.is_empty() || args.cards.len() > MAX_CLIENT_WORKERS {
         return Err(error_value(
             "INVALID_ARGUMENTS",
-            "cards must name 1 to 32 worker cards and wait_ms be at most 5000",
+            &format!(
+                "cards must name 1 to {MAX_CLIENT_WORKERS} worker cards and wait_ms be at most {MAX_WAIT_MS}"
+            ),
             "Name the cards and episodes deck_worker_list returned; call again after a timeout.",
         ));
     }
@@ -761,7 +769,7 @@ pub(super) fn worker_reply(
         error_value(
             "REPLY_GONE",
             "Deck holds no final message for that turn ending",
-            "Only Claude Code, Codex and Pi turn endings Deck saw since it started are kept (the newest 32), Codex's and Pi's only while the user lets Deck forward them; ask the worker to write durable results to a file instead.",
+            "Only Claude Code, Codex and Pi turn endings Deck saw since it started are kept (the newest 64), Codex's and Pi's only while the user lets Deck forward them; ask the worker to write durable results to a file instead.",
         )
     };
     let target = crate::documents::card_targets(false)
@@ -1375,6 +1383,27 @@ pub(super) const TYPE_PI_OBSERVER: &str = "mcp-worker-type-pi-observer";
 pub(super) const TYPE_AGY_SIGNAL: &str = "mcp-worker-type-agy-signal";
 pub(super) const TYPE_MODELS_INVALID: &str = "mcp-worker-type-models";
 pub(super) const TYPE_MODEL_IN_COMMAND: &str = "mcp-worker-type-model-in-command";
+pub(super) const TYPE_CONFIG_ROOT: &str = "mcp-worker-type-config-root";
+pub(super) const TYPE_CONFIG_HOOKS: &str = "mcp-worker-type-config-hooks";
+
+/// A Claude worker type's own config folder (`admission::config_root`):
+/// a folder that exists now, and — unless it is `~/.claude` itself, where
+/// Deck's hooks are (`agent_status/hooks.rs`) — a `--settings` of the
+/// command's own, or that Claude would load none of Deck's hooks: no Agent
+/// status, so its lines would never go out and its orchestrator would
+/// never see a turn end. What the settings file holds is the user's.
+fn config_root_problem(cmd: &str) -> Option<&'static str> {
+    let (root, rest) = crate::admission::config_root(cmd)?;
+    let root = std::path::Path::new(root);
+    if !root.is_dir() {
+        return Some(TYPE_CONFIG_ROOT);
+    }
+    let default = dirs::home_dir().is_some_and(|home| home.join(".claude") == root);
+    let settings = rest
+        .split(' ')
+        .any(|word| word == "--settings" || word.starts_with("--settings="));
+    (!default && !settings).then_some(TYPE_CONFIG_HOOKS)
+}
 
 /// Models one worker type may list, and the longest entry.
 pub(super) const MAX_TYPE_MODELS: usize = 20;
@@ -1423,7 +1452,8 @@ fn valid_type_name(name: &str) -> bool {
 
 /// A worker type list as the user saved it: at most `MAX_WORKER_TYPES`,
 /// unique names, each command one the external admission accepts (an
-/// interactive `claude` or `codex` with simple arguments), a Codex command
+/// interactive `claude` or `codex` with simple arguments, a Claude one
+/// perhaps under its own config folder: `config_root_problem`), a Codex command
 /// only with `--no-daemon` (its shared-daemon Signal cannot be trusted, so its
 /// lines would never go out), a short one-line description.
 pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckError> {
@@ -1438,6 +1468,9 @@ pub(super) fn validate_worker_types(types: &[WorkerType]) -> Result<(), DeckErro
         }
         let agent = crate::admission::worker_agent_command(&worker_type.cmd)
             .ok_or_else(|| invalid(TYPE_COMMAND_INVALID))?;
+        if let Some(problem) = config_root_problem(&worker_type.cmd) {
+            return Err(invalid(problem));
+        }
         // a Pi worker's lines go through Deck's observer in that Pi: without
         // Pi's work status turned on there is none (`agent_pi::handover`)
         if agent == crate::agent_pi::PROCESS && !crate::agent_pi::config::enabled().signal {

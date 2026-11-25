@@ -3545,6 +3545,21 @@ export async function verifyAgyTrust() {
   await runWorkersSmoke({ agyTrusting: true });
 }
 
+// A Claude worker type under a second config folder (a second account):
+// the `types` run with `CLAUDE_CONFIG_DIR=<folder> claude …`
+// (workers-smoke.mjs, scenario `account`).
+export async function verifyWorkersAccount() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ accounting: true });
+}
+
+// One orchestrator's worker capacity: exactly that many worker cards, the
+// next start refused (workers-smoke.mjs `capacityRun`).
+export async function verifyWorkersCapacity() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ capacity: true });
+}
+
 // Each place a refused credential or a failed check says why, in the real
 // webview, kept as evidence/uxf-*.png (ux-failures-smoke.mjs).
 export async function verifyUxFailures() {
@@ -3565,7 +3580,7 @@ export async function verifyOrchestrators() {
 }
 
 /* `reentry-shapes`: which launch commands of a real Claude Code a restart's
-   re-entry preview accepts. Seven plain-shell cards, each typed one command
+   re-entry preview accepts. Nine plain-shell cards, each typed one command
    a worker card's Agent rule or worker type might carry, then ONE preview
    (read-only: nothing restarts). Each must be a candidate (a=1); otherwise
    a=-2 unidentified (`launch-shape` in app.log), -3 a shell (the client did
@@ -3589,6 +3604,16 @@ export async function verifyReentryShapes() {
     ['shape-setting-sources', 'claude --setting-sources user,project'],
     ['shape-settings', "claude --settings {}"],
   ];
+  /* a second account's worker (2026-11-25): its config folder is carried
+     with a settings file of its own, and refused without one (Deck's hooks
+     are in ~/.claude); the folder is `<fixture>/account-root`'s, which
+     need not be signed in: the preview reads only how the client started */
+  const account = await inv('smoke_native_account_root').catch(() => '');
+  const refusedShapes = new Set(['shape-account-hookless']);
+  if (account) {
+    shapes.push(['shape-account', `CLAUDE_CONFIG_DIR=${account} claude --settings {}`]);
+    shapes.push(['shape-account-hookless', `CLAUDE_CONFIG_DIR=${account} claude`]);
+  }
   const project = provider.projects()[0];
   const cards = [];
   for (const [name, cmd] of shapes) {
@@ -3601,11 +3626,13 @@ export async function verifyReentryShapes() {
   try { preview = await inv('agent_reentry_preview'); } catch (_) { preview = null; }
   for (const [index, [name, card]] of cards.entries()) {
     const row = preview?.entries?.find(entry => entry.cardId === card.id);
-    const a = !row ? 4 : row.kind === 'candidate' ? 1 : row.reason === 'identity-unavailable' ? 2 : row.kind === 'shell' ? 3 : 4;
+    const refusedRight = refusedShapes.has(name) && row?.kind === 'unsupported' && row.launchRefused === 'CLAUDE_CONFIG_DIR';
+    const a = !row ? 4 : refusedShapes.has(name) ? (refusedRight ? 1 : 4)
+      : row.kind === 'candidate' ? 1 : row.reason === 'identity-unavailable' ? 2 : row.kind === 'shell' ? 3 : 4;
     if (a !== 1) failed = true;
     await report(name, a === 1 ? 1 : -a, index);
   }
-  await report('done', preview && !failed ? 1 : -1, cards.length);
+  await report('done', preview && account && !failed ? 1 : -1, cards.length);
 }
 
 export async function verifyProjects() {

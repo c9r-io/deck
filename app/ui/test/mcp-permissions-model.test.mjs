@@ -90,7 +90,29 @@ test('the default types are Claude and Codex, without a column; refusals map to 
   assert.equal(workerTypeErrorKey('mcp-worker-type-command'), 'mcp.typeCommandInvalid');
   assert.equal(workerTypeErrorKey('mcp-worker-type-pi-observer'), 'mcp.typePiObserver');
   assert.equal(workerTypeErrorKey('mcp-worker-type-list'), 'mcp.typeListInvalid');
+  assert.equal(workerTypeErrorKey('mcp-worker-type-config-root'), 'mcp.typeConfigRoot');
+  assert.equal(workerTypeErrorKey('mcp-worker-type-config-hooks'), 'mcp.typeConfigHooks');
   assert.equal(workerTypeErrorKey('other'), null);
+});
+
+test('a Claude worker type may name its own config folder (a second account), never an alias', () => {
+  const problem = cmd => workerTypesProblem({ allowWorkers: true, workerTypes: [{ name: 'work', cmd, description: 'x' }] });
+  const settings = '--settings /Users/u/.claude/settings.json';
+  assert.equal(problem(`CLAUDE_CONFIG_DIR=/Users/u/.claude-work claude ${settings}`), null);
+  assert.equal(problem('CLAUDE_CONFIG_DIR=/Users/u/.claude claude'), null, 'the default folder has Deck’s hooks');
+  assert.equal(problem('CLAUDE_CONFIG_DIR=/Users/u/.claude-work claude'), 'mcp.typeConfigHooks');
+  for (const cmd of [
+    'claude-work',
+    `CLAUDE_CONFIG_DIR=~/.claude-work claude ${settings}`,
+    `CLAUDE_CONFIG_DIR=$HOME/.claude-work claude ${settings}`,
+    `CLAUDE_CONFIG_DIR=/a/../b claude ${settings}`,
+    `CLAUDE_CONFIG_DIR=/a//b claude ${settings}`,
+    'CLAUDE_CONFIG_DIR=/a codex --no-daemon',
+    'CLAUDE_CONFIG_DIR=/a',
+    'ANTHROPIC_API_KEY=x claude',
+  ]) {
+    assert.equal(problem(cmd), 'mcp.typeCommandInvalid', cmd);
+  }
 });
 
 test('the row says what the client may do, nothing once revoked', () => {

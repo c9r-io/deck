@@ -40,7 +40,7 @@ use tauri::Emitter;
 
 pub(super) const MAX_REPORT_BYTES: usize = 8 * 1024;
 pub(super) const MAX_PER_CARD: usize = 4;
-pub(super) const MAX_TOTAL_BYTES: usize = 512 * 1024;
+pub(super) const MAX_TOTAL_BYTES: usize = 2 * 1024 * 1024;
 const REPORTS_PER_MINUTE: usize = 6;
 
 /// One recorded report of one worker card.

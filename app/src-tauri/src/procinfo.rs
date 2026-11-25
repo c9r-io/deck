@@ -863,6 +863,15 @@ pub(crate) struct LaunchGrammar {
     /// necessary context unprovable (their values are never read).
     pub(crate) refused_env: &'static [&'static str],
     pub(crate) refused_env_prefixes: &'static [&'static str],
+    /// One environment name whose value is CARRIED (`Reduced::env`), with
+    /// the folder under the home that is the client's own default for it:
+    /// the request sets it again exactly as the launch image had it, and
+    /// the started client must have exactly that, or none when none was
+    /// carried (`judge_launch`). It is set at most once, to an absolute path
+    /// the request can type; a value other than the default needs the
+    /// `sources` rescue flag carried too (Deck's lifecycle hooks are in the
+    /// default folder), or the launch is refused, named by this name.
+    pub(crate) carried_env: Option<(&'static str, &'static str)>,
 }
 
 /// How an exact client was started. Never its current or final permission.
@@ -931,6 +940,7 @@ fn environment_supported(env: &[&str], home: &str, grammar: &LaunchGrammar) -> b
 
 /// The closed reduction of one launch image: its profile and whether a
 /// directory flag was present. Pure.
+#[cfg(test)]
 fn reduce_launch(
     argv: &[&str],
     env: &[&str],
@@ -950,9 +960,48 @@ pub(crate) struct Reduced {
     /// The carried flags and their values, in launch order, as separate
     /// words (`--flag`, `value`): what the request types again.
     pub(crate) carried: Vec<String>,
+    /// The carried environment entry (`LaunchGrammar::carried_env`), as
+    /// `NAME=value`, when the launch set it: what the request sets again.
+    pub(crate) env: Vec<String>,
     /// For `Unsupported`: the closed name of what refused it — a flag of the
-    /// grammar, `other-flag`, `positional` or `environment`.
+    /// grammar, `other-flag`, `positional`, `environment`, or the carried
+    /// environment name.
     pub(crate) refused: Option<&'static str>,
+}
+
+/// The carried environment entry of one launch environment
+/// (`LaunchGrammar::carried_env`), or the name that refuses it: set twice,
+/// to a value the request could not type as one absolute path, or to a
+/// folder other than the default with no rescue flag in `carried`.
+fn carried_environment(
+    env: &[&str],
+    home: &str,
+    grammar: &LaunchGrammar,
+    carried: &[String],
+) -> Result<Vec<String>, &'static str> {
+    let Some((name, default)) = grammar.carried_env else {
+        return Ok(Vec::new());
+    };
+    let mut values = env
+        .iter()
+        .filter_map(|entry| entry.split_once('='))
+        .filter(|(seen, _)| *seen == name)
+        .map(|(_, value)| value);
+    let Some(value) = values.next() else {
+        return Ok(Vec::new());
+    };
+    let typeable =
+        value.starts_with('/') && value.len() <= 1024 && !value.chars().any(char::is_control);
+    if values.next().is_some() || !typeable {
+        return Err(name);
+    }
+    let rescued = grammar
+        .sources
+        .is_some_and(|(_, _, rescue)| carried.chunks(2).any(|pair| pair[0] == rescue));
+    if std::path::Path::new(value) != std::path::Path::new(home).join(default) && !rescued {
+        return Err(name);
+    }
+    Ok(vec![format!("{name}={value}")])
 }
 
 /// The grammar's own spelling of `flag`, or `other-flag`: a closed word.
@@ -981,6 +1030,7 @@ pub(crate) fn reduce_launch_full(
         profile: LaunchProfile::Unsupported,
         additional_dirs: false,
         carried: Vec::new(),
+        env: Vec::new(),
         refused: Some(why),
     };
     let mut carried: Vec<String> = Vec::new();
@@ -1088,6 +1138,10 @@ pub(crate) fn reduce_launch_full(
     if !environment_supported(env, home, grammar) {
         return refuse("environment");
     }
+    let carried_env = match carried_environment(env, home, grammar, &carried) {
+        Ok(entries) => entries,
+        Err(name) => return refuse(name),
+    };
     let profile = if bypass {
         LaunchProfile::Bypass
     } else {
@@ -1097,6 +1151,7 @@ pub(crate) fn reduce_launch_full(
         profile,
         additional_dirs: directories,
         carried,
+        env: carried_env,
         refused: None,
     }
 }
@@ -1534,6 +1589,8 @@ pub(crate) struct ClientQualification {
     pub(crate) additional_dirs: bool,
     /// The carried launch words (`Reduced::carried`).
     pub(crate) carried: Vec<String>,
+    /// The carried environment entry (`Reduced::env`).
+    pub(crate) env: Vec<String>,
     /// What refused an `Unsupported` launch (`Reduced::refused`).
     pub(crate) refused: Option<&'static str>,
     pub(crate) cwd: Option<DirRef>,
@@ -1646,6 +1703,7 @@ pub(crate) fn qualify_client(
             profile: LaunchProfile::Unknown,
             additional_dirs: false,
             carried: Vec::new(),
+            env: Vec::new(),
             refused: None,
         },
     };
@@ -1658,6 +1716,7 @@ pub(crate) fn qualify_client(
         profile: reduced.profile,
         additional_dirs: reduced.additional_dirs,
         carried: reduced.carried,
+        env: reduced.env,
         refused: reduced.refused,
         cwd,
     })
@@ -1678,14 +1737,17 @@ pub(crate) fn runs_product(pid: u32, birth: (u64, u32), product: &ProductIdentit
 }
 
 /// What a crash-recovery record keeps of one running client
-/// (`agent_reentry::recovery`): the real path of the file it runs and its
-/// working directory. No digest and no code identity: the file is read and
-/// validated in full only when a recovery is confirmed, because the process
-/// this was read from will not exist then.
+/// (`agent_reentry::recovery`): the real path of the file it runs, its
+/// working directory and what its launch carries (`Reduced::carried`,
+/// `Reduced::env`: never the bypass). No digest and no code identity: the
+/// file is read and validated in full only when a recovery is confirmed,
+/// because the process this was read from will not exist then.
 #[derive(Debug)]
 pub(crate) struct StandingClient {
     pub(crate) image: std::path::PathBuf,
     pub(crate) cwd: DirRef,
+    pub(crate) carried: Vec<String>,
+    pub(crate) env: Vec<String>,
 }
 
 /// The process `pid` born at `birth`, while it runs: valid code of the
@@ -1710,13 +1772,20 @@ pub(crate) fn standing_client(
     }
     let args = procargs2(pid)?;
     let (_, argv, env) = parse_procargs2_image(&args)?;
-    let (profile, _) = reduce_launch(&argv, &env, spec.home.to_str()?, spec.grammar);
-    if !matches!(profile, LaunchProfile::Ordinary | LaunchProfile::Bypass) {
+    let reduced = reduce_launch_full(&argv, &env, spec.home.to_str()?, spec.grammar);
+    if !matches!(
+        reduced.profile,
+        LaunchProfile::Ordinary | LaunchProfile::Bypass
+    ) {
         return None;
     }
     let cwd = working_dir(pid)?;
-    (alive() && image_path(pid).as_deref() == Some(image.as_path()))
-        .then_some(StandingClient { image, cwd })
+    (alive() && image_path(pid).as_deref() == Some(image.as_path())).then_some(StandingClient {
+        image,
+        cwd,
+        carried: reduced.carried,
+        env: reduced.env,
+    })
 }
 
 /// The one place the running-product question is asked, always through its
@@ -1734,6 +1803,9 @@ pub(crate) struct LaunchExpectation<'a> {
     pub(crate) executable: &'a ExecutableRef,
     /// The argument words of the one request this operation typed, in order.
     pub(crate) words: &'a [String],
+    /// The carried environment entry the request set (`Reduced::env`): the
+    /// started client must have exactly it, or none.
+    pub(crate) env: &'a [String],
     pub(crate) home: &'a std::path::Path,
     /// For the environment names whose presence is refused.
     pub(crate) grammar: &'a LaunchGrammar,
@@ -1792,6 +1864,17 @@ fn judge_launch(argv: &[&str], env: &[&str], expect: &LaunchExpectation<'_>) -> 
     }
     if !environment_supported(env, home, expect.grammar) {
         return LaunchCheck::OtherEnvironment;
+    }
+    // the carried name as the request set it, once — or absent when the
+    // request set none: a startup file that set it otherwise is another
+    // context
+    if let Some((name, _)) = expect.grammar.carried_env {
+        let seen = env
+            .iter()
+            .filter(|entry| entry.split_once('=').is_some_and(|(seen, _)| seen == name));
+        if !seen.copied().eq(expect.env.iter().map(String::as_str)) {
+            return LaunchCheck::OtherEnvironment;
+        }
     }
     LaunchCheck::Matches
 }
@@ -1932,7 +2015,8 @@ pub(crate) fn generation_liveness(pid: u32, birth: (u64, u32)) -> Liveness {
 
 /// Whether THIS process's environment — the baseline every tmux server and
 /// pane Deck starts inherits — carries exactly `home` and none of the names
-/// the grammar refuses. Names only, and HOME's value; nothing is returned
+/// the grammar refuses, nor its carried name (a config folder is one
+/// client's launch, never what Deck hands every pane). Names only, and HOME's value; nothing is returned
 /// or kept. A baseline is not the context a shell's startup files leave
 /// behind: it proves what Deck handed over, not what a client inherits.
 pub(crate) fn own_baseline_supported(home: &std::path::Path, grammar: &LaunchGrammar) -> bool {
@@ -1950,7 +2034,12 @@ pub(crate) fn own_baseline_supported(home: &std::path::Path, grammar: &LaunchGra
         })
         .collect();
     let entries: Vec<&str> = entries.iter().map(String::as_str).collect();
-    environment_supported(&entries, home, grammar)
+    let carried = grammar.carried_env.is_some_and(|(name, _)| {
+        entries
+            .iter()
+            .any(|entry| entry.split_once('=').is_some_and(|(seen, _)| seen == name))
+    });
+    !carried && environment_supported(&entries, home, grammar)
 }
 
 /// The user's login shell as the account database names it (what tmux
@@ -2528,6 +2617,7 @@ mod tests {
         directories: "--add-dir",
         refused_env: &["CLAUDE_CONFIG_DIR"],
         refused_env_prefixes: &["ANTHROPIC_"],
+        carried_env: None,
     };
     const UUID: &str = "731c5908-251a-4388-b3a3-4719ad442bce";
     const HOME: &[&str] = &["PATH=/usr/bin", "HOME=/Users/u", "TERM=xterm"];
@@ -2714,6 +2804,59 @@ mod tests {
         );
     }
 
+    /// A carried environment entry is part of the expectation: the started
+    /// client has exactly the entry the request set, once, or — none set —
+    /// none at all.
+    #[test]
+    fn a_launch_matches_only_with_exactly_the_carried_environment_entry() {
+        const ID: &str = "731c5908-251a-4388-b3a3-4719ad442bce";
+        let carrying = LaunchGrammar {
+            refused_env: &[],
+            carried_env: Some(("CLAUDE_CONFIG_DIR", ".claude")),
+            ..GRAMMAR
+        };
+        let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let executable = ExecutableRef::for_tests(&exe);
+        let cwd = DirRef::for_tests(std::path::Path::new("/"));
+        let words = vec!["--resume".to_string(), ID.to_string()];
+        let judge = |env: &[&str], carried: &[&str]| {
+            let carried: Vec<String> = carried.iter().map(|e| e.to_string()).collect();
+            judge_launch(
+                &["c", "--resume", ID],
+                env,
+                &LaunchExpectation {
+                    executable: &executable,
+                    words: &words,
+                    env: &carried,
+                    home: std::path::Path::new("/Users/u"),
+                    grammar: &carrying,
+                    cwd: &cwd,
+                },
+            )
+        };
+        let work = "CLAUDE_CONFIG_DIR=/Users/u/.claude-work";
+        assert_eq!(
+            judge(&["HOME=/Users/u", work], &[work]),
+            LaunchCheck::Matches
+        );
+        assert_eq!(judge(&["HOME=/Users/u"], &[]), LaunchCheck::Matches);
+        for (env, carried) in [
+            (&["HOME=/Users/u"][..], &[work][..]),
+            (&["HOME=/Users/u", work][..], &[][..]),
+            (
+                &["HOME=/Users/u", "CLAUDE_CONFIG_DIR=/elsewhere"][..],
+                &[work][..],
+            ),
+            (&["HOME=/Users/u", work, work][..], &[work][..]),
+        ] {
+            assert_eq!(
+                judge(env, carried),
+                LaunchCheck::OtherEnvironment,
+                "{env:?} {carried:?}"
+            );
+        }
+    }
+
     /// The post-launch check is the exact request, not a profile: the same
     /// words in the same order, nothing added, nothing missing.
     #[test]
@@ -2732,6 +2875,7 @@ mod tests {
                 &LaunchExpectation {
                     executable: &executable,
                     words: &wanted,
+                    env: &[],
                     home: std::path::Path::new("/Users/u"),
                     grammar: &GRAMMAR,
                     cwd: &cwd,
@@ -2826,6 +2970,7 @@ mod tests {
                 &LaunchExpectation {
                     executable,
                     words,
+                    env: &[],
                     home: &home,
                     grammar: &open,
                     cwd,
@@ -3279,6 +3424,7 @@ mod tests {
                     &LaunchExpectation {
                         executable: &reference,
                         words: &words,
+                        env: &[],
                         home: std::path::Path::new("/nonexistent"),
                         grammar: &GRAMMAR,
                         cwd: &cwd,

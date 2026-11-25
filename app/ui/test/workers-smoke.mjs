@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -65,6 +65,34 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
      dialog, as the person does: approve, save and edit, reject, and the
      fourth is withdrawn with the choice. Then the choice is granted again
      for a real agent's own draft, which the page approves (`done` b=4). */
+  /* `workers-capacity`: one client, one Claude worker type and no
+     first-send choice (no worker ever takes a turn); the scripted client
+     (scripts/mcp-capacity-e2e.py) starts one more worker than an
+     orchestrator may have and is refused the last. The page sees exactly
+     that many worker cards, still that many 30 s later, and closes them
+     (`done` b=4). */
+  const CAPACITY = 16;
+  const capacityRun = async ({ project, work }) => {
+    await inv('mcp_enable');
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: false,
+        workerTypes: [{ name: 'claude', cmd: 'claude --setting-sources project', description: 'Write code' }], workerFirstSend: false } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady && status.clients.some(value => value.id === client.id && value.allowWorkers) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed);
+    await report('workers-armed', true);
+    const full = await until(() => (workerCards().length >= CAPACITY ? workerCards() : null), 900_000, 1000);
+    await report('capacity-cards', !!full && full.length === CAPACITY, 1, workerCards().length);
+    await pause(30_000);
+    await report('capacity-held', workerCards().length === CAPACITY, 1, workerCards().length);
+    let closed = 0;
+    for (const value of workerCards()) if (await provider.close(value.id)) closed += 1;
+    await report('capacity-closed', closed === CAPACITY && workerCards().length === 0, 1, closed);
+    await report('done', !failed, 1, 4);
+  };
+
   const drafts = async ({ project, column, work }) => {
     const { showAttention } = await import('../js/attention.js');
     const { pendingNow, refreshProposals, drafter } = await import('../js/proposals.js');
@@ -745,23 +773,31 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
-      : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : agyTrusting ? 'agy-trust' : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes'].includes(scenario)) throw new Error('scenario');
+      : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : agyTrusting ? 'agy-trust'
+        : accounting ? 'account' : capacity ? 'capacity' : await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex', 'types', 'account', 'capacity', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
        worker with deck_worker_start (part A only, `done` b=3) */
-    const types = scenario === 'types';
+    /* `workers-account`: `types` with the Claude worker type under a
+       second config folder (a second account the operator signed in,
+       `<fixture>/account-root` naming it): `CLAUDE_CONFIG_DIR=<folder>
+       claude …`, its hooks from the fixture's settings file */
+    const types = scenario === 'types' || scenario === 'account';
     const marker = await inv('smoke_native_fixture');
     const fixture = marker.slice(0, marker.lastIndexOf('/'));
     const work = fixture + '/work';
+    const account = scenario === 'account' ? await inv('smoke_native_account_root') : '';
+    if (scenario === 'account' && !account) throw new Error('account-root');
     /* only the fixture's hooks: the user's own settings may carry another
        Deck's hooks, whose second turn ending would be dropped as a duplicate
        and take the forwarded reply with it */
     const cmd = codex ? 'codex --no-daemon'
-      : `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
+      : `${account ? `CLAUDE_CONFIG_DIR=${account} ` : ''}claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
     const project = provider.projects()[0];
     const column = project.columns[0];
+    if (scenario === 'capacity') { await capacityRun({ project, work }); return; }
     if (scenario === 'drafts') { await drafts({ project, column, work }); return; }
     if (scenario === 'mentions') { await mentionsRun({ project, column, work }); return; }
     if (scenario === 'cards') { await cardsRun({ project, column, work, fixture }); return; }

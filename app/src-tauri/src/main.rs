@@ -229,6 +229,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("cards-mcp", "m.verifyCardsMcp()"),
     ("notes-mcp", "m.verifyNotesMcp()"),
     ("agy-trust", "m.verifyAgyTrust()"),
+    ("workers-account", "m.verifyWorkersAccount()"),
+    ("workers-capacity", "m.verifyWorkersCapacity()"),
     ("orchestrators", "m.verifyOrchestrators()"),
     ("projects", "m.verifyProjects()"),
     ("reentry-shapes", "m.verifyReentryShapes()"),
@@ -679,6 +681,7 @@ fn main() {
             smoke_native::smoke_pasteboard_audit,
             smoke_native::smoke_native_fixture_receipt,
             smoke_native::smoke_native_scenario,
+            smoke_native::smoke_native_account_root,
         ])
         .build(tauri::generate_context!())
         .expect("error while building deck")

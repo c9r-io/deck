@@ -415,8 +415,9 @@ pub(crate) fn for_episode(session: &str, episode: EpisodeId) -> Option<Note> {
         .map(|entry| entry.note.clone())
 }
 
-/// Worker replies kept, oldest dropped first.
-const KEEP_REPLIES: usize = 32;
+/// Worker replies kept, oldest dropped first: one turn ending of every
+/// worker card a client may have (`mcp::workers::MAX_CLIENT_WORKERS`).
+const KEEP_REPLIES: usize = 64;
 
 /// One worker card's final message of one turn ending, as the helper
 /// forwarded it (head and tail, `REPLY_CUT` between them when cut).

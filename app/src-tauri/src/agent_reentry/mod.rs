@@ -139,7 +139,11 @@
 //!   client's own launch image (`procinfo::Reduced::carried`: for Claude its
 //!   ordinary permission mode, model, effort, settings and setting sources),
 //!   typed again with their values, each one quoted word, so a worker card
-//!   reopens with its own hooks and settings (2026-11-11). They grant
+//!   reopens with its own hooks and settings (2026-11-11); before the
+//!   executable, the adapter's one carried environment entry as the launch
+//!   had it (`procinfo::Reduced::env`: Claude's config folder, so a second
+//!   account's card reopens on that account, 2026-11-25), which the started
+//!   client must have exactly. They grant
 //!   nothing the user's own launch did not. B (`ReapplyBypass`) is THIS restart's
 //!   explicit reauthorization: the override is added only for
 //!   selected ∩ previewed-as-bypass ∩ frozen-as-bypass entries of the same
@@ -156,7 +160,8 @@
 //!   observation or a session id never decides it, and no observed argv is
 //!   replayed beyond the adapter's closed carried options. A refused launch
 //!   names what refused it on its row (`launch_refused`: a flag of the
-//!   grammar, `other-flag`, `positional` or `environment`), never its text.
+//!   grammar, `other-flag`, `positional`, `environment` or the carried
+//!   environment name), never its text.
 //! - **No release is named.** A client is admitted by what its running code
 //!   IS, not by a list: the adapter states the product's code requirement
 //!   (`ReentryCapability::product`), and Security.framework validates it
@@ -729,6 +734,9 @@ struct Client {
     /// The launch options the request types again (`procinfo::Reduced::
     /// carried`): the client reopens as it was started.
     carried: Vec<String>,
+    /// The carried environment entry the request sets again
+    /// (`procinfo::Reduced::env`: Claude's config folder).
+    env: Vec<String>,
     cwd: DirRef,
     /// The source word of the adapter whose product this client is.
     source: &'static str,
@@ -944,6 +952,7 @@ fn inspect(env: &Env, row: &PaneRow, panes: usize, known: &[ExecutableRef]) -> I
             profile: qualified.profile,
             additional_dirs: qualified.additional_dirs,
             carried: qualified.carried,
+            env: qualified.env,
             cwd,
             source: capability.source,
         }),
@@ -1746,6 +1755,9 @@ struct RecoveredClient {
     client: (u32, Birth),
     executable: ExecutableRef,
     cwd: DirRef,
+    /// The record's carried launch words and environment entry.
+    carried: Vec<String>,
+    env: Vec<String>,
 }
 
 impl Recovered {
@@ -1756,6 +1768,7 @@ impl Recovered {
         client: (u32, Birth),
         executable: ExecutableRef,
         cwd: DirRef,
+        (carried, env): (Vec<String>, Vec<String>),
     ) -> Self {
         Self {
             card_id,
@@ -1765,6 +1778,8 @@ impl Recovered {
                 client,
                 executable,
                 cwd,
+                carried,
+                env,
             }),
             reason: None,
         }
@@ -1790,8 +1805,8 @@ impl Plan {
     /// clients are gone with their server — so every ready entry starts
     /// with its final session known and its one slot armed, and the post
     /// phase is `reopen`, exactly as after a restart. The request is the
-    /// plain resume: no bypass is granted (`bypass: false`, an `Ordinary`
-    /// profile). Without Claude's lifecycle observation nothing could
+    /// recorded launch options and config folder before the resume: no
+    /// bypass is granted (`bypass: false`, an `Ordinary` profile). Without Claude's lifecycle observation nothing could
     /// confirm an entry, so none is launched.
     pub(crate) fn recovered(
         env: &Env,
@@ -1830,9 +1845,10 @@ impl Plan {
                             executable: client.executable,
                             profile: LaunchProfile::Ordinary,
                             additional_dirs: false,
-                            // a crash record names no launch options: the
-                            // plain resume
-                            carried: Vec::new(),
+                            // the launch options and config folder the
+                            // record keeps; never the bypass
+                            carried: client.carried,
+                            env: client.env,
                             cwd: client.cwd,
                             source,
                         },
@@ -2221,7 +2237,7 @@ impl Plan {
                     env,
                     client,
                     &entry.client.executable,
-                    &entry.request,
+                    (&entry.client.env, &entry.request),
                     &entry.client.cwd,
                     capability.grammar,
                 );
@@ -2425,7 +2441,11 @@ impl Plan {
                 request
             });
         let line = request.as_ref().and_then(|request| {
-            launch::command_line(entry.client.executable.path(), &request.words)
+            launch::command_line(
+                entry.client.executable.path(),
+                &entry.client.env,
+                &request.words,
+            )
         });
         let (Some(request), Some(line)) = (request, line) else {
             return refuse(entry, Outcome::RefusedBeforeLaunch, Reason::LaunchRefused);
