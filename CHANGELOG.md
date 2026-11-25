@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.41 — 2026-11-25 (Nightly)
+
+- Worker cards per orchestrator is now a setting: Settings › MCP ›
+  "Worker cards per orchestrator" (one number for every MCP client,
+  default 16, 1 to 32; it was a fixed 8). An orchestrator may have that
+  many worker cards open at once and one client four times as many; one
+  `deck_worker_wait` can follow all of them, and a client may send as many
+  lines a minute (never fewer than 60). Above 16 the row estimates how much
+  memory that many agents take against this Mac's. A change applies to the
+  next start; open cards stay. `deck_capabilities` tells the orchestrator
+  both numbers (`workerCapacity`), and a refused start names them. Once you
+  choose a number other than 16, an older Deck refuses the MCP data rather
+  than misread it.
+- A Claude worker type may run on another Claude Code account: begin its
+  command with `CLAUDE_CONFIG_DIR=<absolute folder>`, e.g.
+  `CLAUDE_CONFIG_DIR=/Users/you/.claude-work claude --settings
+  /Users/you/.claude/settings.json --permission-mode auto`. The folder must
+  exist, and unless it is `~/.claude` the command needs `--settings` with
+  the absolute path of `~/.claude/settings.json`, or Claude would not load
+  Deck's hooks (no Agent status, and its lines would never go out). A shell
+  alias such as `claude-work` is still refused: Deck cannot see what it
+  runs. Reopening Agent sessions after a shell-service restart, and
+  recovering them after a crash, now reopen such a card on the same
+  account with the same options; a recovery also keeps the other launch
+  options it was started with (never the bypass flag).
+- Dependency: cookie 0.18.3 (RUSTSEC-2026-0594).
+
 ## 0.8.40 — 2026-11-23 (Nightly)
 
 - An agy worker card's first line no longer disappears into agy's "Do you
