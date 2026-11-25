@@ -416,8 +416,8 @@ pub(crate) fn for_episode(session: &str, episode: EpisodeId) -> Option<Note> {
 }
 
 /// Worker replies kept, oldest dropped first: one turn ending of every
-/// worker card a client may have (`mcp::workers::MAX_CLIENT_WORKERS`).
-const KEEP_REPLIES: usize = 64;
+/// worker card a client may have at the highest worker capacity.
+const KEEP_REPLIES: usize = crate::mcp::MAX_CLIENT_WORKERS_CEILING;
 
 /// One worker card's final message of one turn ending, as the helper
 /// forwarded it (head and tail, `REPLY_CUT` between them when cut).

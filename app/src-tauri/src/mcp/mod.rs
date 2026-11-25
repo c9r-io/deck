@@ -242,13 +242,20 @@
 //! (`commands::close_admit`) decides again on the card as it is then and
 //! records a refusal with its closed code.
 //! Withdrawing `allow_workers`, revoking the client or disabling MCP takes
-//! the key out under `storage::settings_fence`. Capacity: 16 worker cards on
-//! the Board per orchestrator card (callers from no card together), 64 per
-//! client, counting starts and handovers accepted that have no card yet (a
-//! further start is `CAPACITY_EXCEEDED`), 4
-//! unsent lines per card, 60 lines a minute. A ledger holding any of this is
+//! the key out under `storage::settings_fence`. Capacity is the user's one
+//! number in Settings › MCP (`Config::worker_capacity`, default 16, 1 to
+//! 32, approved 2026-11-25): that many worker cards on the Board per
+//! orchestrator card (callers from no card together), four times as many
+//! per client, counting starts and handovers accepted that have no card yet
+//! (a further start is `CAPACITY_EXCEEDED`, naming the number), one wait
+//! following up to the client's number, as many lines a minute (never fewer
+//! than 60), 4 unsent lines per card; what is kept across cards (reports,
+//! replies) is sized for the highest choice (`workers::MAX_WORKER_CAPACITY`),
+//! so lowering it drops nothing. A ledger holding any of this is
 //! written at `STATE_VERSION_WORKERS` (sticky); one holding a type's model
-//! list or a card started with a model at `STATE_VERSION_WORKER_MODELS`.
+//! list or a card started with a model at `STATE_VERSION_WORKER_MODELS`;
+//! one with a capacity other than the default at
+//! `STATE_VERSION_WORKER_CAPACITY`.
 //!
 //! Drafted configuration (`proposals.rs`, `docs/mcp.md` "Drafted
 //! configuration"): a client with the separate local choice `allow_drafts`
@@ -456,7 +463,7 @@ use workers::*;
 pub(crate) use workers::{
     held_worker_sessions, note_worker_change, replies_wanted_any, replies_wanted_for,
     worker_card_held, worker_client_for_item, worker_delegation_key, worker_first_send_key,
-    WorkerCardView, WorkerType, WORKER_TYPE_RULE_PREFIX,
+    WorkerCardView, WorkerType, MAX_CLIENT_WORKERS_CEILING, WORKER_TYPE_RULE_PREFIX,
 };
 
 const STATE_VERSION: u32 = 6;
@@ -497,6 +504,12 @@ const STATE_VERSION_REPORTS: u32 = 17;
 /// worker card was started with one (`workers::uses_worker_models`): a v17
 /// build refuses it.
 const STATE_VERSION_WORKER_MODELS: u32 = 18;
+/// The sticky version a ledger takes once the user chose a worker capacity
+/// other than the default (`Config::worker_capacity`): a v18 build, whose
+/// capacity was fixed, refuses it.
+const STATE_VERSION_WORKER_CAPACITY: u32 = 19;
+/// The newest version this build reads and writes.
+const STATE_VERSION_LATEST: u32 = STATE_VERSION_WORKER_CAPACITY;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

@@ -40,7 +40,10 @@ use tauri::Emitter;
 
 pub(super) const MAX_REPORT_BYTES: usize = 8 * 1024;
 pub(super) const MAX_PER_CARD: usize = 4;
-pub(super) const MAX_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+/// Reports kept in all: `MAX_PER_CARD` full reports for every worker card a
+/// client may have at the highest capacity (`workers::MAX_WORKER_CAPACITY`).
+pub(super) const MAX_TOTAL_BYTES: usize =
+    super::workers::MAX_CLIENT_WORKERS_CEILING * MAX_PER_CARD * MAX_REPORT_BYTES;
 const REPORTS_PER_MINUTE: usize = 6;
 
 /// One recorded report of one worker card.

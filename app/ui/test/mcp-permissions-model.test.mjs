@@ -180,3 +180,18 @@ test('the Claude Code command registers Deck for every directory', () => {
   assert.equal(codexConfig('/A/deck-mcp', 'c1'),
     '[mcp_servers.deck]\ncommand = "/A/deck-mcp"\nargs = ["--client-id", "c1"]\ndefault_tools_approval_mode = "writes"\n');
 });
+
+test('the worker capacity row: 1 to 32, the client number four times it, a memory warning above 16', async () => {
+  const { workerCapacityView, DEFAULT_WORKER_CAPACITY, MAX_WORKER_CAPACITY } = await import('../js/mcp-permissions-model.js');
+  assert.equal(DEFAULT_WORKER_CAPACITY, 16);
+  assert.equal(MAX_WORKER_CAPACITY, 32);
+  const gb = 2 ** 30;
+  assert.deepEqual(workerCapacityView('16', 32 * gb),
+    { valid: true, count: 16, clientCount: 64, warn: false, estimateGb: 8, memoryGb: 32 });
+  assert.deepEqual(workerCapacityView(' 24 ', 16 * gb),
+    { valid: true, count: 24, clientCount: 96, warn: true, estimateGb: 12, memoryGb: 16 });
+  assert.equal(workerCapacityView('17', 0).memoryGb, 0, 'memory unknown: the estimate alone');
+  for (const bad of ['0', '33', '1.5', '-2', '', 'x', '16abc']) {
+    assert.equal(workerCapacityView(bad, gb).valid, false, bad);
+  }
+});

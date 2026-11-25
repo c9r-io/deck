@@ -636,6 +636,7 @@ fn main() {
             mcp::mcp_adapter_path,
             mcp::mcp_enable,
             mcp::mcp_output_retention,
+            mcp::mcp_worker_capacity,
             mcp::mcp_disable,
             mcp::mcp_client_add,
             mcp::mcp_client_revoke,

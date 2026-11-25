@@ -85,19 +85,44 @@ pub(super) const WORKER_SEND_KIND: &str = "worker-send";
 /// webview's close commits (`mcp.js` `closeWorker`), admitted like a managed
 /// session's close (`commands::close_admit`).
 pub(super) const WORKER_CLOSE_KIND: &str = "worker-close";
-/// Worker cards one orchestrator card (or the client's callers from no
-/// card, together) may have on the Board at once; a start beyond it is
-/// refused (`CAPACITY_EXCEEDED`).
-pub(super) const MAX_LIVE_WORKERS: usize = 16;
-/// Worker cards one client may have on the Board at once, all its
-/// orchestrator cards together.
-pub(super) const MAX_CLIENT_WORKERS: usize = 64;
+/// The user's worker capacity (`Config::worker_capacity`, Settings ›
+/// MCP, approved 2026-11-25): worker cards one orchestrator card (or the
+/// client's callers from no card, together) may have on the Board at once;
+/// a start beyond it is refused (`CAPACITY_EXCEEDED`). Every other worker
+/// bound follows from it (`client_capacity`, `sends_per_minute`) or is
+/// sized for its ceiling (`MAX_WORKER_CAPACITY`), so lowering it never
+/// makes stored data invalid.
+pub(crate) const DEFAULT_WORKER_CAPACITY: u32 = 16;
+/// The highest capacity the user may choose: one client then has at most
+/// `MAX_WORKER_CAPACITY * CLIENT_FACTOR` (128) worker cards, whose reports
+/// (`reports::MAX_TOTAL_BYTES`) still fit the ledger (`MAX_STATE_BYTES`).
+pub(crate) const MAX_WORKER_CAPACITY: u32 = 32;
+/// One client's worker cards, all its orchestrator cards together: this
+/// many orchestrators' worth.
+const CLIENT_FACTOR: usize = 4;
+/// The most worker cards any client may have, at the highest capacity.
+pub(crate) const MAX_CLIENT_WORKERS_CEILING: usize = MAX_WORKER_CAPACITY as usize * CLIENT_FACTOR;
+
+/// Worker cards one orchestrator card may have now.
+pub(super) fn orchestrator_capacity(doc: &DiskDoc) -> usize {
+    doc.config.worker_capacity as usize
+}
+
+/// Worker cards one client may have now, and so the cards one
+/// `deck_worker_wait` may follow.
+pub(super) fn client_capacity(doc: &DiskDoc) -> usize {
+    orchestrator_capacity(doc) * CLIENT_FACTOR
+}
+
+/// Lines and closes one client may send a minute: one for each card it
+/// may have, never fewer than 60.
+fn sends_per_minute(doc: &DiskDoc) -> usize {
+    client_capacity(doc).max(60)
+}
 /// Worker records kept in all (closed cards are pruned first).
 const MAX_WORKER_RECORDS: usize = 256;
 /// Unsent delegated lines one card may hold.
 const MAX_UNSENT_PER_CARD: usize = 4;
-/// Sends one client may make per minute.
-const SENDS_PER_MINUTE: usize = 60;
 /// The longest line a client may send.
 pub(super) const MAX_SEND_BYTES: usize = 16 * 1024;
 /// Recent send operations reported per card.
@@ -256,8 +281,8 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
 }
 
 /// Whether `client` may start one more worker card from `orchestrator`:
-/// at most `MAX_LIVE_WORKERS` for that orchestrator card (or for its
-/// callers from no card) and `MAX_CLIENT_WORKERS` in all, counting the
+/// at most `orchestrator_capacity` for that orchestrator card (or for its
+/// callers from no card) and `client_capacity` in all, counting the
 /// worker cards on the Board and the starts and handovers accepted that
 /// have no card yet — each for the orchestrator card it came from.
 pub(super) fn room_for_worker(
@@ -298,14 +323,15 @@ pub(super) fn room_for_worker(
             "Ask the local Deck user to close finished worker cards, then start again with a new request.",
         )
     };
-    if own + pending_own >= MAX_LIVE_WORKERS {
+    let (per_orchestrator, per_client) = (orchestrator_capacity(doc), client_capacity(doc));
+    if own + pending_own >= per_orchestrator {
         return Err(full(&format!(
-            "this orchestrator already has {MAX_LIVE_WORKERS} worker cards on the Board"
+            "this orchestrator already has {per_orchestrator} worker cards on the Board"
         )));
     }
-    if live.len() + pending >= MAX_CLIENT_WORKERS {
+    if live.len() + pending >= per_client {
         return Err(full(&format!(
-            "this client already has {MAX_CLIENT_WORKERS} worker cards on the Board"
+            "this client already has {per_client} worker cards on the Board"
         )));
     }
     Ok(())
@@ -666,11 +692,12 @@ pub(super) fn worker_wait(
     let args: WorkerWaitArgs = parse(arguments)?;
     let wait = args.wait_ms.unwrap_or(DEFAULT_WAIT_MS);
     // one wait may follow every worker card the client may have
-    if wait > MAX_WAIT_MS || args.cards.is_empty() || args.cards.len() > MAX_CLIENT_WORKERS {
+    let most = runtime.read(client_capacity).map_err(map_error)?;
+    if wait > MAX_WAIT_MS || args.cards.is_empty() || args.cards.len() > most {
         return Err(error_value(
             "INVALID_ARGUMENTS",
             &format!(
-                "cards must name 1 to {MAX_CLIENT_WORKERS} worker cards and wait_ms be at most {MAX_WAIT_MS}"
+                "cards must name 1 to {most} worker cards and wait_ms be at most {MAX_WAIT_MS}"
             ),
             "Name the cards and episodes deck_worker_list returned; call again after a timeout.",
         ));
@@ -790,16 +817,19 @@ fn send_window() -> &'static Mutex<HashMap<String, Vec<Instant>>> {
     WINDOW.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn within_rate(client: &str) -> bool {
+/// Whether `client` may send one more line or close this minute, and how
+/// many it may (`sends_per_minute`): `Err(limit)` when not.
+fn within_rate(runtime: &Runtime, client: &str) -> Result<(), usize> {
+    let limit = runtime.read(sends_per_minute).unwrap_or(60);
     let mut window = send_window().lock_or_recover();
     let sent = window.entry(client.to_string()).or_default();
     let now = Instant::now();
     sent.retain(|at| now.duration_since(*at) < Duration::from_secs(60));
-    if sent.len() >= SENDS_PER_MINUTE {
-        return false;
+    if sent.len() >= limit {
+        return Err(limit);
     }
     sent.push(now);
-    true
+    Ok(())
 }
 
 fn capacity(message: &str) -> Value {
@@ -893,8 +923,10 @@ pub(super) fn worker_send(
             "the card already holds 4 unsent lines from this client",
         ));
     }
-    if !within_rate(client_id) {
-        return Err(capacity("this client sent 30 lines in the last minute"));
+    if let Err(limit) = within_rate(runtime, client_id) {
+        return Err(capacity(&format!(
+            "this client sent {limit} lines in the last minute"
+        )));
     }
     let minted = random_id("op_", 16).map_err(map_error)?;
     let operation = runtime
@@ -1160,10 +1192,10 @@ pub(super) fn worker_close(
     if now.and_then(|s| s.state) == Some("needs-input") {
         return Err(needs_you_refusal());
     }
-    if !within_rate(client_id) {
+    if let Err(limit) = within_rate(runtime, client_id) {
         return Err(error_value(
             "CAPACITY_EXCEEDED",
-            "this client sent 30 lines or closes in the last minute",
+            &format!("this client sent {limit} lines or closes in the last minute"),
             "Slow down, then close again with a new request.",
         ));
     }

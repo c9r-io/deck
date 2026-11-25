@@ -956,6 +956,7 @@
       "checks": {
         "workers-client": {},
         "workers-armed": {},
+        "capacity-set": {},
         "capacity-cards": {},
         "capacity-held": {},
         "capacity-closed": {},

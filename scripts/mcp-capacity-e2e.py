@@ -38,8 +38,8 @@ def parse():
         p.add_argument("--" + name, required=True)
     p.add_argument("--tag", default=str(int(time.time())), help="unique suffix of request ids")
     p.add_argument("--type", default="claude", help="the worker type to start")
-    p.add_argument("--capacity", type=int, default=16, help="worker cards one orchestrator may have")
-    p.add_argument("--client-capacity", type=int, default=64, help="worker cards one client may have")
+    p.add_argument("--capacity", type=int, default=3, help="the worker capacity the page set (Settings › MCP)")
+    p.add_argument("--client-capacity", type=int, default=12, help="worker cards one client may have: four times it")
     return p.parse_args()
 
 
@@ -70,6 +70,9 @@ def main():
         step("worker-list-empty", ok and out.get("workers") == [] and args.type in types, types=",".join(types))
         sequence = out.get("nextSendSequence", 0)
         _, caps = adapter.call("deck_capabilities", {})
+        stated = caps.get("workerCapacity") or {}
+        step("capacity-stated", stated.get("perOrchestratorCard") == args.capacity
+             and stated.get("perClient") == args.client_capacity, **stated)
         root = ((caps.get("authorizedWorkspaces") or [{}])[0].get("roots") or [""])[0]
 
         operations = []

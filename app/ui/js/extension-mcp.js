@@ -10,10 +10,12 @@ const PANEL_HTML = `
       <div class="set-hint" data-i18n="mcp.hint">Off by default. An authorized MCP client can execute code with your account permissions and receive terminal output. This trusted-host mode is not an OS sandbox.</div>
       <div class="set-actions mcp-settings-actions"><button class="btn" id="set-mcp-toggle" data-i18n="mcp.enable">Enable</button><button class="btn" id="set-mcp-add" data-i18n="mcp.add">Authorize this project…</button></div>
       <div class="set-row mcp-retention-row"><label for="set-mcp-retention" data-i18n="mcp.outputRetention">Managed output retention</label><select id="set-mcp-retention"><option value="3600000" data-i18n="mcp.retention1h">1 hour</option><option value="86400000" data-i18n="mcp.retention24h">24 hours</option><option value="259200000" data-i18n="mcp.retention3d">3 days</option><option value="604800000" data-i18n="mcp.retention7d">7 days</option></select></div>
+      <div class="set-row mcp-capacity-row"><label for="set-mcp-worker-capacity" data-i18n="mcp.workerCapacity">Worker cards per orchestrator</label><input type="number" id="set-mcp-worker-capacity" min="1" max="32" step="1" value="16" aria-describedby="set-mcp-worker-capacity-hint"></div>
+      <div class="set-hint" id="set-mcp-worker-capacity-hint" aria-live="polite"></div>
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { claudeAddCommand, codexConfig, defaultWorkerTypes, previewErrorKey, scopeProblem, initialPermissions, initialScope, modelLines, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
+import { claudeAddCommand, codexConfig, defaultWorkerTypes, workerCapacityView, previewErrorKey, scopeProblem, initialPermissions, initialScope, modelLines, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 import { tunnelActionKey, tunnelCode, tunnelFailureKey, tunnelSetupKey } from './tunnel-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
@@ -75,6 +77,19 @@ export function createMcpSettings(host) {
   const { $, inv, store, t, toast, confirmDangerDialog, choiceDialog, formatNumber } = host;
   let mcpAuthDone = null;
 
+  /* the worker capacity row's hint: what the number means for one client,
+     and above 16 an estimate against this Mac's memory (mcp-permissions-model.js) */
+  let memoryBytes = 0;
+  function paintCapacityHint() {
+    const view = workerCapacityView($('set-mcp-worker-capacity').value, memoryBytes);
+    const hint = $('set-mcp-worker-capacity-hint');
+    hint.classList.toggle('warn', view.warn);
+    hint.textContent = !view.valid ? t('mcp.workerCapacityInvalid')
+      : [t('mcp.workerCapacityHint', { count: String(view.count), client: String(view.clientCount) }),
+        view.warn ? t(view.memoryGb ? 'mcp.workerCapacityWarn' : 'mcp.workerCapacityWarnNoMemory',
+          { count: String(view.count), estimate: String(view.estimateGb), memory: String(view.memoryGb) }) : ''].filter(Boolean).join(' ');
+  }
+
   async function renderMcpSettings() {
     let status = null;
     try { status = await inv('mcp_status'); } catch (_) {}
@@ -90,6 +105,10 @@ export function createMcpSettings(host) {
     $('set-mcp-add').disabled = unavailable || !status?.enabled;
     $('set-mcp-retention').disabled = unavailable;
     $('set-mcp-retention').value = String(status?.outputRetentionMs || 24 * 60 * 60 * 1000);
+    $('set-mcp-worker-capacity').disabled = unavailable;
+    $('set-mcp-worker-capacity').value = String(status?.workerCapacity || 16);
+    memoryBytes = Number(status?.memoryBytes) || 0;
+    paintCapacityHint();
     const clients = $('set-mcp-clients'); clients.replaceChildren();
     if (unavailable) {
       const note = document.createElement('div'); note.className = 'set-hint';
@@ -597,6 +616,15 @@ export function createMcpSettings(host) {
           : t(workerTypeErrorKey(error) || 'mcp.actionFailed'));
       }
     };
+    $('set-mcp-worker-capacity').oninput = paintCapacityHint;
+    $('set-mcp-worker-capacity').onchange = async () => {
+      const view = workerCapacityView($('set-mcp-worker-capacity').value, memoryBytes);
+      if (!view.valid) { toast(t('mcp.workerCapacityInvalid')); await renderMcpSettings(); return; }
+      try {
+        await inv('mcp_worker_capacity', { count: view.count });
+      } catch (_) { toast(t('mcp.actionFailed')); }
+      await renderMcpSettings();
+    };
     $('set-mcp-retention').onchange = async () => {
       try {
         await inv('mcp_output_retention', { durationMs: Number($('set-mcp-retention').value) });
@@ -622,7 +650,7 @@ export const CONTRIBUTION = Object.freeze({
   ]),
   settings: Object.freeze([Object.freeze({
     id: 'mcp', section: 'mcp', order: 0,
-    labelKeys: ['mcp.title', 'mcp.add', 'mcp.outputRetention'],
+    labelKeys: ['mcp.title', 'mcp.add', 'mcp.outputRetention', 'mcp.workerCapacity'],
     keywords: ['mcp', 'chatgpt', 'codex', 'client', 'authorize', 'authorization', 'tunnel', 'remote', 'terminal control', 'worker', 'orchestrator',
       '远程', '控制', '授权', '客户端', '工作卡', '编排'],
   })]),

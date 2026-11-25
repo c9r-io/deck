@@ -354,7 +354,7 @@ evolution; it makes scope expansion deliberate.
   note in a card's scratchpad upgrades deck.json to sticky v12. An Agent trigger rule (settings.json) and the queue origins it
   admits (queue.json) upgrade to sticky v9, and the MCP ledger takes its own
   sticky versions, one per delegated capability: v7 for an automation
-  delegation or a trigger record, up to v17 (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
+  delegation or a trigger record, up to v19 for a worker capacity other than the default (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
   native staged grant references; v1 entries gain no new permission. A
   settings backup is handed to the webview without channel grants. Native
   template edits retire affected grants before the Board write, under

@@ -1332,13 +1332,20 @@ fn an_unreadable_ledger_keeps_mcp_closed_and_says_so() {
             Ok(())
         })
         .is_err());
+    let mut status = serde_json::to_value(status_of(&runtime)).unwrap();
+    // this Mac's memory, for the capacity row's estimate: read, not chosen
+    assert!(status["memoryBytes"]
+        .as_u64()
+        .is_some_and(|bytes| bytes > 0));
+    status.as_object_mut().unwrap().remove("memoryBytes");
     assert_eq!(
-        serde_json::to_value(status_of(&runtime)).unwrap(),
+        status,
         json!({
             "enabled": false,
             "socketReady": false,
             "clients": [],
             "outputRetentionMs": DEFAULT_OUTPUT_RETENTION_MS,
+            "workerCapacity": DEFAULT_WORKER_CAPACITY,
             "unavailable": true,
         })
     );
@@ -2176,7 +2183,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
     );
 
     let mut invalid = DiskDoc {
-        version: STATE_VERSION_WORKER_MODELS + 1,
+        version: STATE_VERSION_LATEST + 1,
         ..DiskDoc::default()
     };
     assert!(validate_doc(&invalid).is_err());
@@ -3169,7 +3176,7 @@ fn v3_state_upgrades_stickily_and_future_state_is_refused() {
     // The v3 build accepted exactly version 3; the same rule refuses a
     // future schema here.
     let mut future = saved.clone();
-    future["version"] = json!(STATE_VERSION_WORKER_MODELS + 1);
+    future["version"] = json!(STATE_VERSION_LATEST + 1);
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
     assert_eq!(load(&path).err().unwrap().kind(), ErrorKind::Recovery);
     assert_eq!(
@@ -8258,16 +8265,20 @@ fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
     drop(root);
 }
 
-/// Worker capacity: `MAX_LIVE_WORKERS` (16) per orchestrator card (callers
-/// from no card count together), `MAX_CLIENT_WORKERS` (64) per client.
+/// Worker capacity at its default: 16 per orchestrator card (callers from
+/// no card count together), four times as many per client.
 #[test]
 fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
     let (runtime, _runner, root) = fixture("worker-room", "svc_test");
     let _board = crate::documents::test_door::hold();
     let mut cards: Vec<Value> = Vec::new();
+    let (per, all) = runtime
+        .read(|doc| (orchestrator_capacity(doc), client_capacity(doc)))
+        .unwrap();
+    assert_eq!((per, all), (16, 64), "the default");
     runtime
         .write(|doc| {
-            for i in 0..MAX_LIVE_WORKERS {
+            for i in 0..per {
                 let id = format!("WA{i}");
                 cards.push(json!({"id": id, "session": format!("deck-wa{i}"), "title": "w", "cmd": "claude", "dir": "/tmp"}));
                 doc.workers.push(Worker {
@@ -8298,7 +8309,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
     // and nobody else's room is taken by them
     runtime
         .write(|doc| {
-            for i in 0..MAX_LIVE_WORKERS {
+            for i in 0..per {
                 doc.operations.push(Operation {
                     operation_id: format!("op_pending_{i}"),
                     request_id: format!("req_pending_{i}"),
@@ -8327,7 +8338,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
     // the rest on other orchestrator cards: the client bound
     runtime
         .write(|doc| {
-            for i in 0..MAX_CLIENT_WORKERS - MAX_LIVE_WORKERS {
+            for i in 0..all - per {
                 let id = format!("WX{i}");
                 cards.push(json!({"id": id, "session": format!("deck-wx{i}"), "title": "w", "cmd": "claude", "dir": "/tmp"}));
                 doc.workers.push(Worker {
@@ -8337,7 +8348,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     automation_id: "claude".into(),
                     created_at: 1,
                     held: false,
-                    orchestrator: Some(format!("O{}", i / MAX_LIVE_WORKERS)),
+                    orchestrator: Some(format!("O{}", i / per)),
                     reported: 0,
                     model: None,
                 });
@@ -8351,6 +8362,108 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
         "the client bound on the Board: the client is full"
     );
     assert!(!room(None));
+    drop(root);
+}
+
+/// The user's worker capacity (Settings › MCP): every bound follows it —
+/// per orchestrator card, per client (four times), the wait list and the
+/// refusal's words — and only a capacity other than the default is written,
+/// at its own sticky version; 0 and more than the ceiling are no ledger.
+#[test]
+fn a_chosen_worker_capacity_sets_every_worker_bound() {
+    let (runtime, _runner, root) = fixture("worker-capacity", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let before = runtime.read(|doc| doc.version).unwrap();
+    assert!(before < STATE_VERSION_WORKER_CAPACITY);
+    runtime
+        .write(|doc| {
+            doc.config.worker_capacity = 3;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        runtime
+            .read(|doc| (
+                orchestrator_capacity(doc),
+                client_capacity(doc),
+                doc.version
+            ))
+            .unwrap(),
+        (3, 12, STATE_VERSION_WORKER_CAPACITY)
+    );
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(root.join("mcp.json")).unwrap()).unwrap();
+    assert_eq!(saved["config"]["workerCapacity"], 3);
+    let mut cards: Vec<Value> = Vec::new();
+    runtime
+        .write(|doc| {
+            for i in 0..3 {
+                let id = format!("WC{i}");
+                cards.push(json!({"id": id, "session": format!("deck-wc{i}"), "title": "w", "cmd": "claude", "dir": "/tmp"}));
+                doc.workers.push(Worker {
+                    card_id: id,
+                    client_id: "client_a".into(),
+                    operation_id: format!("op_c{i}"),
+                    automation_id: "claude".into(),
+                    created_at: 1,
+                    held: false,
+                    orchestrator: Some("OA".into()),
+                    reported: 0,
+                    model: None,
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+    crate::documents::test_door::commit(json!({"projects": [], "cards": cards}), true);
+    let full = runtime
+        .read(|doc| room_for_worker(doc, "client_a", Some("OA")))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(full["error"]["code"], "CAPACITY_EXCEEDED");
+    assert!(full["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("already has 3 worker cards"));
+    assert!(runtime
+        .read(|doc| room_for_worker(doc, "client_a", Some("OB")))
+        .unwrap()
+        .is_ok());
+    // one wait follows at most the client's number
+    let cards_named = |n: usize| {
+        (0..n)
+            .map(|i| json!({"card_id": format!("W{i:015}"), "episode": 0}))
+            .collect::<Vec<_>>()
+    };
+    let refused = worker_wait(
+        &runtime,
+        "client_a",
+        json!({"cards": cards_named(13), "wait_ms": 0}),
+    );
+    assert!(refused.unwrap_err()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("1 to 12 worker cards"));
+    // back to the default: not written, the version stays (sticky)
+    runtime
+        .write(|doc| {
+            doc.config.worker_capacity = DEFAULT_WORKER_CAPACITY;
+            Ok(())
+        })
+        .unwrap();
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(root.join("mcp.json")).unwrap()).unwrap();
+    assert!(saved["config"].get("workerCapacity").is_none());
+    assert_eq!(saved["version"], STATE_VERSION_WORKER_CAPACITY);
+    // outside 1..=32 the ledger is refused
+    for bad in [0, MAX_WORKER_CAPACITY + 1] {
+        let mut value = runtime
+            .read(|doc| serde_json::to_value(doc).unwrap())
+            .unwrap();
+        value["config"]["workerCapacity"] = json!(bad);
+        let doc: DiskDoc = serde_json::from_value(value).unwrap();
+        assert!(validate_doc(&doc).is_err(), "{bad}");
+    }
     drop(root);
 }
 

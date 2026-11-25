@@ -23,10 +23,27 @@ pub(super) struct Config {
     pub(super) clients: Vec<Client>,
     #[serde(default = "default_output_retention_ms")]
     pub(super) output_retention_ms: u64,
+    /// Worker cards one orchestrator card may have at once
+    /// (`workers::orchestrator_capacity`), the user's choice in Settings ›
+    /// MCP; written only when it is not the default, and then at
+    /// `STATE_VERSION_WORKER_CAPACITY`.
+    #[serde(
+        default = "default_worker_capacity",
+        skip_serializing_if = "is_default_worker_capacity"
+    )]
+    pub(super) worker_capacity: u32,
 }
 
 pub(super) fn default_output_retention_ms() -> u64 {
     DEFAULT_OUTPUT_RETENTION_MS
+}
+
+pub(super) fn default_worker_capacity() -> u32 {
+    super::workers::DEFAULT_WORKER_CAPACITY
+}
+
+fn is_default_worker_capacity(value: &u32) -> bool {
+    *value == super::workers::DEFAULT_WORKER_CAPACITY
 }
 
 impl Default for Config {
@@ -35,6 +52,7 @@ impl Default for Config {
             enabled: false,
             clients: Vec::new(),
             output_retention_ms: DEFAULT_OUTPUT_RETENTION_MS,
+            worker_capacity: super::workers::DEFAULT_WORKER_CAPACITY,
         }
     }
 }
@@ -777,7 +795,9 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if super::workers::uses_worker_models(doc) {
+    if !is_default_worker_capacity(&doc.config.worker_capacity) {
+        STATE_VERSION_WORKER_CAPACITY
+    } else if super::workers::uses_worker_models(doc) {
         STATE_VERSION_WORKER_MODELS
     } else if super::reports::uses_reports(doc) {
         STATE_VERSION_REPORTS
@@ -809,12 +829,13 @@ fn needed_version(doc: &DiskDoc) -> u32 {
 pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let mut client_ids = HashSet::new();
     let needed = needed_version(doc);
-    let version_valid = (needed..=STATE_VERSION_WORKER_MODELS).contains(&doc.version)
+    let version_valid = (needed..=STATE_VERSION_LATEST).contains(&doc.version)
         && super::proposals::valid_proposals(doc)
         && super::reports::valid_reports(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
             .contains(&doc.config.output_retention_ms)
+        && (1..=super::workers::MAX_WORKER_CAPACITY).contains(&doc.config.worker_capacity)
         && doc.config.clients.len() <= MAX_CLIENTS
         && doc.config.clients.iter().all(|client| {
             valid_id(&client.id)

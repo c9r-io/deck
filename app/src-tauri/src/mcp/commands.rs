@@ -12,6 +12,11 @@ pub(crate) struct StatusView {
     pub(super) socket_ready: bool,
     pub(super) clients: Vec<ClientView>,
     pub(super) output_retention_ms: u64,
+    /// Worker cards one orchestrator card may have (`Config::worker_capacity`).
+    pub(super) worker_capacity: u32,
+    /// This Mac's physical memory, for the dialog's estimate beside a high
+    /// capacity; 0 when the kernel did not say.
+    pub(super) memory_bytes: u64,
     /// The ledger could not be loaded in this run: MCP stays off and no
     /// command here can change that (absent from the answer otherwise).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -70,6 +75,8 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
         enabled: doc.config.enabled && !emergency.disabled,
         socket_ready: runtime.socket.exists(),
         output_retention_ms: doc.config.output_retention_ms,
+        worker_capacity: doc.config.worker_capacity,
+        memory_bytes: physical_memory(),
         clients: doc
             .config
             .clients
@@ -102,8 +109,49 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
         socket_ready: false,
         clients: Vec::new(),
         output_retention_ms: DEFAULT_OUTPUT_RETENTION_MS,
+        worker_capacity: super::workers::DEFAULT_WORKER_CAPACITY,
+        memory_bytes: physical_memory(),
         unavailable: true,
     })
+}
+
+/// The machine's physical memory (`hw.memsize`), read from the kernel:
+/// no process is started. 0 when it cannot be read.
+fn physical_memory() -> u64 {
+    let mut bytes: u64 = 0;
+    let mut size = std::mem::size_of::<u64>();
+    // SAFETY: a NUL-terminated name and a buffer of exactly `size` bytes.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            (&raw mut bytes).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && size == std::mem::size_of::<u64>() {
+        bytes
+    } else {
+        0
+    }
+}
+
+/// The user's worker capacity (Settings › MCP): worker cards one
+/// orchestrator card may have at once, 1 to `MAX_WORKER_CAPACITY`; every
+/// other worker bound follows from it (`workers::client_capacity`). It
+/// applies to the next start; cards already open stay.
+#[tauri::command]
+pub(crate) fn mcp_worker_capacity(count: u32) -> Result<(), DeckError> {
+    if !(1..=super::workers::MAX_WORKER_CAPACITY).contains(&count) {
+        return Err(DeckError::new(ErrorKind::Invalid, "mcp-worker-capacity"));
+    }
+    runtime()?.write(|doc| {
+        doc.config.worker_capacity = count;
+        Ok(())
+    })?;
+    crate::applog::applog(&format!("[mcp] worker capacity {count}"));
+    Ok(())
 }
 
 #[tauri::command]

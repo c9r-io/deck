@@ -238,3 +238,33 @@ export function previewErrorKey(error) {
   return ({ not_found: 'mcp.rootNotFound', not_directory: 'mcp.rootNotDirectory', not_accessible: 'mcp.rootNotAccessible',
     too_broad: 'mcp.rootTooBroad' })[error] || 'mcp.rootUnavailable';
 }
+
+/* ---------- worker capacity (Settings › MCP) ---------- */
+
+/* twin of mcp/workers.rs: DEFAULT_WORKER_CAPACITY, MAX_WORKER_CAPACITY and
+   CLIENT_FACTOR */
+export const DEFAULT_WORKER_CAPACITY = 16;
+export const MAX_WORKER_CAPACITY = 32;
+const CLIENT_FACTOR = 4;
+/* above this many, the row warns about memory */
+const WARN_ABOVE = 16;
+/* a rough memory share of one agent's worker card, for the estimate only */
+const GB_PER_WORKER = 0.5;
+
+/* what the row says about a typed capacity: whether Deck takes it, the
+   client's number that follows from it, and above WARN_ABOVE the memory
+   estimate against this Mac's (`memoryBytes`, 0 when unknown) */
+export function workerCapacityView(value, memoryBytes) {
+  const text = String(value ?? '').trim();
+  const count = /^\d+$/.test(text) ? Number(text) : NaN;
+  const valid = Number.isInteger(count) && count >= 1 && count <= MAX_WORKER_CAPACITY;
+  const memoryGb = memoryBytes > 0 ? Math.round(memoryBytes / 2 ** 30) : 0;
+  return {
+    valid,
+    count: valid ? count : null,
+    clientCount: valid ? count * CLIENT_FACTOR : null,
+    warn: valid && count > WARN_ABOVE,
+    estimateGb: valid ? Math.ceil(count * GB_PER_WORKER) : null,
+    memoryGb,
+  };
+}

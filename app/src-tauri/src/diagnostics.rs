@@ -429,6 +429,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "notes-read-ready",
     "notes-read",
     "notes-live",
+    "capacity-set",
     "capacity-cards",
     "capacity-held",
     "capacity-closed",

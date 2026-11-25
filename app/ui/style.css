@@ -1144,6 +1144,9 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
   margin-bottom: var(--sp-16);
   border-top: 1px solid var(--border-soft);
 }
+.mcp-capacity-row { margin-bottom: 0; }
+#set-mcp-worker-capacity { flex: none; width: 4.6rem; }
+#set-mcp-worker-capacity-hint.warn { color: var(--wait); }
 #set-mcp-clients { display: grid; gap: var(--sp-8); }
 /* a client: its name and what it may do, then its own buttons in one
    left-aligned row, then the Secure Tunnel strip (status + its buttons) */

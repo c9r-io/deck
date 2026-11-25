@@ -67,6 +67,12 @@ pub(super) fn capabilities(
                     "operations": MAX_OPERATIONS
                 },
                 "outputRetentionMs": doc.config.output_retention_ms,
+                // the user's worker capacity (Settings › MCP): starts beyond
+                // it are CAPACITY_EXCEEDED
+                "workerCapacity": {
+                    "perOrchestratorCard": super::workers::orchestrator_capacity(doc),
+                    "perClient": super::workers::client_capacity(doc)
+                },
                 "interactiveInput": true,
                 "structuredProjectRead": true,
                 "reliableJobExitTracking": true,

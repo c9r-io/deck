@@ -65,15 +65,28 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
      dialog, as the person does: approve, save and edit, reject, and the
      fourth is withdrawn with the choice. Then the choice is granted again
      for a real agent's own draft, which the page approves (`done` b=4). */
-  /* `workers-capacity`: one client, one Claude worker type and no
-     first-send choice (no worker ever takes a turn); the scripted client
-     (scripts/mcp-capacity-e2e.py) starts one more worker than an
-     orchestrator may have and is refused the last. The page sees exactly
-     that many worker cards, still that many 30 s later, and closes them
-     (`done` b=4). */
-  const CAPACITY = 16;
+  /* `workers-capacity`: the user's worker capacity set to CAPACITY in
+     Settings › MCP (the row's own input and change event), then one
+     client, one Claude worker type and no first-send choice (no worker
+     ever takes a turn); the scripted client (scripts/mcp-capacity-e2e.py
+     --capacity 3) reads the capacity from deck_capabilities, starts one
+     more worker than an orchestrator may have and is refused the last.
+     The page sees exactly that many worker cards, still that many 30 s
+     later, and closes them, then sets the default back (`done` b=4). */
+  const CAPACITY = 3;
   const capacityRun = async ({ project, work }) => {
     await inv('mcp_enable');
+    const { openSettings } = await import('../js/settings.js');
+    await openSettings({ section: 'mcp' });
+    /* the row shows the saved default before it is changed */
+    const input = await until(() => ($('set-mcp-worker-capacity')?.value === '16' ? $('set-mcp-worker-capacity') : null), 10_000, 100);
+    input.value = String(CAPACITY);
+    input.dispatchEvent(new Event('input'));
+    const warned = $('set-mcp-worker-capacity-hint').classList.contains('warn');
+    input.dispatchEvent(new Event('change'));
+    const set = await until(async () => ((await inv('mcp_status')).workerCapacity === CAPACITY ? true : null), 10_000, 200);
+    $('set-close').click();
+    await report('capacity-set', !!set && !warned, 1, CAPACITY);
     const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
       permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: false,
         workerTypes: [{ name: 'claude', cmd: 'claude --setting-sources project', description: 'Write code' }], workerFirstSend: false } });
@@ -90,6 +103,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     let closed = 0;
     for (const value of workerCards()) if (await provider.close(value.id)) closed += 1;
     await report('capacity-closed', closed === CAPACITY && workerCards().length === 0, 1, closed);
+    await inv('mcp_worker_capacity', { count: 16 });
     await report('done', !failed, 1, 4);
   };
 
@@ -878,20 +892,37 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
       showAttention();
       const tools = $('attention-tools');
       tools.querySelector('[data-filter="ended"]').click();
-      await pause(300);
-      const row = $('attention-list').querySelector(`.attention-row[data-sid="${first.id}"]`);
-      const chip = row?.querySelector('.attention-worker');
-      /* the Board's label, a report's time after it when the worker reported */
-      const labelOk = !!chip && !chip.hidden && chip.textContent.startsWith(t('workers.driven', { name: 'orchestrator' }));
-      const button = [...tools.querySelectorAll('.attention-pick-driver')]
-        .find(el => el.textContent === t('attention.pickDriver', { name: 'orchestrator', count: '1' }));
-      button?.click(); await pause(200);
-      const ticked = [...$('attention-list').querySelectorAll('.attention-row')]
-        .filter(el => el.querySelector('.attention-pick')?.checked).map(el => el.dataset.sid);
+      /* the card's next turn may start while the row is painted or ticked
+         (a turn ending and the client's next line land in the same
+         second): the whole judgment is read again until it holds or 20 s
+         pass, the last reading being the one reported */
+      const labelled = () => {
+        const row = $('attention-list').querySelector(`.attention-row[data-sid="${first.id}"]`);
+        const chip = row?.querySelector('.attention-worker');
+        /* the Board's label, a report's time after it when the worker reported */
+        return !!chip && !chip.hidden && chip.textContent.startsWith(t('workers.driven', { name: 'orchestrator' }));
+      };
+      const driverButton = () => [...tools.querySelectorAll('.attention-pick-driver')]
+        .find(el => el.textContent === t('attention.pickDriver', { name: 'orchestrator', count: '1' })) || null;
+      const judge = async () => {
+        await refreshWorkers();
+        if (ctx.attentionFilter !== 'ended') tools.querySelector('[data-filter="ended"]').click();
+        await pause(100);
+        const labelOk = labelled();
+        const button = driverButton();
+        button?.click(); await pause(200);
+        const ticked = [...$('attention-list').querySelectorAll('.attention-row')]
+          .filter(el => el.querySelector('.attention-pick')?.checked).map(el => el.dataset.sid);
+        const ok = !!listed && labelOk && !!button && ticked.length === 1 && ticked[0] === first.id
+          && $('cfm').style.display !== 'flex' && !!provider.get(first.id);
+        return { ok, labelOk, button, ticked };
+      };
+      let last = null;
+      await until(async () => { last = await judge(); return last.ok ? true : null; }, 20_000, 500);
+      last ||= { ok: false, labelOk: false, button: null, ticked: [] };
       /* b says which part held: 1 listed, 2 the label, 4 the button */
-      await report('workers-attention', !!listed && labelOk && !!button && ticked.length === 1 && ticked[0] === first.id
-        && $('cfm').style.display !== 'flex' && !!provider.get(first.id), ticked.length,
-        (listed ? 1 : 0) + (labelOk ? 2 : 0) + (button ? 4 : 0));
+      await report('workers-attention', last.ok, last.ticked.length,
+        (listed ? 1 : 0) + (last.labelOk ? 2 : 0) + (last.button ? 4 : 0));
       tools.querySelector('[data-filter="pending"]').click(); await pause(100);
       backToBoard();
     }

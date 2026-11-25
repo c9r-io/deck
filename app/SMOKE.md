@@ -471,19 +471,23 @@ claude auth logout`) and remove it.
 
 ## Worker capacity (WKWebView mode `workers-capacity`)
 
-One orchestrator's worker capacity in the real window: the same carrier
-and fixture as `workers` (`copy_agent.py`, `work/`; no hooks file). The
-page authorizes one client with one Claude worker type (`claude
+The user's worker capacity end to end in the real window: the same
+carrier and fixture as `workers` (`copy_agent.py`, `work/`; no hooks
+file). The page sets the capacity to 3 through Settings › MCP's row (its
+input and change event; `capacity-set`: saved, no memory warning at 3),
+authorizes one client with one Claude worker type (`claude
 --setting-sources project`) and no first-send choice, so no worker takes
 a turn, and reports `workers-armed`. `scripts/mcp-capacity-e2e.py`
 (adapter, socket, credential arguments as `mcp-worker-e2e.py`, `--evidence`
-a file) starts 17 workers from no card: 16 accepted and committed, the 17th
-`CAPACITY_EXCEEDED`; one wait follows all 16 and one naming 65 cards is
-refused. The page checks `capacity-cards` (exactly 16 worker cards),
-`capacity-held` (still 16 after 30 s) and `capacity-closed` (all closed).
-Judge with `scripts/smoke-verdict <data> workers-capacity` and the script's
-PASS line. Sixteen idle Claude Code processes: check the machine's memory
-first.
+a file; defaults `--capacity 3 --client-capacity 12`) reads 3 and 12 from
+`deck_capabilities`, starts 4 workers from no card: 3 accepted and
+committed, the 4th `CAPACITY_EXCEEDED` naming 3; one wait follows all 3
+and one naming 13 cards is refused. The page checks `capacity-cards`
+(exactly 3 worker cards), `capacity-held` (still 3 after 30 s) and
+`capacity-closed` (all closed), then sets the default back. Judge with
+`scripts/smoke-verdict <data> workers-capacity` and the script's PASS line.
+The default of 16 was run the same way on 2026-11-25 (16 idle Claude Code
+processes on air2).
 
 ## agy folder trust (WKWebView mode `agy-trust`)
 
