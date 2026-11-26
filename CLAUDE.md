@@ -506,7 +506,8 @@ Chromium testing of the mock catches none of these; verify in the real app.
   "New shell only" and every context entry create shells.
 - **Agent re-entry is the one other program start, and never reads the card's
   command.** On a confirmed shell-service restart with ticked cards it types
-  one request per entry: the frozen executable with its adapter's exact-id
+  one request per entry: the frozen executable (started as its launcher's
+  name, `ARGV0=claude`, so the card's queued rows still find `claude`) with its adapter's exact-id
   resume words (Claude `--resume <native session>`; Codex `resume
   --no-daemon <native session>`) and the client's own carried launch
   options read from its launch image (Claude: ordinary permission mode,

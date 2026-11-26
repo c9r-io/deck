@@ -1157,8 +1157,12 @@ impl World {
         )
     }
 
-    /// The command lines handed to the paste transport, in order.
+    /// The command lines handed to the paste transport, in order, each
+    /// checked to start the client under this world's launcher name — exactly
+    /// one `ARGV0=<launcher> ` word, right before the quoted executable —
+    /// and handed back without that word, so each test pins the rest.
     fn pasted(&self) -> Vec<String> {
+        let argv0 = format!("ARGV0={} '", self.capability.launcher);
         self.calls
             .borrow()
             .iter()
@@ -1166,7 +1170,17 @@ impl World {
             // transcript restore loads another buffer and is not a launch
             .filter(|(args, _)| args.iter().any(|arg| arg.starts_with("deck-send-")))
             .filter_map(|(_, input)| input.as_ref())
-            .map(|bytes| String::from_utf8(bytes.clone()).unwrap())
+            .map(|bytes| {
+                let line = String::from_utf8(bytes.clone()).unwrap();
+                assert_eq!(line.matches("ARGV0=").count(), 1, "{line}");
+                let at = line.find(&argv0).unwrap_or_else(|| panic!("{line}"));
+                let before = &line[..at];
+                assert!(
+                    before.is_empty() || before.ends_with(' '),
+                    "ARGV0 is its own word: {line}"
+                );
+                format!("{before}{}", &line[at + argv0.len() - 1..])
+            })
             .collect()
     }
 
@@ -1179,6 +1193,19 @@ impl World {
                     .any(|arg| arg.contains("send-keys") && arg.ends_with("Enter"))
             })
             .count()
+    }
+
+    /// What the scheduler's target check (`context::evaluate`, the hold
+    /// behind "waiting for <process> to come back") answers for `session`'s
+    /// pane on this world's server, for a row configured for `expected`.
+    fn scheduler_target(&self, session: &str, expected: &str) -> crate::context::ContextStatus {
+        let rows = crate::tmux::list_panes_with(&|args| self.raw(args)).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.session_name == session)
+            .expect("the session's pane");
+        crate::context::evaluate(&crate::context::raw_probe_of_row(row), None, Some(expected))
+            .status
     }
 
     /// The pid of the process in the foreground of `session`'s pane.
@@ -2170,6 +2197,13 @@ fn a_client_under_its_version_name_is_exited_and_reentered_by_its_exact_file() {
             .trim(),
         "2.1.294"
     );
+    // started by that file's own path, the client carries the release's
+    // name and no row configured for the launcher finds it
+    let launcher = world.capability.launcher;
+    assert_eq!(
+        world.scheduler_target("a", launcher),
+        crate::context::ContextStatus::ForegroundDifferent
+    );
     let (token, view) = world.preview();
     assert_eq!(view["entries"][0]["kind"], "candidate");
     let approval = world.approval(&token, &["a"], Policy::ReapplyBypass);
@@ -2179,6 +2213,13 @@ fn a_client_under_its_version_name_is_exited_and_reentered_by_its_exact_file() {
     assert_eq!(
         world.pasted(),
         [format!("{quoted} {BYPASS} --resume {ID_A}")]
+    );
+    // re-entered by the same exact file, it runs under the launcher's name:
+    // the card's queued rows reach it (incident 2026-11-26: re-entered
+    // Claude cards held every row at "waiting for claude")
+    assert_eq!(
+        world.scheduler_target("a", launcher),
+        crate::context::ContextStatus::Ready
     );
     // the next restart starts from the default policy with no grant left:
     // the same client, now running the generated request, gets no override
@@ -4835,6 +4876,7 @@ fn native_step0_probe() {
             birth,
             &crate::procinfo::LaunchExpectation {
                 executable,
+                argv0: capability.launcher,
                 words: &words,
                 env: &[],
                 home: &home,
@@ -5649,7 +5691,8 @@ fn native_m1_transact() {
         let words = (capability.request)(ID_A, grant)
             .expect("the placeholder id")
             .words;
-        let line = launch::command_line(&client, &[], &words).expect("a command line");
+        let line = launch::command_line(&client, capability.launcher, &[], &words)
+            .expect("a command line");
         line.strip_suffix(ID_A).expect("the id last").to_string()
     };
     let (plain, overridden, lowered) = (
@@ -7937,10 +7980,17 @@ fn a_lost_server_is_recovered_once_with_the_plain_resume_of_each_recorded_sessio
         old,
         crate::procinfo::process_start(old).expect("the server's birth"),
     );
-    let records = vec![
+    let mut records = vec![
         recorded(&world, "a", ID_A, server),
         recorded(&world, "b", ID_B, server),
     ];
+    // card b's client was recorded as its release file (Claude Code's
+    // `versions/<release>` behind the `claude` link): the recovery types
+    // that path, and the started client still answers to the launcher
+    let release = world.base.join("versions").join("2.1.330");
+    std::fs::create_dir_all(release.parent().unwrap()).unwrap();
+    std::fs::copy(&world.agent, &release).unwrap();
+    records[1].executable = release.clone();
     let store = world.base.join("agent-recovery.json");
     recovery::write_for_tests(&store, records.clone());
     // while the server runs, nothing is offered
@@ -7996,6 +8046,16 @@ fn a_lost_server_is_recovered_once_with_the_plain_resume_of_each_recorded_sessio
     for (text, id) in pasted.iter().zip([ID_A, ID_B]) {
         assert!(text.ends_with(&format!(" --resume {id}")), "{text}");
         assert!(!text.contains(BYPASS), "never the bypass flag: {text}");
+    }
+    assert!(pasted[1].starts_with(&format!("'{}' ", release.display())));
+    // the recovered cards' queued rows reach their clients (incident
+    // 2026-11-26: every row of a recovered Claude card waited for `claude`)
+    for card in ["a", "b"] {
+        assert_eq!(
+            world.scheduler_target(card, world.capability.launcher),
+            crate::context::ContextStatus::Ready,
+            "{card}"
+        );
     }
     assert_eq!(
         world.launches()[2..],

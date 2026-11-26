@@ -1801,6 +1801,9 @@ fn running_product(pid: u32, product: &ProductIdentity) -> Option<Running> {
 /// read from the process, and nothing read from the process is returned.
 pub(crate) struct LaunchExpectation<'a> {
     pub(crate) executable: &'a ExecutableRef,
+    /// The `argv[0]` the request started it under (`ARGV0=`, the adapter's
+    /// launcher name): part of the request, checked exactly.
+    pub(crate) argv0: &'a str,
     /// The argument words of the one request this operation typed, in order.
     pub(crate) words: &'a [String],
     /// The carried environment entry the request set (`Reduced::env`): the
@@ -1825,7 +1828,8 @@ pub(crate) enum LaunchCheck {
     Unreadable,
     /// It executes another file than the frozen executable.
     OtherImage,
-    /// Its arguments are not exactly the request this operation built.
+    /// Its `argv[0]` or its arguments are not exactly the request this
+    /// operation built.
     OtherRequest,
     /// Its launch environment has another home or a refused name.
     OtherEnvironment,
@@ -1849,7 +1853,8 @@ fn judge_launch(argv: &[&str], env: &[&str], expect: &LaunchExpectation<'_>) -> 
         return LaunchCheck::OtherEnvironment;
     };
     let words = argv.get(1..).unwrap_or_default();
-    if words.len() != expect.words.len()
+    if argv.first() != Some(&expect.argv0)
+        || words.len() != expect.words.len()
         || words
             .iter()
             .zip(expect.words)
@@ -2826,6 +2831,7 @@ mod tests {
                 env,
                 &LaunchExpectation {
                     executable: &executable,
+                    argv0: "c",
                     words: &words,
                     env: &carried,
                     home: std::path::Path::new("/Users/u"),
@@ -2874,6 +2880,7 @@ mod tests {
                 env,
                 &LaunchExpectation {
                     executable: &executable,
+                    argv0: "c",
                     words: &wanted,
                     env: &[],
                     home: std::path::Path::new("/Users/u"),
@@ -2885,16 +2892,21 @@ mod tests {
         let plain = ["--resume", ID];
         let bypass = [FLAG, "--resume", ID];
         assert_eq!(
-            judge(&["/x/claude", "--resume", ID], HOME, &plain),
+            judge(&["c", "--resume", ID], HOME, &plain),
             LaunchCheck::Matches
         );
         assert_eq!(
-            judge(&["/x/claude", FLAG, "--resume", ID], HOME, &bypass),
+            judge(&["c", FLAG, "--resume", ID], HOME, &bypass),
             LaunchCheck::Matches
         );
         for (argv, wanted) in [
             // another native session
             (&["c", "--resume", OTHER][..], &plain[..]),
+            // started under another name than the request's `ARGV0`: the
+            // release file's own path, or another launcher
+            (&["/x/claude/versions/2.1.330", "--resume", ID], &plain),
+            (&["2.1.330", "--resume", ID], &plain),
+            (&["codex", "--resume", ID], &plain),
             // bypass that this operation did not ask for, and the reverse
             (&["c", FLAG, "--resume", ID], &plain),
             (&["c", "--resume", ID], &bypass),
@@ -2953,6 +2965,7 @@ mod tests {
         let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
         let executable = ExecutableRef::for_tests(&exe);
         let other = ExecutableRef::for_tests(&std::fs::canonicalize("/bin/ls").unwrap());
+        let own_argv0: String = std::env::args().next().expect("own argv[0]");
         let own_words: Vec<String> = std::env::args().skip(1).collect();
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         let here = working_dir(me).expect("own directory");
@@ -2969,6 +2982,7 @@ mod tests {
                 birth,
                 &LaunchExpectation {
                     executable,
+                    argv0: &own_argv0,
                     words,
                     env: &[],
                     home: &home,
@@ -3423,6 +3437,7 @@ mod tests {
                     birth,
                     &LaunchExpectation {
                         executable: &reference,
+                        argv0: "client",
                         words: &words,
                         env: &[],
                         home: std::path::Path::new("/nonexistent"),

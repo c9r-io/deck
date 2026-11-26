@@ -143,7 +143,12 @@
 //!   executable, the adapter's one carried environment entry as the launch
 //!   had it (`procinfo::Reduced::env`: Claude's config folder, so a second
 //!   account's card reopens on that account, 2026-11-25), which the started
-//!   client must have exactly. They grant
+//!   client must have exactly; and the executable started under the
+//!   adapter's launcher name as `argv[0]` (`ARGV0=claude`, 2026-11-26), so a
+//!   client re-entered from Claude's `versions/<release>` file answers to
+//!   `claude` like one the user typed and the card's queued rows reach it
+//!   (`context::evaluate`); the started client must have that `argv[0]`
+//!   exactly (`procinfo::judge_launch`). They grant
 //!   nothing the user's own launch did not. B (`ReapplyBypass`) is THIS restart's
 //!   explicit reauthorization: the override is added only for
 //!   selected ∩ previewed-as-bypass ∩ frozen-as-bypass entries of the same
@@ -2237,7 +2242,7 @@ impl Plan {
                     env,
                     client,
                     &entry.client.executable,
-                    (&entry.client.env, &entry.request),
+                    (capability.launcher, &entry.client.env, &entry.request),
                     &entry.client.cwd,
                     capability.grammar,
                 );
@@ -2443,6 +2448,7 @@ impl Plan {
         let line = request.as_ref().and_then(|request| {
             launch::command_line(
                 entry.client.executable.path(),
+                capability.launcher,
                 &entry.client.env,
                 &request.words,
             )

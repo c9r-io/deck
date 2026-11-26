@@ -404,6 +404,7 @@
         "relive-request": {"a": 4, "b": 2},
         "relive-b-result": {},
         "relive-early": {"metric": true},
+        "relive-b-terms": {"metric": true},
         "relive-b-queue": {"a": 7, "b": 0},
         "relive-next-preview": {"a": 15}
       }
@@ -414,6 +415,7 @@
         "relive-relaunch-preview": {"a": 63},
         "relive-a-result": {"b": 0},
         "relive-a-queue": {"a": 7, "b": 0},
+        "relive-a-send-now": {"a": 15, "b": 0},
         "relive-hold": {}
       }
     },
@@ -421,7 +423,7 @@
       "terminal": "done",
       "checks": {
         "rclive-clean": {"a": 15},
-        "rclive-observe": {"a": 7},
+        "rclive-observe": {"a": 63},
         "rclive-cards": {"a": 2, "b": 3}
       }
     },
@@ -432,6 +434,8 @@
         "rclive-result": {"a": 31, "b": 2},
         "rclive-resumed": {"a": 63},
         "rclive-turn": {},
+        "rclive-queued": {"a": 7},
+        "rclive-send-now": {"a": 15, "b": 0},
         "rclive-again": {"a": 7, "b": 0},
         "rclive-hold": {"metric": true}
       }

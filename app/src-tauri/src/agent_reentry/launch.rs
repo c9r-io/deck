@@ -3,12 +3,15 @@
 //!
 //! # Contract
 //! - The text is rebuilt from structured fields (`command_line`): the frozen
-//!   absolute executable as one single-quoted shell word, then argument
+//!   absolute executable as one single-quoted shell word, started under the
+//!   adapter's launcher name as `argv[0]` (zsh's `ARGV0=`, which zsh
+//!   consumes and never exports: the client looks as if typed through its
+//!   launcher link, so the rows configured for `claude` find it), then argument
 //!   words from the adapter's closed set, the client's carried launch
 //!   options among them (each value one single-quoted word), after the one
 //!   carried environment entry the adapter names, when the old client had
 //!   it (`procinfo::LaunchGrammar::carried_env`: Claude's config folder,
-//!   `NAME='value'`). No other environment assignment, no prompt, no saved card command, no other replayed argv. It travels on stdin
+//!   `NAME='value'`). No other environment assignment (`ARGV0` is the shell's own `argv[0]`, above), no prompt, no saved card command, no other replayed argv. It travels on stdin
 //!   into a private tmux buffer, never in process arguments or logs.
 //! - The launch CONTEXT is a separate question from the input edge. Before
 //!   the request this module establishes a bounded set of facts and no more:
@@ -70,17 +73,39 @@ pub(crate) struct Target<'a> {
 /// is written against (the system's own build of it), for every adapter.
 const LOGIN_SHELL: &str = "zsh";
 
-/// The single command line for `executable` and argument `words`, after the
-/// carried environment entries `env` (`procinfo::Reduced::env`, each
-/// `NAME=value`): one line; each entry as `NAME='value'`, its name all
-/// `[A-Z0-9_]` not starting with a digit; the path as one single-quoted
-/// word; each word bare when it is all `[A-Za-z0-9-]` (the adapter's own
-/// words) and otherwise one single-quoted word (a carried launch value: a
-/// path, a list, a JSON object). `None` for a path, an entry or a word that
-/// cannot be quoted on one line (a control character), an empty word or an
-/// entry that is not a plain name and value.
-pub(crate) fn command_line(executable: &Path, env: &[String], words: &[String]) -> Option<String> {
+/// The single command line for `executable` started as `argv0` with argument
+/// `words`, after the carried environment entries `env`
+/// (`procinfo::Reduced::env`, each `NAME=value`): one line; each entry as
+/// `NAME='value'`, its name all `[A-Z0-9_]` not starting with a digit; then
+/// `ARGV0=<argv0>`, the adapter's launcher name (all `[a-z0-9_-]`); the path
+/// as one single-quoted word; each word bare when it is all `[A-Za-z0-9-]`
+/// (the adapter's own words) and otherwise one single-quoted word (a carried
+/// launch value: a path, a list, a JSON object). `None` for a path, an
+/// entry, a launcher name or a word that cannot be quoted on one line (a
+/// control character), an empty word or an entry that is not a plain name
+/// and value.
+///
+/// `ARGV0` is the supported shell's own precommand parameter: zsh starts the
+/// command with that `argv[0]` and does not put `ARGV0` in its environment.
+/// It makes the started client look to the kernel exactly as one the user
+/// typed through the launcher link (`claude` → `versions/2.1.330`): every
+/// name-based reader of the pane — the scheduler's `expected_process` check
+/// above all (`context::evaluate`) — sees the launcher, not the release
+/// file's name, which no row was ever configured for.
+pub(crate) fn command_line(
+    executable: &Path,
+    argv0: &str,
+    env: &[String],
+    words: &[String],
+) -> Option<String> {
     let path = executable.to_str().filter(|_| executable.is_absolute())?;
+    if argv0.is_empty()
+        || !argv0
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    {
+        return None;
+    }
     let quoted = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
     if path.chars().any(char::is_control) {
         return None;
@@ -103,6 +128,9 @@ pub(crate) fn command_line(executable: &Path, env: &[String], words: &[String]) 
         line.push_str(&quoted(value));
         line.push(' ');
     }
+    line.push_str("ARGV0=");
+    line.push_str(argv0);
+    line.push(' ');
     line.push_str(&quoted(path));
     for word in words {
         if word.is_empty() || word.chars().any(char::is_control) {
@@ -277,7 +305,7 @@ pub(crate) fn actual_context(
     env: &Env,
     client: (u32, (u64, u32)),
     executable: &crate::procinfo::ExecutableRef,
-    (carried_env, words): (&[String], &[String]),
+    (argv0, carried_env, words): (&str, &[String], &[String]),
     cwd: &DirRef,
     grammar: &crate::procinfo::LaunchGrammar,
 ) -> crate::procinfo::LaunchCheck {
@@ -286,6 +314,7 @@ pub(crate) fn actual_context(
         client.1,
         &crate::procinfo::LaunchExpectation {
             executable,
+            argv0,
             words,
             env: carried_env,
             home: env.home,
@@ -408,20 +437,20 @@ mod tests {
     fn the_line_is_one_quoted_absolute_path_and_closed_words() {
         let exe = Path::new("/Users/x/.local/share/claude/versions/2.1.294");
         assert_eq!(
-            command_line(exe, &[], &words(&["--resume", ID])).unwrap(),
-            format!("'/Users/x/.local/share/claude/versions/2.1.294' --resume {ID}")
+            command_line(exe, "claude", &[], &words(&["--resume", ID])).unwrap(),
+            format!("ARGV0=claude '/Users/x/.local/share/claude/versions/2.1.294' --resume {ID}")
         );
         assert_eq!(
-            command_line(exe, &[], &words(&["--dangerously-skip-permissions", "--resume", ID])).unwrap(),
+            command_line(exe, "claude", &[], &words(&["--dangerously-skip-permissions", "--resume", ID])).unwrap(),
             format!(
-                "'/Users/x/.local/share/claude/versions/2.1.294' --dangerously-skip-permissions --resume {ID}"
+                "ARGV0=claude '/Users/x/.local/share/claude/versions/2.1.294' --dangerously-skip-permissions --resume {ID}"
             )
         );
         // a path with spaces, quotes, dollars and backticks stays ONE word
         let odd = Path::new("/Users/o'brien/my $HOME `x`/2.1.294");
         assert_eq!(
-            command_line(odd, &[], &words(&["--resume", ID])).unwrap(),
-            format!(r"'/Users/o'\''brien/my $HOME `x`/2.1.294' --resume {ID}")
+            command_line(odd, "claude", &[], &words(&["--resume", ID])).unwrap(),
+            format!(r"ARGV0=claude '/Users/o'\''brien/my $HOME `x`/2.1.294' --resume {ID}")
         );
     }
 
@@ -486,13 +515,29 @@ mod tests {
             Path::new("/opt/cl\u{1b}aude"),
         ] {
             assert!(
-                command_line(bad, &[], &words(&["--resume", ID])).is_none(),
+                command_line(bad, "claude", &[], &words(&["--resume", ID])).is_none(),
+                "{bad:?}"
+            );
+        }
+        // the launcher name is a plain lowercase name or no line at all
+        for bad in [
+            "",
+            "Claude",
+            "cl aude",
+            "x;y",
+            "$(id)",
+            "a=b",
+            "/x/claude",
+            "c\nx",
+        ] {
+            assert!(
+                command_line(exe, bad, &[], &words(&["--resume", ID])).is_none(),
                 "{bad:?}"
             );
         }
         for bad in ["", "continue\n", "a\tb"] {
             assert!(
-                command_line(exe, &[], &words(&["--resume", bad])).is_none(),
+                command_line(exe, "claude", &[], &words(&["--resume", bad])).is_none(),
                 "{bad:?}"
             );
         }
@@ -507,7 +552,7 @@ mod tests {
             ("{\"hooks\":{}}", "'{\"hooks\":{}}'"),
             ("'quoted'", r"''\''quoted'\'''"),
         ] {
-            let line = command_line(exe, &[], &words(&["--settings", word])).unwrap();
+            let line = command_line(exe, "claude", &[], &words(&["--settings", word])).unwrap();
             assert!(line.ends_with(&format!(" --settings {typed}")), "{line}");
         }
         // a carried environment entry: its value one single-quoted word
@@ -515,12 +560,13 @@ mod tests {
         assert_eq!(
             command_line(
                 exe,
+                "claude",
                 &words(&["CLAUDE_CONFIG_DIR=/Users/x/.claude work"]),
                 &words(&["--resume", ID])
             )
             .unwrap(),
             format!(
-                "CLAUDE_CONFIG_DIR='/Users/x/.claude work' '/opt/claude/2.1.294' --resume {ID}"
+                "CLAUDE_CONFIG_DIR='/Users/x/.claude work' ARGV0=claude '/opt/claude/2.1.294' --resume {ID}"
             )
         );
         for bad in [
@@ -533,7 +579,7 @@ mod tests {
             "$(id)=x",
         ] {
             assert!(
-                command_line(exe, &words(&[bad]), &words(&["--resume", ID])).is_none(),
+                command_line(exe, "claude", &words(&[bad]), &words(&["--resume", ID])).is_none(),
                 "{bad:?}"
             );
         }

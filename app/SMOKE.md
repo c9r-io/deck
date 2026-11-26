@@ -1531,7 +1531,11 @@ under a person's home.
       (`relive-relaunch-preview`), "Select all candidates" with the policy
       left alone re-enters A, B and C and no row speaks of a flag
       (`relive-a-result`, `b=0`), and the queued prompt is still paused and
-      undelivered (`relive-a-queue`). Judge with `scripts/smoke-verdict <data
+      undelivered (`relive-a-queue`). A prompt queued on B after its
+      re-entry, held a day by its "not before", waits for `claude` and
+      reaches B by Send now; B answers it (`relive-a-send-now`: the
+      re-entered client runs from its release file under the launcher's
+      name). Judge with `scripts/smoke-verdict <data
       dir> reentry-live-relaunch`.
 - [ ] A pass is a debug carrier under a relocated home: it is not the release
       build in `/Applications`, and "confirmed" means that the client entered
@@ -1556,7 +1560,7 @@ person's home.
       the launch's own (a second account's worker: its folder and options
       are recorded and typed again). Scenario word
       `rclive-<12 hex>`; launch with `--smoke-wkwebview recovery-live`.
-- [ ] The page switches observation on (`rclive-observe`), starts A
+- [ ] The page switches observation on, lifecycle and Agent Status hooks (`rclive-observe`), starts A
       (`claude`, a turn, `/clear`, a turn), B (`claude
       --dangerously-skip-permissions`, a turn) and D (`cat`) (`rclive-cards`),
       reports `done` and waits. Read `<data dir>/agent-recovery.json` (two
@@ -1570,7 +1574,12 @@ person's home.
       both rows say the session was entered with no bypass flag
       (`rclive-result`); A shows its turn after `/clear` and not the one
       before, B's mode line is not bypass (`rclive-resumed`); A answers one
-      more turn (`rclive-turn`); nothing is offered again (`rclive-again`). At
+      more turn (`rclive-turn`); a prompt queued on A then reaches it on its
+      own and A answers it (`rclive-queued`), and one queued on B, which has
+      answered nothing since the recovery, reaches it by Send now
+      (`rclive-send-now`) — both rows wait for `claude`, the name the
+      recovered clients run under (incident 2026-11-26: every row of a
+      recovered card waited forever); nothing is offered again (`rclive-again`). At
       `rclive-hold` read the process table: each new client is the versioned
       `claude --resume <the recorded id>`, once, with no bypass flag.
 - [ ] Judge each launch with `scripts/smoke-verdict <data dir> <mode>` (copy

@@ -264,7 +264,7 @@ export async function harness(prefix = 'relive') {
   const confirmed = () => resultRows().filter(row => row.classList.contains('ok'));
   /* rows that speak of the bypass flag: the Policy B sentence or its detail line */
   const flagged = () => resultRows().filter(row => head(row).includes(t('reentry.result.confirmed', { agent: 'Claude' }))
-    || details(row).includes(t('reentry.warning.bypass-reauthorized')));
+    || details(row).includes(t('reentry.warning.bypass-reauthorized', { agent: 'Claude' })));
   const footer = () => all($('tmux-result'), '.reentry-notes > div').map(node => node.textContent);
 
   /* ---- the queue ---- */
@@ -288,10 +288,37 @@ export async function harness(prefix = 'relive') {
     };
   };
 
+  /* ---- a prompt queued AFTER a re-entry or a recovery (incident 2026-11-26:
+     a re-entered client ran as its release file, `versions/2.1.330`, and
+     every row configured for `claude` waited for `claude` to come back) ---- */
+  /* One prompt `PROMPT + token` on `card` the way the ⏱ panel starts a list:
+     due now, or held `holdSecs` by its "not before". Its row id, and the
+     process its row waits for (`expected_process`), as the backend took it. */
+  const queueOne = async (card, token, holdSecs = 0) => {
+    const now = Math.floor(Date.now() / 1000);
+    const { session, id, dir, cmd } = provider.get(card.id);
+    const base = { session, cardId: id, dir, cmd, reviewEach: false };
+    const sched = { ...listScheduleArgs(holdSecs ? { notBefore: now + holdSecs } : {}, now).args, reviewEach: false };
+    for (const [command, payload] of listStartCalls(base, sched, [`${PROMPT}${token}`])) await inv(command, payload);
+    const row = ((await inv('queue_list')).items || []).find(item => item.session === session && item.text === `${PROMPT}${token}`);
+    return { id: row?.id ?? null, expected: row?.expected_process ?? null };
+  };
+  /* the delivery ledger names that row */
+  const deliveredRow = async rowId => !!rowId && ((await inv('queue_list')).deliveries || []).some(d => d.item === rowId);
+  /* the client answered `token` (its prompt's echo carries the word too, not after the mark) */
+  const replied = (session, token) => screen(session).some(line => line.trimStart().startsWith(REPLY_MARK) && line.includes(token));
+  /* The prompt reached the client and it answered: the ledger, then its screen,
+     with the card shown (a pane is read only while it is the one shown). */
+  const reached = async (card, row, token, timeout = 120000) => !!row.id
+    && await waitFor(() => deliveredRow(row.id), timeout)
+    && await show(card) && await waitFor(() => replied(card.session, token), 90000);
+  /* Send now on that row, as the ⏱ panel's button does: the backend's answer, never thrown */
+  const sendNow = rowId => inv('queue_send_now', { id: rowId }).then(() => 'ok', error => String(error?.message ?? error));
+
   return { $, inv, store, provider, t, pause, waitFor, report, metric, bits, hold, workDir, shows, show, start, waitReady, type, say,
     ask, hooks, openAgents, enable, section, all, text, rows, radios, rowOf, selectable, isOff, ticked, bypassRows,
     selectAll, untouched, openReview, leaveReview, conclude, resultRows, details, says, confirmed, flagged, footer,
-    queueLater, queued, failed: () => failed };
+    queueLater, queued, queueOne, reached, sendNow, failed: () => failed };
 }
 
 export async function runReentryLiveSmoke() {
@@ -402,10 +429,13 @@ export async function runReentryLiveSmoke() {
     // 8. its result: the service restarted, A entered without a flag, B and C with the one this restart authorized
     stage = 8;
     const ended = await conclude();
-    const settled = ended && $('tmux-lifecycle-title').textContent === t('reentry.result.restarted')
-      && !!says(A, 'reentry.result.confirmedOrdinary')
-      && [B, C].every(card => details(says(card, 'reentry.result.confirmed')).includes(t('reentry.warning.bypass-reauthorized')))
-      && footer().includes(t('reentry.result.queueRowsPaused', { count: 1 }));
+    const terms = [ended, $('tmux-lifecycle-title').textContent === t('reentry.result.restarted'),
+      !!says(A, 'reentry.result.confirmedOrdinary'),
+      ...[B, C].map(card => details(says(card, 'reentry.result.confirmed')).includes(t('reentry.warning.bypass-reauthorized', { agent: 'Claude' }))),
+      footer().includes(t('reentry.result.queueRowsPaused', { count: 1 }))];
+    const settled = terms.every(Boolean);
+    // written, never judged: which of those terms held, one bit each in that order
+    await metric('relive-b-terms', bits(terms), resultRows().length);
     // a = entries confirmed; b = rows that speak of the bypass flag
     await report('relive-b-result', settled, confirmed().length, flagged().length);
     // E's client started before the hooks existed; what its row says is recorded, never judged
@@ -444,7 +474,8 @@ export async function runReentryLiveSmoke() {
 export async function runReentryLiveRelaunchSmoke() {
   const h = await harness();
   const { $, inv, store, t, pause, waitFor, report, bits, hold, workDir, rows, radios, rowOf, selectable, ticked, selectAll,
-    untouched, openReview, leaveReview, conclude, says, confirmed, flagged, queued } = h;
+    untouched, openReview, leaveReview, conclude, says, confirmed, flagged, queued, queueOne, reached, sendNow } = h;
+  const { ctx } = await import('../js/state.js');
   let stage = 0;
   try {
     // 1. the Board of the launch before, and a review that inherits nothing from it
@@ -464,19 +495,41 @@ export async function runReentryLiveRelaunchSmoke() {
     await pause(100);
     const asked = [A, B, C].every(card => ticked().includes(rowOf(card))) && radios()[0].checked && !radios()[1].checked
       && $('tmux-restart').textContent === t('reentry.confirm', { count: ticked().length });
+    const count = ticked().length;
+    // A result that needs nothing from the user is one toast, not the list (bf75415a, 2026-11-22):
+    // every toast of this restart is kept from before the click
+    const toasts = [];
+    const watch = new MutationObserver(records => records.forEach(record => record.addedNodes
+      .forEach(node => toasts.push(node.textContent))));
+    watch.observe($('toasts'), { childList: true });
     if (asked) $('tmux-restart').click();
-    const ended = asked && await conclude();
-    const settled = ended && $('tmux-lifecycle-title').textContent === t('reentry.result.restarted')
-      && [A, B, C].every(card => !!says(card, 'reentry.result.confirmedOrdinary')) && flagged().length === 0;
-    // a = entries confirmed; b = rows that speak of the bypass flag: none
-    await report('relive-a-result', settled, confirmed().length, flagged().length);
+    const listed = asked && await conclude();
+    // the restart has ENDED either way before anything is queued (a row queued during it is bound to the old pane)
+    const ended = asked && await waitFor(() => !ctx.tmuxRestarting && (listed || toasts.length > 0), 90000);
+    watch.disconnect();
+    const quiet = toasts.includes(t('reentry.result.quiet', { count }));
+    const settled = ended && (quiet || (listed && $('tmux-lifecycle-title').textContent === t('reentry.result.restarted')
+      && [A, B, C].every(card => !!says(card, 'reentry.result.confirmedOrdinary')) && flagged().length === 0));
+    // a = entries confirmed (the toast's count when it was the toast); b = rows that speak of the bypass flag: none
+    await report('relive-a-result', settled, quiet ? count : confirmed().length, quiet ? 0 : flagged().length);
 
     // 3. the prompt on A: still the one row, still paused, still undelivered
     stage = 3;
     const kept = await queued(A);
     const paused = [!!kept.item, kept.item?.paused === true, kept.delivered === 0];
     await report('relive-a-queue', paused.every(Boolean), bits(paused), kept.delivered);
-    await leaveReview('tmux-done');
+    if (quiet) { if ($('set-close')) $('set-close').click(); } else await leaveReview('tmux-done');
+
+    // 4. a prompt queued on B after its re-entry reaches it by Send now, the
+    //    user's own button: the row waits for `claude`, which the re-entered
+    //    client (started from its release file) now answers to. Held by its
+    //    "not before" for a day, so only the button can send it
+    stage = 4;
+    const row = await queueOne(B, 'deckrelivenow', 86400);
+    const answer = row.id ? await sendNow(row.id) : 'no-row';
+    const sent = [!!row.id, row.expected === 'claude', answer === 'ok', answer === 'ok' && await reached(B, row, 'deckrelivenow')];
+    // b = 1 when the backend answered anything but ok (its words are not logged)
+    await report('relive-a-send-now', sent.every(Boolean), bits(sent), answer === 'ok' ? 0 : 1);
     await hold(3, 12000);
     await report('done', !h.failed(), 1, 0);
   } catch (error) {

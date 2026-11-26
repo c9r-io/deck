@@ -7,7 +7,7 @@
 // and what Claude's screen says) is reentry-live-smoke.mjs's.
 //
 // `recovery-live`, the launch before the loss:
-//   the lifecycle hooks are switched on through their box (observation);
+//   the lifecycle and Agent Status hooks are switched on through their boxes (observation);
 //   A  `claude`: a turn, `/clear`, another turn, so the session to recover is
 //      not the one it started in;
 //   B  `claude --dangerously-skip-permissions`: a turn under bypass;
@@ -84,7 +84,12 @@ export async function runRecoveryLiveSmoke() {
     stage = 2;
     await openAgents();
     const life = await enable('set-claude-reentry', 'settings.claudeReentryEnableConfirm', now => now.claude_reentry === true);
-    const observed = [life, (await hooks()).claude_reentry === true, $('set-claude-reentry').checked];
+    // and Agent Status (2026-11-26): without it a recovered client never shows interaction evidence and a
+    // queued row waits for Send now by design; with it, `rclive-queued` asks that the row goes on its own
+    const signal = life && await enable('set-agent-hooks', 'settings.agentHooksEnableConfirm', now => now.claude === true);
+    const now = await hooks();
+    const observed = [life, now.claude_reentry === true, $('set-claude-reentry').checked,
+      signal, now.claude === true, $('set-agent-hooks').checked];
     $('set-close').click();
     if (!await report('rclive-observe', observed.every(Boolean), bits(observed))) throw new Error('hooks');
 
@@ -119,7 +124,7 @@ export async function runRecoveryLiveSmoke() {
 export async function runRecoveryLiveRelaunchSmoke() {
   const h = await recoveryHarness();
   const { $, inv, t, pause, waitFor, report, metric, bits, workDir, shows, show, waitReady, ask, ctx, recoveryOpen,
-    answered, card, rows, rowOf, ticked, resultRows, says } = h;
+    answered, card, rows, rowOf, ticked, resultRows, says, queueOne, reached, sendNow } = h;
   let stage = 0;
   try {
     // 1. the dialog opened by itself: A and B ticked, D not offered, the button names two sessions
@@ -162,6 +167,23 @@ export async function runRecoveryLiveRelaunchSmoke() {
     stage = 4;
     const turned = await show(A) && await ask(A.session, 'deckra3');
     await report('rclive-turn', turned);
+
+    // 4b. a prompt queued on A now reaches it ON ITS OWN: the row waits for
+    //     `claude`, which the recovered client (started from its release
+    //     file) answers to, and A's turn above is its interaction evidence.
+    //     (incident 2026-11-26: every row of a recovered card waited for
+    //     `claude` to come back, Send now included)
+    stage = 4;
+    const auto = await queueOne(A, 'deckraqueued');
+    const delivered = [!!auto.id, auto.expected === 'claude', await reached(A, auto, 'deckraqueued')];
+    await report('rclive-queued', delivered.every(Boolean), bits(delivered));
+    // B answered nothing since its recovery: its row waits for that, and Send
+    // now (the user's button) sends it. Held a day by its "not before"
+    const held = await queueOne(B, 'deckrbnow', 86400);
+    const answer = held.id ? await sendNow(held.id) : 'no-row';
+    const sent = [!!held.id, held.expected === 'claude', answer === 'ok', answer === 'ok' && await reached(B, held, 'deckrbnow')];
+    // b = 1 when the backend answered anything but ok (its words are not logged)
+    await report('rclive-send-now', sent.every(Boolean), bits(sent), answer === 'ok' ? 0 : 1);
 
     // 5. asked again, nothing is offered: the records were consumed and the service is alive
     stage = 5;
