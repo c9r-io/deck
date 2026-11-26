@@ -1,0 +1,13 @@
+# baseline, tmux server SIGSTOPped, ~1300 paced keystrokes into a live pane
+# main thread:
+1545 Thread_36127543   DispatchQueue_1: com.apple.main-thread  (serial)
+1545 _RNvNtCsgrRZqR8UbeV_8deck_app3pty9pty_write  (in deck) + 940    pty.rs:1075
+1545 _RNvXs3_NtNtCsa9BKTri5B3M_3std2io5implsINtNtCslJsSqIQKwiA_5alloc5boxed3BoxDNtB7_5WriteNtNtCsgtPOCBgevO_4core6marker4SendEL_EB1a_9write_allCsgrRZqR8UbeV_8deck_app  (in deck) + 52    impls.rs:218
+1545 _RNvYNtNtCslkmdmgPu8ZA_12portable_pty4unix16UnixMasterWriterNtNtCsa9BKTri5B3M_3std2io5Write9write_allB6_  (in deck) + 108  
+1545 _RNvXs6_NtCslkmdmgPu8ZA_12portable_pty4unixNtB5_16UnixMasterWriterNtNtCsa9BKTri5B3M_3std2io5Write5write  (in deck) + 52  
+1545 _RNvXsb_NtCs3V61TQ0Ziz3_14filedescriptor4unixNtB7_14FileDescriptorNtNtCsa9BKTri5B3M_3std2io5Write5write  (in deck) + 52  
+1545 write  (in libsystem_kernel.dylib) + 8  
+# 20 s later, the scheduler thread (PtyState::attached waits for the map lock pty_write holds):
+810 _RNvMs_NtCsgrRZqR8UbeV_8deck_app3ptyNtB4_8PtyState8attached  (in deck) + 28    pty.rs:183
+810 __psynch_mutexwait  (in libsystem_kernel.dylib) + 8  
+__psynch_mutexwait  (in libsystem_kernel.dylib)        810

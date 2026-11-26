@@ -1,0 +1,16 @@
+# baseline app.log (isolated smoke data dir): tmux stopped at 1795680355, wheel at ~1795680356, released at ~1795680396
+1795680347 [start] created sess-d0ae0 gate=16ms create=8ms cmd=0ms total=24ms restored=false
+1795680347 [pty] attached sess-d0ae0 (133x25)
+1795680347 [pty] first emit 672B to sess-d0ae0 ok=true after 10ms
+1795680347 [ui] pty-rx a=672 b=672
+1795680347 [tmux-control] read channel connected
+1795680347 [ui] pty-rx a=264 b=936
+1795680347 [ui] pty-rx a=544 b=1480
+1795680357 [tmux-control] query reset (tmux)
+1795680358 [poll] session listing FAILED (tmux)
+1795680371 [poll] webview poll idle; bells observed on the scheduler tick
+1795680396 [ui] poll-fail
+1795680398 [poll] webview poll resumed
+1795680399 [tmux-control] read channel connected
+1795680399 [poll] session listing recovered
+1795680399 [ui] poll-recovered

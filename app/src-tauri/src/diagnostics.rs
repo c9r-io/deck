@@ -1229,6 +1229,8 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
         DetailPolicy::Closed(&["pane", "attachment", "backend"]),
     ),
     ("pty-rx", DetailPolicy::None),
+    // xterm consumed an attachment's first frame: a = generation, b = bytes
+    ("pty-first", DetailPolicy::None),
     ("keydown", DetailPolicy::Closed(KEY_CLASSES)),
     ("composition", DetailPolicy::Closed(&["start", "end"])),
     // always-on IME commit probe (ui/js/terminal-ime-probe.js): labels,

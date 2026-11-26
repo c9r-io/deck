@@ -7,6 +7,8 @@
 //! that cannot be interrupted is bounded for its CALLER only by a worker the
 //! caller stops waiting for, and for its RESULT only by asking the scope
 //! after the call returned.
+//! `off_ipc_thread` is how a terminal IPC command leaves the window's main
+//! thread: it installs the deadline on the pool thread that does the work.
 //! This module knows no panes, agents, snapshots, scheduler or restart policy.
 //! Existing IPC error codes remain stable for callers.
 use crate::applog::applog;
@@ -119,6 +121,159 @@ pub(crate) fn run_bounded<T: Send + 'static>(
             Err(DeckError::restart(RestartFailure::Deadline))
         }
         Err(Unanswered::Failed) => Err(error("tmux-restart-worker-failed")),
+    }
+}
+
+/// A webview's IPC is answered on the window's main thread: an ordinary
+/// (non-async) Tauri command runs there, inside WebKit's URL-scheme callback.
+/// A terminal command that waits there for tmux freezes the whole window, and
+/// every request queued behind it, for as long as tmux does not answer
+/// (2026-11-26: a stopped tmux server held `scroll_session` in
+/// `Command::output` with 100% of main-thread samples). `off_ipc_thread` runs
+/// such a command on a blocking-pool thread under its own deadline scope,
+/// installed on THAT thread, so every tmux call inside it is bounded by
+/// `bounded_output` (its own child killed and reaped at the end) and every
+/// `OperationLock` wait gives up at the same instant. The caller is answered
+/// `terminal-timeout` no later than `budget` whatever the work does; a late
+/// worker keeps what it holds until its own deadline ends its last call, and
+/// its answer is dropped and logged. Nothing is retried.
+pub(crate) async fn off_ipc_thread<T: Send + 'static>(
+    op: &'static str,
+    budget: Duration,
+    work: impl FnOnce() -> Result<T, DeckError> + Send + 'static,
+) -> Result<T, DeckError> {
+    use std::sync::atomic::Ordering;
+    let started = Instant::now();
+    let end = started + budget;
+    TERMINAL_WORKERS.fetch_add(1, Ordering::AcqRel);
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let result = {
+            let _deadline = Deadline::until(end);
+            work()
+        };
+        let running = TERMINAL_WORKERS.fetch_sub(1, Ordering::AcqRel) - 1;
+        let took = started.elapsed();
+        if took >= budget {
+            rate_limited(op, "late", || {
+                format!(
+                    "[terminal] {op} finished late after {}ms, answer dropped (workers={running})",
+                    took.as_millis()
+                )
+            });
+        } else if took >= SLOW_TERMINAL_OP {
+            rate_limited(op, "slow", || {
+                format!("[terminal] {op} slow {}ms", took.as_millis())
+            });
+        }
+        result
+    });
+    match tokio::time::timeout_at(end.into(), task).await {
+        Ok(Ok(result)) => result.map_err(terminal_error),
+        Ok(Err(_)) => Err(DeckError::new(ErrorKind::Tmux, "terminal-worker-failed")),
+        Err(_) => {
+            rate_limited(op, "timeout", || {
+                format!(
+                    "[terminal] {op} no answer within {}ms (workers={})",
+                    budget.as_millis(),
+                    TERMINAL_WORKERS.load(Ordering::Acquire)
+                )
+            });
+            Err(timeout_error())
+        }
+    }
+}
+
+/// Terminal workers still running (answered or not): a count that only
+/// grows while each one is bounded would show accumulation in app.log.
+static TERMINAL_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const SLOW_TERMINAL_OP: Duration = Duration::from_millis(500);
+pub(crate) const TERMINAL_TIMEOUT: &str = "terminal-timeout";
+pub(crate) const TERMINAL_BUSY: &str = "terminal-busy";
+
+fn timeout_error() -> DeckError {
+    DeckError::new(ErrorKind::Tmux, TERMINAL_TIMEOUT)
+}
+
+/// A tmux call cut by the terminal deadline surfaces as the restart
+/// deadline inside `captured_output`; a terminal caller is told what it is.
+fn terminal_error(error: DeckError) -> DeckError {
+    if error.restart_failure() == Some(RestartFailure::Deadline) {
+        timeout_error()
+    } else {
+        error
+    }
+}
+
+/// At most one line per (op, outcome) every 5 s, carrying how many were
+/// folded into it, so a stalled tmux cannot flood app.log at frame rate.
+fn rate_limited(op: &'static str, outcome: &'static str, line: impl FnOnce() -> String) {
+    use crate::sync::LockRecover;
+    use std::collections::HashMap;
+    /// (op, outcome) → (last line, lines folded since)
+    type Seen = HashMap<(&'static str, &'static str), (Instant, u32)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock_or_recover();
+    let entry = seen
+        .get_or_insert_with(HashMap::new)
+        .entry((op, outcome))
+        .or_insert((Instant::now() - Duration::from_secs(60), 0));
+    if entry.0.elapsed() < Duration::from_secs(5) {
+        entry.1 += 1;
+        return;
+    }
+    let folded = std::mem::take(&mut entry.1);
+    entry.0 = Instant::now();
+    drop(seen);
+    if folded > 0 {
+        applog(&format!("{} (+{folded} since last)", line()));
+    } else {
+        applog(&line());
+    }
+}
+
+/// A mutual-exclusion lock whose wait obeys the calling thread's deadline
+/// scope: it gives up with `terminal-busy` when the scope ends, instead of
+/// queueing a caller behind a holder that is itself waiting on tmux. A
+/// caller without a scope waits as a plain mutex does (tests only; every
+/// production holder runs inside `off_ipc_thread`). Exclusion only: it
+/// promises no order between waiters.
+pub(crate) struct OperationLock {
+    busy: std::sync::Mutex<bool>,
+    free: std::sync::Condvar,
+}
+
+pub(crate) struct OperationGuard<'a>(&'a OperationLock);
+
+impl OperationLock {
+    pub(crate) const fn new() -> Self {
+        Self {
+            busy: std::sync::Mutex::new(false),
+            free: std::sync::Condvar::new(),
+        }
+    }
+
+    pub(crate) fn acquire(&self) -> Result<OperationGuard<'_>, DeckError> {
+        use crate::sync::LockRecover;
+        let mut busy = self.busy.lock_or_recover();
+        while *busy {
+            busy = match deadline_remaining() {
+                None => crate::sync::wait_or_recover(&self.free, busy),
+                Some(left) if left.is_zero() => {
+                    return Err(DeckError::new(ErrorKind::Tmux, TERMINAL_BUSY))
+                }
+                Some(left) => crate::sync::wait_timeout_or_recover(&self.free, busy, left),
+            };
+        }
+        *busy = true;
+        Ok(OperationGuard(self))
+    }
+}
+
+impl Drop for OperationGuard<'_> {
+    fn drop(&mut self) {
+        use crate::sync::LockRecover;
+        *self.0.busy.lock_or_recover() = false;
+        self.0.free.notify_all();
     }
 }
 
@@ -307,5 +462,65 @@ mod tests {
     fn expired_deadline_never_launches_a_command() {
         let err = bounded_output(&mut Command::new("/does-not-exist"), Instant::now()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    /// A waiter under a deadline gives up with `terminal-busy` when its
+    /// scope ends instead of queueing behind a holder stuck on tmux; the
+    /// lock is usable again as soon as the holder lets go.
+    #[test]
+    fn operation_lock_wait_ends_with_the_callers_deadline() {
+        static LOCK: OperationLock = OperationLock::new();
+        let held = LOCK.acquire().expect("free");
+        let begin = Instant::now();
+        let waited = std::thread::spawn(move || {
+            let _scope = Deadline::until(Instant::now() + Duration::from_millis(80));
+            LOCK.acquire()
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(waited.unwrap_err(), TERMINAL_BUSY);
+        assert!(begin.elapsed() < Duration::from_secs(1));
+        drop(held);
+        let _scope = Deadline::until(Instant::now() + Duration::from_millis(80));
+        assert!(LOCK.acquire().is_ok(), "released, the lock is free again");
+    }
+
+    /// The caller is answered within the budget whatever the work does; the
+    /// work's own tmux-style child is still killed at the same deadline, so
+    /// a late worker ends shortly after it and holds nothing.
+    #[test]
+    fn off_ipc_thread_answers_within_budget_and_the_late_worker_still_ends() {
+        let (finished_tx, finished) = std::sync::mpsc::channel();
+        let begin = Instant::now();
+        let answer = tauri::async_runtime::block_on(off_ipc_thread(
+            "test-stall",
+            Duration::from_millis(150),
+            move || {
+                // a child that would never answer: bounded by this thread's scope
+                let out = command_output(Command::new("/bin/sleep").arg("30"));
+                let _ = finished_tx.send(Instant::now());
+                out.map(|_| ())
+                    .map_err(|_| DeckError::restart(RestartFailure::Deadline))
+            },
+        ));
+        assert_eq!(answer.unwrap_err().message(), TERMINAL_TIMEOUT);
+        assert!(
+            begin.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            begin.elapsed()
+        );
+        let ended = finished
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker ended");
+        assert!(ended.duration_since(begin) < Duration::from_secs(1));
+        // an ordinary answer passes through unchanged
+        let ok = tauri::async_runtime::block_on(off_ipc_thread(
+            "test-ok",
+            Duration::from_secs(1),
+            || Ok::<_, DeckError>(7),
+        ));
+        assert_eq!(ok.unwrap(), 7);
     }
 }

@@ -861,6 +861,7 @@ const INPUT_TOKENS: &[&str] = &[
     "send-prefix",
     "send-keys",
     "take_writer(",
+    "master_input(",
     ".write_all(",
 ];
 
@@ -886,10 +887,28 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
         1,
         Input::Owner,
     ),
-    ("pty.rs", "attach_session", "take_writer(", 1, Input::Owner),
-    ("pty.rs", "pty_write", ".write_all(", 1, Input::Owner),
+    // The attachment's input handle (a dup of its master): only its own
+    // input pump writes through it, the bytes `pty_write` queued for that
+    // generation (pty.rs `PtyInput`).
+    ("pty.rs", "attach_session", "master_input(", 1, Input::Owner),
     // The real-pty round trip of the pty_write generation check.
-    ("pty.rs", "attach_real", "take_writer(", 1, Input::Fixture),
+    ("pty.rs", "attach_real", "master_input(", 1, Input::Fixture),
+    // Ending an attachment types nothing: the pump's handle over a real pty.
+    (
+        "pty.rs",
+        "ending_an_attachment_writes_nothing_to_the_tty",
+        "master_input(",
+        1,
+        Input::Fixture,
+    ),
+    // portable-pty's own writer, kept only to pin its blocking drop.
+    (
+        "pty.rs",
+        "portable_pty_writer_drop_blocks_while_the_tty_takes_no_input",
+        "take_writer(",
+        1,
+        Input::Fixture,
+    ),
     // Local physical wheel: bounded numeric coordinates become protocol
     // bytes, never external text; scroll_session applies the MCP input fence.
     (
@@ -979,13 +998,15 @@ fn every_terminal_input_site_is_reviewed() {
         copy_mode_keys(source, at)
             // `.write_all(` is a terminal write only on the PTY writer.
             || (source[at..].starts_with(".write_all(") && !source.contains("take_writer("))
+            // a function's own definition is not a site that uses it
+            || source[..at].ends_with("fn ")
     });
     assert_pinned("terminal input", &found, TERMINAL_INPUT);
     let wheel = body("terminal_scroll.rs", "mouse_command");
     assert!(wheel.contains("-H {}"));
     assert!(wheel.contains("format!(\"{byte:02x}\")"));
     assert!(wheel.contains("clamp(1, 60)"));
-    let scroll = body("terminal.rs", "scroll_session");
+    let scroll = body("terminal.rs", "scroll_session_now");
     assert!(
         scroll.find("guard_terminal_input(&name)?").unwrap()
             < scroll.find("negotiated_args(").unwrap()
@@ -994,7 +1015,7 @@ fn every_terminal_input_site_is_reviewed() {
     assert!(click.contains("-H {}"));
     assert!(click.contains("format!(\"{byte:02x}\")"));
     assert!(click.contains("click_encodable("));
-    let offer = body("terminal.rs", "click_session");
+    let offer = body("terminal.rs", "click_session_now");
     assert!(
         offer.find("guard_terminal_input(&name)").unwrap() < offer.find("click_args(").unwrap()
     );

@@ -78,11 +78,22 @@ fn validated_palette_color(value: &str) -> bool {
 /// intermediate cursor motions from flashing across the terminal. Values
 /// never come from a free-form UI; the strict shape check also prevents
 /// option/format injection if the webview is compromised.
+/// Runs off the IPC thread (`session_runtime::off_ipc_thread`): three tmux
+/// calls a stopped server would otherwise hold the window on.
 #[tauri::command]
-pub(crate) fn set_terminal_mode_style(
+pub(crate) async fn set_terminal_mode_style(
     foreground: String,
     background: String,
 ) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "set_terminal_mode_style",
+        std::time::Duration::from_secs(2),
+        move || set_terminal_mode_style_now(foreground, background),
+    )
+    .await
+}
+
+fn set_terminal_mode_style_now(foreground: String, background: String) -> Result<(), DeckError> {
     if !validated_palette_color(&foreground) || !validated_palette_color(&background) {
         return Err(DeckError::new(
             ErrorKind::Other,
@@ -877,7 +888,10 @@ pub(crate) fn poll_idle_tick(shown: &std::collections::HashSet<String>) {
         return;
     };
     if !POLL_IDLE_NOW.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        applog("[poll] webview poll idle; bells observed on the scheduler tick");
+        // what was observed: no poll request reached the backend for
+        // POLL_IDLE. The webview's timer stopping, its last request still
+        // pending, or the IPC (main) thread being busy all look the same here.
+        applog("[poll] webview poll idle (no Board poll reached the backend for 10s); bells observed on the scheduler tick");
     }
     let Ok(_activity) = crate::session_runtime::activity_guard() else {
         return;
@@ -2043,7 +2057,7 @@ mod tests {
     #[test]
     fn mode_style_and_availability_fail_closed_without_a_bundled_tmux() {
         assert_eq!(
-            set_terminal_mode_style("red".into(), "#000000".into())
+            set_terminal_mode_style_now("red".into(), "#000000".into())
                 .unwrap_err()
                 .kind(),
             ErrorKind::Other
@@ -2052,7 +2066,7 @@ mod tests {
         if crate::tmux::tmux_bin().is_empty() {
             assert!(!tmux_available());
             assert_eq!(
-                set_terminal_mode_style("#000000".into(), "#ffffff".into())
+                set_terminal_mode_style_now("#000000".into(), "#ffffff".into())
                     .unwrap_err()
                     .kind(),
                 ErrorKind::TmuxMissing

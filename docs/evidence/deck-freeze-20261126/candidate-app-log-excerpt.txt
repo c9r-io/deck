@@ -1,0 +1,116 @@
+# candidate (final build) app.log, isolated smoke data dir
+## 10 static card switches (no new output)
+1795682895 [pty] attached sess-20751 gen=3 (133x25) client started
+1795682895 [pty] first read 251B from sess-20751 gen=3 after 9ms
+1795682895 [pty] first emit 927B to sess-20751 gen=3 ok=true after 12ms (emit 0ms)
+1795682895 [ui] pty-first a=3 b=927
+1795682896 [pty] attached sess-7c293 gen=4 (133x25) client started
+1795682896 [pty] first read 250B from sess-7c293 gen=4 after 7ms
+1795682896 [pty] first emit 748B to sess-7c293 gen=4 ok=true after 9ms (emit 0ms)
+1795682896 [ui] pty-first a=4 b=748
+1795682897 [pty] attached sess-20751 gen=5 (133x25) client started
+1795682897 [pty] first read 251B from sess-20751 gen=5 after 6ms
+1795682897 [pty] first emit 890B to sess-20751 gen=5 ok=true after 9ms (emit 0ms)
+1795682897 [ui] pty-first a=5 b=890
+1795682898 [pty] attached sess-7c293 gen=6 (133x25) client started
+1795682898 [pty] first read 250B from sess-7c293 gen=6 after 6ms
+1795682898 [pty] first emit 752B to sess-7c293 gen=6 ok=true after 9ms (emit 0ms)
+1795682898 [ui] pty-first a=6 b=752
+1795682899 [pty] attached sess-20751 gen=7 (133x25) client started
+1795682899 [pty] first read 251B from sess-20751 gen=7 after 5ms
+1795682899 [pty] first emit 885B to sess-20751 gen=7 ok=true after 8ms (emit 0ms)
+1795682899 [ui] pty-first a=7 b=885
+1795682900 [pty] attached sess-7c293 gen=8 (133x25) client started
+1795682900 [pty] first read 250B from sess-7c293 gen=8 after 5ms
+1795682900 [pty] first emit 752B to sess-7c293 gen=8 ok=true after 7ms (emit 0ms)
+1795682900 [ui] pty-first a=8 b=752
+1795682901 [pty] attached sess-20751 gen=9 (133x25) client started
+1795682901 [pty] first read 251B from sess-20751 gen=9 after 6ms
+1795682901 [pty] first emit 885B to sess-20751 gen=9 ok=true after 9ms (emit 0ms)
+1795682901 [ui] pty-first a=9 b=885
+1795682901 [pty] attached sess-7c293 gen=10 (133x25) client started
+1795682901 [pty] first read 250B from sess-7c293 gen=10 after 7ms
+1795682901 [pty] first emit 748B to sess-7c293 gen=10 ok=true after 10ms (emit 0ms)
+1795682901 [ui] pty-first a=10 b=748
+1795682902 [pty] attached sess-20751 gen=11 (133x25) client started
+1795682902 [pty] first read 251B from sess-20751 gen=11 after 6ms
+1795682902 [pty] first emit 885B to sess-20751 gen=11 ok=true after 9ms (emit 0ms)
+1795682902 [ui] pty-first a=11 b=885
+1795682903 [pty] attached sess-7c293 gen=12 (133x25) client started
+1795682903 [pty] first read 250B from sess-7c293 gen=12 after 5ms
+1795682903 [pty] first emit 748B to sess-7c293 gen=12 ok=true after 7ms (emit 0ms)
+1795682903 [ui] pty-first a=12 b=748
+1795682904 [pty] attached sess-20751 gen=13 (133x25) client started
+1795682904 [pty] first read 251B from sess-20751 gen=13 after 5ms
+1795682904 [pty] first emit 890B to sess-20751 gen=13 ok=true after 8ms (emit 0ms)
+1795682904 [ui] pty-first a=13 b=890
+## tmux stopped at 1795682914; ~1377 paced keystrokes into shell 1; switch to shell 2 while stopped; one keystroke there
+1795682917 [poll] session listing FAILED (tmux)
+1795682917 [ui] poll-fail
+1795682918 [ui] poll-fail
+1795682930 [ui] poll-fail
+1795682938 [pty] input stall sess-20751 gen=13: the tty is not taking input (1B queued)
+1795682959 [pty] attached sess-7c293 gen=14 (133x25) client started
+1795682959 [pty] input dropped sess-20751 gen=13: 356B never reached the tty (attachment ended)
+1795682960 [pty] first read 1B from sess-7c293 gen=14 after 1233ms
+1795682960 [pty] first emit 1B to sess-7c293 gen=14 ok=true after 1235ms (emit 0ms)
+1795682960 [ui] pty-first a=14 b=1
+1795682961 [terminal] set_terminal_mode_style finished late after 2000ms, answer dropped (workers=0)
+1795682973 [poll] session listing recovered
+1795682973 [ui] poll-recovered
+## tmux stopped at 1795683006; wheel + clicks over the terminal; Board opened while stopped; released 1795683031
+1795683009 [pty] attached sess-20751 gen=15 (133x25) client started
+1795683010 [poll] session listing FAILED (tmux)
+1795683010 [ui] poll-fail
+1795683010 [ui] poll-fail
+1795683011 [terminal] set_terminal_mode_style finished late after 2001ms, answer dropped (workers=5)
+1795683012 [terminal] scroll_session finished late after 2000ms, answer dropped (workers=4)
+1795683012 [terminal] scroll_session no answer within 2000ms (workers=4)
+1795683022 [ui] poll-fail
+1795683031 [poll] session listing recovered
+1795683031 [ui] poll-recovered
+1795683036 [pty] attached sess-20751 gen=16 (133x25) client started
+1795683036 [pty] first read 251B from sess-20751 gen=16 after 5ms
+1795683036 [pty] first emit 890B to sess-20751 gen=16 ok=true after 8ms (emit 0ms)
+1795683036 [ui] pty-first a=16 b=890
+
+# final build (after the reader/pump own-descriptor change): 7 static switches, then tmux stopped at 1795684126, ~1130 keystrokes into shell 1, wheel, switch to shell 2, Board; released ~1795684166
+1795684118 [pty] attached sess-83bf0 gen=3 (133x25) client started
+1795684118 [pty] first read 251B from sess-83bf0 gen=3 after 7ms
+1795684118 [pty] first emit 922B to sess-83bf0 gen=3 ok=true after 9ms (emit 0ms)
+1795684118 [ui] pty-first a=3 b=922
+1795684119 [pty] attached sess-b8d45 gen=4 (133x25) client started
+1795684119 [pty] first read 250B from sess-b8d45 gen=4 after 4ms
+1795684119 [pty] first emit 748B to sess-b8d45 gen=4 ok=true after 7ms (emit 0ms)
+1795684119 [ui] pty-first a=4 b=748
+1795684120 [pty] attached sess-83bf0 gen=5 (133x25) client started
+1795684120 [pty] first read 251B from sess-83bf0 gen=5 after 5ms
+1795684120 [pty] first emit 890B to sess-83bf0 gen=5 ok=true after 8ms (emit 0ms)
+1795684120 [ui] pty-first a=5 b=890
+1795684121 [pty] attached sess-b8d45 gen=6 (133x25) client started
+1795684121 [pty] first read 250B from sess-b8d45 gen=6 after 6ms
+1795684121 [pty] first emit 752B to sess-b8d45 gen=6 ok=true after 9ms (emit 0ms)
+1795684121 [ui] pty-first a=6 b=752
+1795684122 [pty] attached sess-83bf0 gen=7 (133x25) client started
+1795684122 [pty] first read 251B from sess-83bf0 gen=7 after 6ms
+1795684122 [pty] first emit 890B to sess-83bf0 gen=7 ok=true after 9ms (emit 0ms)
+1795684122 [ui] pty-first a=7 b=890
+1795684122 [pty] attached sess-b8d45 gen=8 (133x25) client started
+1795684122 [pty] first read 250B from sess-b8d45 gen=8 after 6ms
+1795684123 [pty] first emit 935B to sess-b8d45 gen=8 ok=true after 11ms (emit 0ms)
+1795684123 [ui] pty-first a=8 b=935
+1795684124 [pty] attached sess-83bf0 gen=9 (133x25) client started
+1795684124 [pty] first read 251B from sess-83bf0 gen=9 after 6ms
+1795684124 [pty] first emit 885B to sess-83bf0 gen=9 ok=true after 9ms (emit 0ms)
+1795684124 [ui] pty-first a=9 b=885
+1795684129 [poll] session listing FAILED (tmux)
+1795684129 [ui] poll-fail
+1795684129 [ui] poll-fail
+1795684141 [ui] poll-fail
+1795684151 [pty] input stall sess-83bf0 gen=9: the tty is not taking input (1B queued)
+1795684159 [pty] attached sess-b8d45 gen=10 (133x25) client started
+1795684159 [pty] input dropped sess-83bf0 gen=9: 109B never reached the tty (attachment ended)
+1795684161 [terminal] set_terminal_mode_style no answer within 2000ms (workers=1)
+1795684161 [terminal] set_terminal_mode_style finished late after 2002ms, answer dropped (workers=0)
+1795684170 [poll] session listing recovered
+1795684170 [ui] poll-recovered

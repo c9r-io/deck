@@ -1,0 +1,17 @@
+# baseline (HEAD 51c08ce7, debug smoke bundle), tmux server SIGSTOPped, one wheel over the terminal
+# main thread, sample 2 s; frames with a sample count, outer run-loop frames elided
+1457 Thread_36127543   DispatchQueue_1: com.apple.main-thread  (serial)
+1457 -[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:]  (in AppKit) + 344  
+1457 -[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]  (in AppKit) + 832  
+1457 WebKit::WebPageProxy::startURLSchemeTask(IPC::Connection&, WebKit::URLSchemeTaskParameters&&)  (in WebKit) + 88  
+1457 WebKit::WebPageProxy::startURLSchemeTaskShared(IPC::Connection&, WTF::Ref<WebKit::WebProcessProxy, WTF::RawPtrTraits<WebKit::WebProcessProxy>, WTF::DefaultRefDerefTraits<WebKit::WebProcessProxy>>
+1457 _RNvMs9_NtCs1zxt2RfbElo_5tauri7webviewNtB5_7Webview10on_messageCsgrRZqR8UbeV_8deck_app  (in deck) + 3276    mod.rs:1909
+1457 _RNvMs0_NtCs1zxt2RfbElo_5tauri7managerNtB5_10AppManager18run_invoke_handlerCsgrRZqR8UbeV_8deck_app  (in deck) + 64    mod.rs:472
+1457 _RNCNvCsgrRZqR8UbeV_8deck_app4mains2_0B3_  (in deck) + 9516    terminal.rs:91
+1457 _RNCNCNvCsgrRZqR8UbeV_8deck_app4mains2_0s2H_0B5_  (in deck) + 1152    terminal.rs:91
+1457 _RNvNtCsgrRZqR8UbeV_8deck_app8terminal14scroll_session  (in deck) + 908    terminal.rs:113
+1457 _RNvNtCsgrRZqR8UbeV_8deck_app4tmux10tmux_owned  (in deck) + 420    tmux.rs:410
+1457 _RINvNtCsgrRZqR8UbeV_8deck_app4tmux15captured_outputNtNtCslJsSqIQKwiA_5alloc6string6StringEB4_  (in deck) + 108    tmux.rs:224
+1457 _RNvNtCsgrRZqR8UbeV_8deck_app15session_runtime14command_output  (in deck) + 108    session_runtime.rs:154
+1457 _RNvMsk_NtCsa9BKTri5B3M_3std7processNtB5_7Command6output  (in deck) + 248  
+1457 _RNvNtNtNtNtCsa9BKTri5B3M_3std3sys7process4unix6common11read_output  (in deck) + 208  

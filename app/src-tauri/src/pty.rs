@@ -38,7 +38,34 @@
 //!
 //! The resize/ACK/detach commands are thin: each delegates to the `PtyState`
 //! method of the same name, which the unit test drives over an unspawned pty
-//! pair; `pty_write` keeps its write inline as the reviewed input site.
+//! pair; `pty_write` stays the reviewed input site.
+//!
+//! # Nothing here waits on a tty or a tmux client on the IPC thread
+//! (2026-11-26 freeze investigation, `docs/evidence/deck-freeze-20261126/`).
+//! Ordinary commands run on the window's main thread, so:
+//! - The master is NON-BLOCKING. A macOS pty master takes only 1022 unread
+//!   input bytes; a blocking write past that parked the main thread, holding
+//!   the map lock, while the tty was not being read.
+//! - `pty_write` checks the generation under the map lock and QUEUES the
+//!   bytes on that attachment's own input pump (`PtyInput`), which writes
+//!   them in call order, waiting for the tty with `poll`. The queue is
+//!   bounded (`INPUT_QUEUE_BYTES`); past it the call is refused whole
+//!   (`input-busy`). A pump belongs to one generation: when its attachment
+//!   ends, bytes the tty still refuses are dropped and logged, never moved to
+//!   a successor and never resent. Ok means "queued for this attachment",
+//!   not "delivered" (terminal-input.js already treats an attempt so).
+//! - Detach, replacement and `detach_all` remove the entry under the lock
+//!   and `retire` it outside: the gate closes, the pump is told to give up,
+//!   and a short reaper thread kills and REAPS that attachment's own tmux
+//!   client and then closes its master (portable-pty's `kill` sleeps up to
+//!   200 ms). portable-pty's writer is never taken (`master_input`): its
+//!   drop blocks on a full tty and types Enter and Ctrl-D into a live one.
+//!   Ending an attachment types nothing.
+//! - `pty_resize` takes the terminal operation lock, which a command waiting
+//!   on tmux may hold, so it runs off the IPC thread under a budget.
+//! - Per generation, app.log carries: `attached ... gen=N client started`,
+//!   `first read`, `first emit ... (emit Xms)`; the webview adds `pty-first`
+//!   when xterm consumed that generation's first frame.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -46,6 +73,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -158,11 +186,224 @@ impl AckGate {
 // ---------- PTY bridge (the open session) -------------------------------------
 
 pub(crate) struct PtyEntry {
-    writer: Box<dyn Write + Send>,
+    input: PtyInput,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     generation: u64,
     gate: Arc<AckGate>,
+}
+
+impl PtyEntry {
+    /// End this attachment off the caller's thread: release a waiting
+    /// emitter, tell the input pump to give up on bytes the tty will not
+    /// take, and let a short-lived reaper kill and reap this attachment's
+    /// own tmux client and then close its master. Nothing here waits on the
+    /// tty or on tmux, so detach, replacement and restart never block the
+    /// IPC thread (portable-pty's own `kill` sleeps up to 200 ms).
+    fn retire(self) {
+        self.gate.close();
+        self.input.close();
+        let PtyEntry {
+            mut child, master, ..
+        } = self;
+        let spawned = std::thread::Builder::new()
+            .name("deck-pty-reap".into())
+            .spawn(move || {
+                let _ = child.kill();
+                let _ = child.wait();
+                drop(master);
+            });
+        if spawned.is_err() {
+            applog("[pty] reaper thread unavailable; client left to its own exit");
+        }
+    }
+}
+
+/// Bytes the webview may have waiting for one attachment's tty before
+/// `pty_write` refuses more (`input-busy`): a tty that takes nothing for this
+/// long is not going to, and the refusal is visible instead of the window
+/// freezing (a macOS pty master holds only 1022 unread input bytes).
+const INPUT_QUEUE_BYTES: usize = 1024 * 1024;
+pub(crate) const INPUT_BUSY: &str = "input-busy";
+
+/// One attachment's ordered input: `pty_write` (on the IPC thread, in call
+/// order) only queues; this attachment's own pump thread writes the queue
+/// to the master, which is non-blocking, waiting for the tty with `poll`.
+/// While the tty takes nothing the pump waits and the queue is bounded; when
+/// the attachment ends (`close`) bytes the tty still refuses are dropped and
+/// counted, never moved to a successor and never resent.
+struct PtyInput {
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    queued: Arc<std::sync::atomic::AtomicUsize>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PtyInput {
+    fn start(
+        name: &str,
+        generation: u64,
+        mut writer: Box<dyn Write + Send>,
+        fd: Option<std::os::fd::RawFd>,
+    ) -> Result<PtyInput, DeckError> {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4096);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (q, c, f) = (queued.clone(), closed.clone(), finished.clone());
+        let tag = crate::applog::session_tag(name);
+        std::thread::Builder::new()
+            .name("deck-pty-input".into())
+            .spawn(move || {
+                let mut stalled: Option<std::time::Instant> = None;
+                'chunks: while let Ok(chunk) = rx.recv() {
+                    let mut at = 0;
+                    while at < chunk.len() {
+                        match writer.write(&chunk[at..]) {
+                            Ok(0) => break 'chunks,
+                            Ok(n) => {
+                                at += n;
+                                if let Some(since) = stalled.take() {
+                                    applog(&format!(
+                                        "[pty] input resumed {tag} gen={generation} after {}ms",
+                                        since.elapsed().as_millis()
+                                    ));
+                                }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                if c.load(Ordering::Acquire) {
+                                    let left = chunk.len() - at
+                                        + q.load(Ordering::Acquire).saturating_sub(chunk.len());
+                                    applog(&format!(
+                                        "[pty] input dropped {tag} gen={generation}: {left}B never reached the tty (attachment ended)"
+                                    ));
+                                    break 'chunks;
+                                }
+                                if stalled.is_none() {
+                                    stalled = Some(std::time::Instant::now());
+                                    applog(&format!(
+                                        "[pty] input stall {tag} gen={generation}: the tty is not taking input ({}B queued)",
+                                        q.load(Ordering::Acquire)
+                                    ));
+                                }
+                                wait_writable(fd);
+                            }
+                            Err(_) => break 'chunks,
+                        }
+                    }
+                    q.fetch_sub(chunk.len(), Ordering::AcqRel);
+                }
+                // the writer's own drop writes `\n` + VEOF: non-blocking
+                // here, and on this thread whatever it does
+                drop(writer);
+                f.store(true, Ordering::Release);
+            })
+            .map_err(|_| DeckError::new(ErrorKind::Other, "pty input unavailable"))?;
+        Ok(PtyInput {
+            tx,
+            queued,
+            closed,
+            #[cfg(test)]
+            finished,
+        })
+    }
+
+    /// Queue `bytes` behind everything queued before them, or refuse them
+    /// whole: nothing of a refused call is written.
+    fn send(&self, bytes: Vec<u8>) -> Result<(), DeckError> {
+        use std::sync::atomic::Ordering;
+        let len = bytes.len();
+        if self.queued.fetch_add(len, Ordering::AcqRel) + len > INPUT_QUEUE_BYTES {
+            self.queued.fetch_sub(len, Ordering::AcqRel);
+            return Err(DeckError::new(ErrorKind::Other, INPUT_BUSY));
+        }
+        match self.tx.try_send(bytes) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.queued.fetch_sub(len, Ordering::AcqRel);
+                Err(match e {
+                    std::sync::mpsc::TrySendError::Full(_) => {
+                        DeckError::new(ErrorKind::Other, INPUT_BUSY)
+                    }
+                    std::sync::mpsc::TrySendError::Disconnected(_) => {
+                        DeckError::new(ErrorKind::Other, "not attached")
+                    }
+                })
+            }
+        }
+    }
+
+    fn close(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// The pump's own handle on the master: a `dup` whose drop only closes it.
+/// portable-pty's `take_writer` is never used: its writer's drop writes
+/// `\n` and VEOF into the tty, which an attached tmux client hands to the pane as
+/// Enter and Ctrl-D, so ending an attachment would end the user's shell
+/// (seen 2026-11-26 in the candidate before this: a card switch retired an
+/// idle zsh as a verified normal exit). Ending an attachment types nothing.
+fn master_input(fd: std::os::fd::RawFd) -> Result<std::fs::File, DeckError> {
+    master_dup(fd)
+}
+
+/// A descriptor of the master owned by one thread: closed exactly once, by
+/// its own drop, and never a number another owner may close and reuse.
+fn master_dup(fd: std::os::fd::RawFd) -> Result<std::fs::File, DeckError> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: dup of this attachment's open master.
+    let own = unsafe { libc::dup(fd) };
+    if own < 0 {
+        return Err(DeckError::new(ErrorKind::Other, "pty unavailable"));
+    }
+    // SAFETY: `own` is a fresh descriptor no one else owns.
+    Ok(unsafe { std::fs::File::from_raw_fd(own) })
+}
+
+/// Wait (at most 100 ms, so a closed attachment is noticed) until the master
+/// can take input. Without a descriptor (tests' sinks), just pause.
+fn wait_writable(fd: Option<std::os::fd::RawFd>) {
+    match fd {
+        Some(fd) => {
+            let mut p = libc::pollfd {
+                fd,
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            // SAFETY: one valid pollfd; the descriptor outlives this call
+            // (the master is closed only by the reaper, after `close`).
+            unsafe { libc::poll(&mut p, 1, 100) };
+        }
+        None => std::thread::sleep(Duration::from_millis(10)),
+    }
+}
+
+/// Wait until the master has output to read (or 1 s passed).
+fn wait_readable(fd: std::os::fd::RawFd) {
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for the reader's own descriptor.
+    unsafe { libc::poll(&mut p, 1, 1000) };
+}
+
+/// The master is shared by the reader, the input pump and resize; it is
+/// made non-blocking once so that no thread, the IPC thread least of all,
+/// can be parked in a write the tty will not take.
+fn set_nonblocking(fd: std::os::fd::RawFd) -> Result<(), DeckError> {
+    // SAFETY: fcntl on this attachment's own open master descriptor.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(DeckError::new(ErrorKind::Other, "pty unavailable"));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -184,10 +425,9 @@ impl PtyState {
     }
 
     pub(crate) fn detach_all(&self) {
-        let mut entries = self.map.lock_or_recover();
-        for (_, mut entry) in entries.drain() {
-            entry.gate.close();
-            let _ = entry.child.kill();
+        let entries: Vec<PtyEntry> = self.map.lock_or_recover().drain().map(|(_, e)| e).collect();
+        for entry in entries {
+            entry.retire();
         }
     }
 }
@@ -220,9 +460,9 @@ pub(crate) fn attach_session(
     crate::tmux::validate_session_name(&name)?;
     // replace any previous attachment for this session; closing its gate
     // releases an emitter that may be waiting on ACKs that will never come
-    if let Some(mut old) = state.map.lock_or_recover().remove(&name) {
-        old.gate.close();
-        let _ = old.child.kill();
+    let previous = state.map.lock_or_recover().remove(&name);
+    if let Some(old) = previous {
+        old.retire();
     }
 
     let pty = native_pty_system();
@@ -261,30 +501,53 @@ pub(crate) fn attach_session(
     })?;
     drop(pair.slave);
     let attached_at = std::time::Instant::now();
-    applog(&format!(
-        "[pty] attached {} ({cols}x{rows})",
-        crate::applog::session_tag(&name)
-    ));
-
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| DeckError::classified(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| DeckError::classified(e.to_string()))?;
-
     let generation = {
         let mut c = state.counter.lock_or_recover();
         *c += 1;
         *c
     };
+    let tag = crate::applog::session_tag(&name);
+    // the tmux client was started; that is all this line says
+    applog(&format!(
+        "[pty] attached {tag} gen={generation} ({cols}x{rows}) client started"
+    ));
+
+    let fd = pair.master.as_raw_fd();
+    let started = (|| {
+        let fd = fd.ok_or_else(|| DeckError::new(ErrorKind::Other, "pty unavailable"))?;
+        set_nonblocking(fd)?;
+        // the reader and the pump each poll their OWN descriptor: the
+        // master's own number is closed by the reaper and may be reused
+        let reader = master_dup(fd)?;
+        let read_fd = reader.as_raw_fd();
+        let writer = master_input(fd)?;
+        let write_fd = writer.as_raw_fd();
+        Ok::<_, DeckError>((
+            read_fd,
+            reader,
+            PtyInput::start(&name, generation, Box::new(writer), Some(write_fd))?,
+        ))
+    })();
+    let (fd, mut reader, input) = match started {
+        Ok(parts) => parts,
+        Err(error) => {
+            let mut child = child;
+            let master = pair.master;
+            let _ = std::thread::Builder::new()
+                .name("deck-pty-reap".into())
+                .spawn(move || {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    drop(master);
+                });
+            return Err(error);
+        }
+    };
     let gate = AckGate::new(name.clone());
     state.map.lock_or_recover().insert(
         name.clone(),
         PtyEntry {
-            writer,
+            input,
             master: pair.master,
             child,
             generation,
@@ -302,16 +565,28 @@ pub(crate) fn attach_session(
     const EMIT_COALESCE_MAX: usize = 256 * 1024;
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_CHANNEL_CHUNKS);
 
+    let read_tag = tag.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
+        let mut first = true;
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(n) => {
+                    if first {
+                        first = false;
+                        applog(&format!(
+                            "[pty] first read {n}B from {read_tag} gen={generation} after {}ms",
+                            attached_at.elapsed().as_millis()
+                        ));
+                    }
                     if tx.send(buf[..n].to_vec()).is_err() {
                         break; // emitter gone
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => wait_readable(fd),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
             }
         }
         // dropping tx ends the emitter's recv loop
@@ -328,6 +603,7 @@ pub(crate) fn attach_session(
             MAX_INFLIGHT_BATCHES,
             |seq, batch| {
                 emits += 1;
+                let emit_started = std::time::Instant::now();
                 let r = thread_app.emit(
                     "pty-data",
                     PtyData {
@@ -342,11 +618,12 @@ pub(crate) fn attach_session(
                     // for a fresh pane this is the login shell's startup. The
                     // frontend's `pty-rx` is the liveness trace after that.
                     applog(&format!(
-                        "[pty] first emit {}B to {} ok={:?} after {}ms",
+                        "[pty] first emit {}B to {} gen={generation} ok={:?} after {}ms (emit {}ms)",
                         batch.len(),
                         crate::applog::session_tag(&thread_name),
                         r.is_ok(),
-                        attached_at.elapsed().as_millis()
+                        attached_at.elapsed().as_millis(),
+                        emit_started.elapsed().as_millis()
                     ));
                 }
                 // a failed emit ends the pump (see pump_gated) — the webview
@@ -785,7 +1062,13 @@ mod tests {
         state.map.lock_or_recover().insert(
             name.into(),
             PtyEntry {
-                writer: Box::new(SharedSink(sink.clone())),
+                input: super::PtyInput::start(
+                    name,
+                    generation,
+                    Box::new(SharedSink(sink.clone())),
+                    None,
+                )
+                .expect("input pump"),
                 master: pair.master,
                 child: Box::new(RecordingChild(killed.clone())),
                 generation,
@@ -837,12 +1120,17 @@ mod tests {
             })
             .expect("pty pair");
         let reader = std::io::BufReader::new(slave_reader(&*pair.master));
-        let writer = pair.master.take_writer().expect("pty writer");
+        let fd = pair.master.as_raw_fd().expect("master fd");
+        super::set_nonblocking(fd).expect("non-blocking master");
+        let writer = super::master_input(fd).expect("pty writer");
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&writer);
+        let writer: Box<dyn std::io::Write + Send> = Box::new(writer);
         let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         state.map.lock_or_recover().insert(
             name.into(),
             PtyEntry {
-                writer,
+                input: super::PtyInput::start(name, generation, writer, Some(fd))
+                    .expect("input pump"),
                 master: pair.master,
                 child: Box::new(RecordingChild(killed)),
                 generation,
@@ -1007,14 +1295,12 @@ mod tests {
             .lock_or_recover()
             .get_mut("deck-pty-unit-a")
             .expect("attached")
-            .writer
-            .write(b"ls\r")
-            .map(|written| assert_eq!(written, 3))
+            .input
+            .send(b"ls\r".to_vec())
             .unwrap();
-        assert_eq!(
-            *sink.lock_or_recover(),
-            b"ls\r",
-            "the entry owns its writer"
+        assert!(
+            eventually(|| *sink.lock_or_recover() == b"ls\r"),
+            "the entry's own pump wrote its input"
         );
         state.resize("deck-pty-unit-a", 100, 30).unwrap();
         let size = state.map.lock_or_recover()["deck-pty-unit-a"]
@@ -1040,7 +1326,7 @@ mod tests {
         assert!(!killed.load(Ordering::SeqCst));
         state.detach("deck-pty-unit-a");
         assert!(
-            killed.load(Ordering::SeqCst),
+            eventually(|| killed.load(Ordering::SeqCst)),
             "detach kills the pane client"
         );
         assert!(gate.state().2, "detach releases a waiting emitter");
@@ -1050,9 +1336,243 @@ mod tests {
         let (_, killed_b, gate_b, _slave_b) = attach(&state, "deck-pty-unit-b", 4);
         let (_, killed_c, gate_c, _slave_c) = attach(&state, "deck-pty-unit-c", 5);
         state.detach_all();
-        assert!(killed_b.load(Ordering::SeqCst) && killed_c.load(Ordering::SeqCst));
+        assert!(eventually(
+            || killed_b.load(Ordering::SeqCst) && killed_c.load(Ordering::SeqCst)
+        ));
         assert!(gate_b.state().2 && gate_c.state().2);
         assert!(state.map.lock_or_recover().is_empty());
+    }
+    /// A pane client whose reaping waits for the test: the reaper keeps the
+    /// master open meanwhile (closing the last master flushes the tty's
+    /// input queue, which would hide what was typed into it).
+    #[derive(Debug)]
+    struct HeldChild(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
+
+    impl portable_pty::ChildKiller for HeldChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(HeldChild(self.0.clone()))
+        }
+    }
+
+    impl portable_pty::Child for HeldChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            let _ = self
+                .0
+                .lock_or_recover()
+                .recv_timeout(Duration::from_secs(5));
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    /// Ending an attachment types nothing into its tty: no `\n`, no VEOF.
+    /// portable-pty's writer drop sends both; a live tmux client hands them
+    /// to the pane as Enter + Ctrl-D and an idle shell exits (the candidate
+    /// before `master_input` retired a zsh card on a card switch).
+    #[test]
+    fn ending_an_attachment_writes_nothing_to_the_tty() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(PtyState::default());
+        let state = || app.state::<PtyState>();
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize::default())
+            .expect("pty pair");
+        let slave = slave_reader(&*pair.master);
+        make_raw(&slave);
+        let fd = pair.master.as_raw_fd().expect("master fd");
+        super::set_nonblocking(fd).expect("non-blocking");
+        let writer = super::master_input(fd).unwrap();
+        let write_fd = std::os::fd::AsRawFd::as_raw_fd(&writer);
+        let input = super::PtyInput::start("deck-pty-quiet", 41, Box::new(writer), Some(write_fd))
+            .expect("pump");
+        let finished = input.finished.clone();
+        let (release, held) = std::sync::mpsc::channel();
+        state().map.lock_or_recover().insert(
+            "deck-pty-quiet".into(),
+            PtyEntry {
+                input,
+                master: pair.master,
+                child: Box::new(HeldChild(Arc::new(std::sync::Mutex::new(held)))),
+                generation: 41,
+                gate: AckGate::new("deck-pty-quiet".into()),
+            },
+        );
+        state().detach("deck-pty-quiet");
+        assert!(
+            eventually(|| finished.load(Ordering::SeqCst)),
+            "the pump ended"
+        );
+        let sfd = std::os::fd::AsRawFd::as_raw_fd(&slave);
+        let mut queued: libc::c_int = 0;
+        // SAFETY: FIONREAD on this test's own open slave descriptor.
+        assert_eq!(unsafe { libc::ioctl(sfd, libc::FIONREAD, &mut queued) }, 0);
+        let _ = release.send(());
+        assert_eq!(queued, 0, "bytes were typed into the tty on detach");
+    }
+
+    /// Poll `done` for up to 2 s: work handed to a pump or reaper thread.
+    fn eventually(done: impl Fn() -> bool) -> bool {
+        let until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < until {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        done()
+    }
+
+    /// Raw mode, as tmux sets an attached client's tty: input is queued
+    /// (and blocks the master when full) instead of being line-edited, and
+    /// a canonical tty's silent discard past MAX_INPUT cannot hide a stall.
+    fn make_raw(slave: &std::fs::File) {
+        // SAFETY: termios calls on this test's own open slave descriptor.
+        unsafe {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(slave);
+            let mut tio: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(fd, &mut tio), 0);
+            libc::cfmakeraw(&mut tio);
+            assert_eq!(libc::tcsetattr(fd, libc::TCSANOW, &tio), 0);
+        }
+    }
+
+    /// Fill a pty's input queue the way a tty nobody reads fills: write
+    /// through a non-blocking master until the kernel refuses more.
+    fn fill_input(master: &(dyn MasterPty + Send)) -> usize {
+        let fd = master.as_raw_fd().expect("master fd");
+        super::set_nonblocking(fd).expect("non-blocking");
+        let mut n = 0;
+        loop {
+            // SAFETY: writing one byte from a live buffer to the test's master.
+            let w = unsafe { libc::write(fd, b"a".as_ptr().cast(), 1) };
+            if w <= 0 {
+                break n;
+            }
+            n += 1;
+        }
+    }
+
+    /// The hazard behind the 2026-11-26 investigation, pinned on the library
+    /// itself: portable-pty's writer, dropped while the tty's input queue is
+    /// full, blocks in its drop (`\n` + VEOF written with `write_all`). The
+    /// old detach/replace dropped it on the IPC (main) thread, holding the
+    /// PTY map lock.
+    #[test]
+    fn portable_pty_writer_drop_blocks_while_the_tty_takes_no_input() {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize::default())
+            .expect("pty pair");
+        let writer = pair.master.take_writer().expect("writer");
+        // raw slave: a read returns what is queued, no line needed
+        let mut slave = slave_reader(&*pair.master);
+        make_raw(&slave);
+        assert!(fill_input(&*pair.master) > 0);
+        let fd = pair.master.as_raw_fd().expect("master fd");
+        // back to the blocking master the old code used
+        // SAFETY: fcntl on this test's own master descriptor.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+        }
+        let (done_tx, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(writer);
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the drop is parked in write(2) while nothing reads the tty"
+        );
+        // reading the slave releases it: the wait was the full queue
+        let mut buf = [0u8; 4096];
+        let _ = std::io::Read::read(&mut slave, &mut buf);
+        assert!(done.recv_timeout(Duration::from_secs(2)).is_ok());
+    }
+
+    /// `pty_write` never waits for the tty: with nothing reading it, every
+    /// call returns at once, the bounded queue refuses the excess whole
+    /// (`input-busy`), and detaching ends the pump promptly instead of
+    /// parking anyone in write(2) — the IPC thread least of all.
+    #[test]
+    fn pty_write_returns_at_once_when_the_tty_takes_nothing() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(PtyState::default());
+        let state = || app.state::<PtyState>();
+        let (unread, _slave) = attach_real(&state(), "deck-pty-full", 21);
+        make_raw(unread.get_ref());
+        let finished = state().map.lock_or_recover()["deck-pty-full"]
+            .input
+            .finished
+            .clone();
+        let chunk = "x".repeat(16 * 1024);
+        let mut busy = 0;
+        let mut slowest = Duration::ZERO;
+        for _ in 0..80 {
+            let t0 = Instant::now();
+            match pty_write(
+                state(),
+                "deck-pty-full".into(),
+                Some(21),
+                B64.encode(&chunk),
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    assert_eq!(e.message(), super::INPUT_BUSY);
+                    busy += 1;
+                }
+            }
+            slowest = slowest.max(t0.elapsed());
+        }
+        assert!(
+            slowest < Duration::from_millis(100),
+            "a write waited {slowest:?}"
+        );
+        assert!(
+            busy > 0,
+            "1.25 MiB against a tty that takes nothing is refused past the bound"
+        );
+        let t0 = Instant::now();
+        state().detach("deck-pty-full");
+        assert!(t0.elapsed() < Duration::from_millis(100), "detach waited");
+        assert!(
+            eventually(|| finished.load(Ordering::SeqCst)),
+            "the pump ended"
+        );
+    }
+
+    /// Input larger than the tty takes at once is delivered whole and in
+    /// call order once the reader catches up; nothing is reordered by the
+    /// pump's waiting.
+    #[test]
+    fn queued_input_arrives_in_order_after_the_tty_drains() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(PtyState::default());
+        let state = || app.state::<PtyState>();
+        let (mut slave, _keep) = attach_real(&state(), "deck-pty-order", 31);
+        for i in 0..400 {
+            pty_write(
+                state(),
+                "deck-pty-order".into(),
+                Some(31),
+                B64.encode(format!("line-{i:04}\n")),
+            )
+            .expect("queued");
+        }
+        for i in 0..400 {
+            assert_eq!(read_line(&mut slave), format!("line-{i:04}\n"));
+        }
+        state().detach("deck-pty-order");
     }
 }
 
@@ -1063,21 +1583,24 @@ pub(crate) fn pty_write(
     gen: Option<u64>,
     data_b64: String,
 ) -> Result<(), DeckError> {
-    crate::mcp::guard_terminal_input(&name)?;
+    {
+        // The fence lists tmux panes only when the MCP ledger is unreadable;
+        // on this (IPC) thread that listing is bounded, and a listing that
+        // does not answer refuses the input (the fence fails closed).
+        let _deadline = crate::session_runtime::Deadline::until(
+            std::time::Instant::now() + Duration::from_secs(1),
+        );
+        crate::mcp::guard_terminal_input(&name)?;
+    }
     let _activity = crate::session_runtime::activity_guard()?;
     let bytes = B64
         .decode(data_b64)
         .map_err(|e| DeckError::classified(e.to_string()))?;
     let mut map = state.map.lock_or_recover();
     let entry = bound_entry(&mut map, &name, gen)?;
-    entry
-        .writer
-        .write_all(&bytes)
-        .map_err(|e| DeckError::classified(e.to_string()))?;
-    entry
-        .writer
-        .flush()
-        .map_err(|e| DeckError::classified(e.to_string()))
+    // queued behind this attachment's earlier input, under the same lock
+    // that proved the generation; never written here (see `PtyInput`)
+    entry.input.send(bytes)
 }
 
 /// The attachment a write is for, chosen under the map lock the write itself
@@ -1106,18 +1629,23 @@ fn bound_entry<'a>(
 pub(crate) const STALE_ATTACHMENT: &str = "stale-attachment";
 
 #[tauri::command]
-pub(crate) fn pty_resize(
-    state: State<'_, PtyState>,
+pub(crate) async fn pty_resize(
+    app: AppHandle,
     name: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), DeckError> {
     // tmux reflows the pane synchronously when the PTY changes size. Keep
     // that reflow out of the status -> capture row -> cursor movement window
-    // used by terminal selection commands.
-    let _selection_operation =
-        crate::terminal::terminal_selection_operation_lock().lock_or_recover();
-    state.resize(&name, cols, rows)
+    // used by terminal selection commands. That lock can be held by a
+    // command waiting on tmux, so the wait happens off the IPC thread and
+    // ends with the budget (`terminal-busy`), like the commands it orders.
+    crate::session_runtime::off_ipc_thread("pty_resize", Duration::from_secs(2), move || {
+        let _selection_operation =
+            crate::terminal::terminal_selection_operation_lock().acquire()?;
+        app.state::<PtyState>().resize(&name, cols, rows)
+    })
+    .await
 }
 
 /// Webview confirmation that everything up to `seq` of attachment `gen`
@@ -1169,9 +1697,9 @@ impl PtyState {
     }
 
     fn detach(&self, name: &str) {
-        if let Some(mut entry) = self.map.lock_or_recover().remove(name) {
-            entry.gate.close(); // release an emitter waiting on ACKs
-            let _ = entry.child.kill();
+        let entry = self.map.lock_or_recover().remove(name);
+        if let Some(entry) = entry {
+            entry.retire();
         }
     }
 }

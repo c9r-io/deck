@@ -1333,6 +1333,12 @@ export function initLayout() {
       p.term.write(u8, () => {
         p.rxGens.shift();
         inv('pty_ack', { name, gen, seq }).catch(() => {});
+        /* once per attachment: xterm consumed this generation's first frame
+           (integers only; pairs with the backend's `first emit ... gen=`) */
+        if (p.firstConsumedGen !== gen && seq === 1) {
+          p.firstConsumedGen = gen;
+          uev('pty-first', null, gen, u8.length);
+        }
         // The first consumed frame may precede the attach reply. Both must
         // name the same generation before a turn can be marked viewed.
         if (panes.get(name) === p && ctx.ptyGens.get(name) === gen) {

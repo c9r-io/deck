@@ -38,6 +38,14 @@
 //! the copy-mode viewport inside that list; it is never clamped to the frame
 //! edge, and a placement tmux reports on other rows is refused.
 //!
+//! Every command here that reaches tmux is an `async` IPC entry that runs
+//! its `_now` body off the IPC (main) thread under a budget
+//! (`session_runtime::off_ipc_thread`): a tmux server that stops answering
+//! costs that request `terminal-timeout`, never the window. The operation
+//! lock that orders wheel, click, selection, search and resize work is a
+//! `session_runtime::OperationLock`: exclusion only, and its wait ends with
+//! the caller's budget (`terminal-busy`).
+//!
 //! The `[selection]` probe prices all of it: one integers-only summary per
 //! finished or abandoned drag (always), plus token-bound empty-range content
 //! deltas (no terminal text or absolute coordinates) and a per-update line behind
@@ -88,14 +96,13 @@ fn parse_terminal_scroll_result(raw: &str) -> Result<TerminalScrollResult, DeckE
     })
 }
 
-#[tauri::command]
-pub(crate) fn scroll_session(
+pub(crate) fn scroll_session_now(
     name: String,
     lines: i32,
     column: Option<u32>,
     row: Option<u32>,
 ) -> Result<TerminalScrollResult, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     let t = pane_target(&name);
     // History state, optional copy-mode entry, movement and post-state report
@@ -252,15 +259,14 @@ fn click_plan(
 
 /// Offer one physical click to the pane's program (see the header). `column`
 /// and `row` are zero-based, placed against the frontend grid `cols` × `rows`.
-#[tauri::command]
-pub(crate) fn click_session(
+pub(crate) fn click_session_now(
     name: String,
     column: u32,
     row: u32,
     cols: u32,
     rows: u32,
 ) -> Result<TerminalClickResult, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     let t = pane_target(&name);
     let probe = parse_click_probe(&tmux_owned(&[
@@ -294,8 +300,7 @@ pub(crate) fn click_session(
 /// Leave copy-mode and return to the live view (typing, the scrollback
 /// chip, or wheel-to-bottom all end here). A pane that is not in copy-mode
 /// is a no-op — tmux's error for that case is deliberately swallowed.
-#[tauri::command]
-pub(crate) fn scroll_bottom(name: String) -> Result<(), DeckError> {
+pub(crate) fn scroll_bottom_now(name: String) -> Result<(), DeckError> {
     validate_session_name(&name)?;
     let target = pane_target(&name);
     let _ = tmux(&["send-keys", "-t", &target, "-X", "cancel"]);
@@ -314,14 +319,13 @@ pub(crate) fn scroll_bottom(name: String) -> Result<(), DeckError> {
 /// pane, then run the step and its report in one tmux command list, both
 /// under the operation lock that orders wheel, selection and resize work.
 /// Only integers come back; the query is never logged.
-#[tauri::command]
-pub(crate) fn terminal_search(
+pub(crate) fn terminal_search_now(
     name: String,
     query: String,
     step: String,
     turn: bool,
 ) -> Result<crate::terminal_search::TerminalSearchResult, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     let step = crate::terminal_search::FindStep::parse(&step)?;
     crate::terminal_search::validate_query(&query)?;
@@ -338,8 +342,7 @@ pub(crate) fn terminal_search(
 /// Fresh shells accumulate junk history from the attach-time resize
 /// reflow (blank lines pushed into scrollback), which made "empty" shells
 /// scrollable. Called once for sessions deck itself just started.
-#[tauri::command]
-pub(crate) fn clear_history(name: String) {
+pub(crate) fn clear_history_now(name: String) {
     if validate_session_name(&name).is_err() {
         return;
     }
@@ -447,9 +450,11 @@ fn terminal_selection_leases() -> &'static Mutex<HashMap<String, TerminalSelecti
     LEASES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) fn terminal_selection_operation_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+pub(crate) fn terminal_selection_operation_lock() -> &'static crate::session_runtime::OperationLock
+{
+    static LOCK: crate::session_runtime::OperationLock =
+        crate::session_runtime::OperationLock::new();
+    &LOCK
 }
 
 fn selection_token_matches(name: &str, token: u64, frozen: bool) -> bool {
@@ -1024,8 +1029,7 @@ fn parse_copy_mode_snapshot(raw: &str) -> CopyModeSnapshot {
     }
 }
 
-#[tauri::command]
-pub(crate) fn terminal_selection_start(
+pub(crate) fn terminal_selection_start_now(
     name: String,
     token: u64,
     anchor_row: u32,
@@ -1034,7 +1038,7 @@ pub(crate) fn terminal_selection_start(
     active_col: u32,
     grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     if terminal_selection_leases()
         .lock_or_recover()
@@ -1127,8 +1131,7 @@ pub(crate) fn terminal_selection_start(
     ))
 }
 
-#[tauri::command]
-pub(crate) fn terminal_selection_update(
+pub(crate) fn terminal_selection_update_now(
     name: String,
     token: u64,
     row: u32,
@@ -1136,7 +1139,7 @@ pub(crate) fn terminal_selection_update(
     edge_lines: i32,
     grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
         return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
@@ -1265,13 +1268,12 @@ pub(crate) struct TerminalSelectionCopy {
     history_limit: u32,
 }
 
-#[tauri::command]
-pub(crate) fn terminal_selection_finish(
+pub(crate) fn terminal_selection_finish_now(
     name: String,
     token: u64,
     grid: TerminalSelectionGrid,
 ) -> Result<TerminalSelectionStatus, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, false) {
         return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
@@ -1350,12 +1352,11 @@ pub(crate) fn terminal_selection_finish(
     frozen_selection_status(&name, token, viewport)
 }
 
-#[tauri::command]
-pub(crate) fn terminal_selection_copy(
+pub(crate) fn terminal_selection_copy_now(
     name: String,
     token: u64,
 ) -> Result<TerminalSelectionCopy, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     let lease = terminal_selection_leases()
         .lock_or_recover()
@@ -1409,13 +1410,12 @@ pub(crate) fn terminal_selection_copy(
     }
 }
 
-#[tauri::command]
-pub(crate) fn terminal_selection_scroll(
+pub(crate) fn terminal_selection_scroll_now(
     name: String,
     token: u64,
     lines: i32,
 ) -> Result<TerminalSelectionStatus, DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     if !selection_token_matches(&name, token, true) {
         return Err(DeckError::new(ErrorKind::Other, "selection-missing"));
@@ -1436,9 +1436,8 @@ pub(crate) fn terminal_selection_scroll(
     frozen_selection_status(&name, token, viewport)
 }
 
-#[tauri::command]
-pub(crate) fn terminal_selection_cancel(name: String, token: u64) -> Result<(), DeckError> {
-    let _operation = terminal_selection_operation_lock().lock_or_recover();
+pub(crate) fn terminal_selection_cancel_now(name: String, token: u64) -> Result<(), DeckError> {
+    let _operation = terminal_selection_operation_lock().acquire()?;
     validate_session_name(&name)?;
     let should_cancel = {
         let mut leases = terminal_selection_leases().lock_or_recover();
@@ -1483,8 +1482,7 @@ pub(crate) struct TerminalMetrics {
     scroll_position: u32,
 }
 
-#[tauri::command]
-pub(crate) fn terminal_metrics(name: String) -> Result<TerminalMetrics, DeckError> {
+pub(crate) fn terminal_metrics_now(name: String) -> Result<TerminalMetrics, DeckError> {
     validate_session_name(&name)?;
     let status = terminal_selection_status_for(&pane_target(&name))?;
     Ok(TerminalMetrics {
@@ -1495,6 +1493,156 @@ pub(crate) fn terminal_metrics(name: String) -> Result<TerminalMetrics, DeckErro
         in_copy_mode: status.active,
         scroll_position: status.scroll_position,
     })
+}
+
+// ---------- IPC entry points ------------------------------------------------
+// Each terminal command above is the `_now` body; the command the webview
+// invokes runs it off the IPC (main) thread under a budget
+// (`session_runtime::off_ipc_thread`), so a tmux that stops answering costs
+// one request `terminal-timeout`, never the window. Selection copy saves the
+// selection and runs pbcopy, hence its longer budget.
+const TERMINAL_OP: std::time::Duration = std::time::Duration::from_secs(2);
+const TERMINAL_COPY: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[tauri::command]
+pub(crate) async fn scroll_session(
+    name: String,
+    lines: i32,
+    column: Option<u32>,
+    row: Option<u32>,
+) -> Result<TerminalScrollResult, DeckError> {
+    crate::session_runtime::off_ipc_thread("scroll_session", TERMINAL_OP, move || {
+        scroll_session_now(name, lines, column, row)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn click_session(
+    name: String,
+    column: u32,
+    row: u32,
+    cols: u32,
+    rows: u32,
+) -> Result<TerminalClickResult, DeckError> {
+    crate::session_runtime::off_ipc_thread("click_session", TERMINAL_OP, move || {
+        click_session_now(name, column, row, cols, rows)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn scroll_bottom(name: String) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread("scroll_bottom", TERMINAL_OP, move || {
+        scroll_bottom_now(name)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_search(
+    name: String,
+    query: String,
+    step: String,
+    turn: bool,
+) -> Result<crate::terminal_search::TerminalSearchResult, DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_search", TERMINAL_OP, move || {
+        terminal_search_now(name, query, step, turn)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn clear_history(name: String) {
+    let _ = crate::session_runtime::off_ipc_thread("clear_history", TERMINAL_OP, move || {
+        clear_history_now(name);
+        Ok(())
+    })
+    .await;
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_selection_start(
+    name: String,
+    token: u64,
+    anchor_row: u32,
+    anchor_col: u32,
+    active_row: u32,
+    active_col: u32,
+    grid: TerminalSelectionGrid,
+) -> Result<TerminalSelectionStatus, DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_selection_start", TERMINAL_OP, move || {
+        terminal_selection_start_now(
+            name, token, anchor_row, anchor_col, active_row, active_col, grid,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_selection_update(
+    name: String,
+    token: u64,
+    row: u32,
+    col: u32,
+    edge_lines: i32,
+    grid: TerminalSelectionGrid,
+) -> Result<TerminalSelectionStatus, DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_selection_update", TERMINAL_OP, move || {
+        terminal_selection_update_now(name, token, row, col, edge_lines, grid)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_selection_finish(
+    name: String,
+    token: u64,
+    grid: TerminalSelectionGrid,
+) -> Result<TerminalSelectionStatus, DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_selection_finish", TERMINAL_OP, move || {
+        terminal_selection_finish_now(name, token, grid)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_selection_copy(
+    name: String,
+    token: u64,
+) -> Result<TerminalSelectionCopy, DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_selection_copy", TERMINAL_COPY, move || {
+        terminal_selection_copy_now(name, token)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_selection_scroll(
+    name: String,
+    token: u64,
+    lines: i32,
+) -> Result<TerminalSelectionStatus, DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_selection_scroll", TERMINAL_OP, move || {
+        terminal_selection_scroll_now(name, token, lines)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_selection_cancel(name: String, token: u64) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_selection_cancel", TERMINAL_OP, move || {
+        terminal_selection_cancel_now(name, token)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_metrics(name: String) -> Result<TerminalMetrics, DeckError> {
+    crate::session_runtime::off_ipc_thread("terminal_metrics", TERMINAL_OP, move || {
+        terminal_metrics_now(name)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1677,20 +1825,20 @@ mod tests {
             crate::commands::start_session(bad.clone(), "/tmp".into(), "".into(), false, None)
                 .is_err()
         );
-        assert!(scroll_session(bad.clone(), 1, None, None).is_err());
-        assert!(scroll_bottom(bad.clone()).is_err());
-        assert!(terminal_search(bad.clone(), "q".into(), "start".into(), false).is_err());
-        clear_history(bad.clone());
-        assert!(terminal_metrics(bad.clone()).is_err());
+        assert!(scroll_session_now(bad.clone(), 1, None, None).is_err());
+        assert!(scroll_bottom_now(bad.clone()).is_err());
+        assert!(terminal_search_now(bad.clone(), "q".into(), "start".into(), false).is_err());
+        clear_history_now(bad.clone());
+        assert!(terminal_metrics_now(bad.clone()).is_err());
         assert!(crate::commands::kill_session(bad.clone(), None).is_err());
 
         let grid = TerminalSelectionGrid { cols: 80, rows: 24 };
-        assert!(terminal_selection_start(bad.clone(), 1, 0, 0, 0, 0, grid).is_err());
-        assert!(terminal_selection_update(bad.clone(), 1, 0, 0, 0, grid).is_err());
-        assert!(terminal_selection_finish(bad.clone(), 1, grid).is_err());
-        assert!(terminal_selection_copy(bad.clone(), 1).is_err());
-        assert!(terminal_selection_scroll(bad.clone(), 1, 1).is_err());
-        assert!(terminal_selection_cancel(bad, 1).is_err());
+        assert!(terminal_selection_start_now(bad.clone(), 1, 0, 0, 0, 0, grid).is_err());
+        assert!(terminal_selection_update_now(bad.clone(), 1, 0, 0, 0, grid).is_err());
+        assert!(terminal_selection_finish_now(bad.clone(), 1, grid).is_err());
+        assert!(terminal_selection_copy_now(bad.clone(), 1).is_err());
+        assert!(terminal_selection_scroll_now(bad.clone(), 1, 1).is_err());
+        assert!(terminal_selection_cancel_now(bad, 1).is_err());
     }
 
     /// The status line tmux reports is turned into absolute rows and frame
@@ -1794,22 +1942,22 @@ mod tests {
             )
         };
         for message in [
-            terminal_selection_update(name.clone(), 5, 0, 0, 0, grid)
+            terminal_selection_update_now(name.clone(), 5, 0, 0, 0, grid)
                 .err()
                 .unwrap()
                 .message()
                 .to_owned(),
-            terminal_selection_finish(name.clone(), 5, grid)
+            terminal_selection_finish_now(name.clone(), 5, grid)
                 .err()
                 .unwrap()
                 .message()
                 .to_owned(),
-            terminal_selection_copy(name.clone(), 5)
+            terminal_selection_copy_now(name.clone(), 5)
                 .err()
                 .unwrap()
                 .message()
                 .to_owned(),
-            terminal_selection_scroll(name.clone(), 5, 1)
+            terminal_selection_scroll_now(name.clone(), 5, 1)
                 .err()
                 .unwrap()
                 .message()
@@ -1817,19 +1965,19 @@ mod tests {
         ] {
             assert_eq!(message, "selection-missing");
         }
-        terminal_selection_cancel(name.clone(), 5).unwrap();
+        terminal_selection_cancel_now(name.clone(), 5).unwrap();
         assert_eq!(lease_token(), None, "cancelling nothing records nothing");
 
         terminal_selection_leases()
             .lock_or_recover()
             .insert(name.clone(), dragging(9));
-        terminal_selection_cancel(name.clone(), 8).unwrap();
+        terminal_selection_cancel_now(name.clone(), 8).unwrap();
         assert_eq!(lease_token(), Some(9), "a foreign token cancels nothing");
-        terminal_selection_cancel(name.clone(), 9).unwrap();
+        terminal_selection_cancel_now(name.clone(), 9).unwrap();
         assert!(is_cancelled());
         for token in [8, 9] {
             assert_eq!(
-                terminal_selection_start(name.clone(), token, 0, 0, 0, 0, grid)
+                terminal_selection_start_now(name.clone(), token, 0, 0, 0, 0, grid)
                     .err()
                     .unwrap()
                     .message(),
@@ -1837,14 +1985,14 @@ mod tests {
                 "token {token} is fenced by the cancelled 9"
             );
         }
-        terminal_selection_cancel(name.clone(), 9).unwrap();
+        terminal_selection_cancel_now(name.clone(), 9).unwrap();
         assert!(is_cancelled(), "cancelled stays cancelled");
 
         if crate::tmux::tmux_bin().is_empty() {
             // Past the fence every command reaches the pane read and fails
             // closed there, leaving the lease exactly as it was.
             assert_eq!(
-                terminal_selection_start(name.clone(), 10, 0, 0, 0, 0, grid)
+                terminal_selection_start_now(name.clone(), 10, 0, 0, 0, 0, grid)
                     .err()
                     .unwrap()
                     .kind(),
@@ -1855,21 +2003,21 @@ mod tests {
                 .lock_or_recover()
                 .insert(name.clone(), dragging(11));
             assert_eq!(
-                terminal_selection_update(name.clone(), 11, 1, 1, 0, grid)
+                terminal_selection_update_now(name.clone(), 11, 1, 1, 0, grid)
                     .err()
                     .unwrap()
                     .kind(),
                 ErrorKind::TmuxMissing
             );
             assert_eq!(
-                terminal_selection_finish(name.clone(), 11, grid)
+                terminal_selection_finish_now(name.clone(), 11, grid)
                     .err()
                     .unwrap()
                     .kind(),
                 ErrorKind::TmuxMissing
             );
             assert_eq!(
-                terminal_selection_copy(name.clone(), 11)
+                terminal_selection_copy_now(name.clone(), 11)
                     .err()
                     .unwrap()
                     .kind(),
@@ -1891,25 +2039,25 @@ mod tests {
                 },
             );
             assert_eq!(
-                terminal_selection_scroll(name.clone(), 12, 1)
+                terminal_selection_scroll_now(name.clone(), 12, 1)
                     .err()
                     .unwrap()
                     .kind(),
                 ErrorKind::TmuxMissing
             );
             assert_eq!(
-                terminal_metrics(name.clone()).err().unwrap().kind(),
+                terminal_metrics_now(name.clone()).err().unwrap().kind(),
                 ErrorKind::TmuxMissing
             );
             assert_eq!(
-                scroll_session(name.clone(), 3, None, None)
+                scroll_session_now(name.clone(), 3, None, None)
                     .err()
                     .unwrap()
                     .kind(),
                 ErrorKind::TmuxMissing
             );
-            scroll_bottom(name.clone()).unwrap();
-            clear_history(name.clone());
+            scroll_bottom_now(name.clone()).unwrap();
+            clear_history_now(name.clone());
         }
         terminal_selection_leases().lock_or_recover().remove(&name);
     }
@@ -1934,7 +2082,7 @@ mod tests {
         assert!(selection_token_matches(&name, 77, true));
         assert!(!selection_token_matches(&name, 76, true));
 
-        let copy = terminal_selection_copy(name.clone(), 77).unwrap();
+        let copy = terminal_selection_copy_now(name.clone(), 77).unwrap();
         assert_eq!(copy.text, "exact\ntext");
         assert_eq!(copy.bytes, 10);
         assert_eq!(copy.history_limit, 50000);
@@ -1980,7 +2128,7 @@ mod tests {
                 .is_err()
         );
         terminal_selection_leases().lock_or_recover().remove(&name);
-        assert!(terminal_selection_cancel(name, 77).is_ok());
+        assert!(terminal_selection_cancel_now(name, 77).is_ok());
     }
 
     fn status_at(history_rows: u32, scroll_position: u32) -> TerminalSelectionStatus {
