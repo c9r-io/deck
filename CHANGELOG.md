@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.43 — 2026-11-26 (Nightly)
+
+- Deck no longer freezes when its shell service stops answering. Scrolling,
+  clicking, selecting, searching or resizing in a terminal, and typing or
+  pasting into it, used to wait for the shell service on the window's own
+  thread: if it did not answer, the whole window hung until it was force
+  quit. Those requests now give up after two seconds (five for a copy) and
+  the window keeps working: you can open the Board and other cards while
+  the stalled terminal waits. Typing into a terminal that takes no input is
+  held for that card only and refused past 1 MB, never sent to another
+  card; what that card's terminal never took is dropped when you leave it.
+- Switching cards no longer stalls the window for up to 0.2 s per switch
+  while the old terminal connection closes, and leaves no finished
+  connection processes behind.
+- app.log now tells apart, for each terminal connection, when it started,
+  when the first bytes arrived and when the page showed them, and records
+  terminal requests that ran out of time.
+
 ## 0.8.42 — 2026-11-26 (Nightly)
 
 - After a shell-service restart that reopens Agent sessions, and after a
