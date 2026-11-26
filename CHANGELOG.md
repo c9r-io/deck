@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.42 — 2026-11-26 (Nightly)
+
+- After a shell-service restart that reopens Agent sessions, and after a
+  crash recovery, the planned prompts of those Claude cards are sent again.
+  Deck reopened each client from Claude Code's release file
+  (`~/.local/share/claude/versions/<version>`), so the client no longer
+  ran under the name `claude`, and every queued prompt of the card, an
+  orchestrator's lines to its worker cards and Send now included, waited
+  for "claude to come back" forever. A reopened client now runs under the
+  launcher's name, exactly as one you start by typing `claude`.
+
 ## 0.8.41 — 2026-11-25 (Nightly)
 
 - Worker cards per orchestrator is now a setting: Settings › MCP ›
