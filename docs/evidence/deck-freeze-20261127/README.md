@@ -152,7 +152,7 @@ Each item: conclusion, evidence, what is still missing.
    debug stall faults and a SIGSTOPped tmux server stand in.
 6. **Budgets.** From this Mac's app.log (2026-11-27): attach → first read
    p50 6 ms / p99 32 ms / max 212 ms (321 attaches); start total p50 30 ms /
-   p99 137 ms / max 153 ms (197 starts). Attach 5 s (notice at 1 s,
+   p99 137 ms / max 153 ms (197 starts). Attach 10 s (5 s in the first draft; raised at the user's request for Macs with an EDR agent; notice at 1 s,
    first-frame notice at 3 s), start 10 s, kill 5 s, clipboard 3 s, links
    5 s, send-now 15 s (`docs/ipc-thread.md`).
 
@@ -207,7 +207,7 @@ Rules and the census: `docs/ipc-thread.md` (enforced by `tests/ipc_thread.rs`).
   `queue_list`, tmux status, the MCP delivery-lock commands, export, …).
   The scheduler tick's pane listing now has a 5 s deadline.
 - **Frontend** (`pane-wait-model.js`, `layout.js` header): "Connecting
-  terminal…" after 1 s; "The terminal did not start within 5 s" + [Retry];
+  terminal…" after 1 s; "The terminal did not start within 10 s" + [Retry];
   "The terminal shows nothing yet" + [Reconnect] 3 s after an attach without
   a first frame; "Starting…" / "The start did not finish in time" + [Retry]
   for a stopped card; toasts for a new card's start and a close that did not
@@ -225,6 +225,7 @@ Rules and the census: `docs/ipc-thread.md` (enforced by `tests/ipc_thread.rs`).
 | WK regression, candidate with the posix_spawn pane client | air2 | FAIL vs baseline: `split-picker-layout`, `completion`, `completion-owner`, `selection-drag-overlay`, `selection-up` (`run`) and `ux-terminal-click`/`-drag`/`-link` (`ux-layers`; real clicks in the focused window, `terminal-click stale`) — tmux pane size ≠ xterm size. Cause: no controlling tty (above); the pane client was changed to Deck's own fork + `TIOCSCTTY` |
 | WK baseline HEAD `a254b81e` (no change) | air2, same | `run` fails `path-editor` (no editor on air2), `input-isolation`, `completion-gap`, `ime-routing`; `ux-layers` fails `ux-spacing` — pre-existing on this machine |
 | WK final build: `ipc-stall`, `terminal-input` | air2 | **PASS**, **PASS** |
+| WK `ipc-stall` after raising the attach budget to 10 s | air2 | **PASS**: timeout notice at 10034 ms, worst IPC 3 ms, no `[main]` stall line, clean cleanup |
 | WK final build: `run`, `ux-layers` | air2 | only the baseline's own failures (`path-editor`, `input-isolation`, `completion-gap`; `ux-spacing`); `ime-routing` passed this time; the real-click checks `ux-terminal-click`, `-drag`, `-link`, `-shell` pass. No `[main]` stall line and no `poll idle` in any mode; every registry cleanup exit 0 with nothing left and air2's own Deck, `~/.deck` and `deck` server unchanged |
 
 Smoke summaries (verdict, checks, `[main]`/attach/start/close lines; no

@@ -90,7 +90,7 @@ export async function runIpcStallSmoke() {
     await split;
     await report('stall-attach-notice', connecting && timedOut && waited <= TERMINAL_WAITS.attachBudgetMs + 2000,
       waited, (connecting ? 1 : 0) | (timedOut ? 2 : 0));
-    // b: the tries B needed (still inside A's held spawn: the budget is 5 s)
+    // b: the tries B needed (still inside A's held spawn: the budget is 10 s)
     await report('stall-ipc-responsive', bAlive && worst < 500, worst || 1, tries);
     // release the held spawn: that late attach is retired, never shown
     await fault('stall-attach-spawn', 0);

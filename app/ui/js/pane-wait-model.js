@@ -16,7 +16,7 @@
 // for a pane whose stream ended (`exited`), a card whose session is stopped,
 // a card being closed, or while the shell service restarts.
 export const TERMINAL_WAITS = Object.freeze({
-  attachBudgetMs: 5000,
+  attachBudgetMs: 10000,
   connectingNoticeMs: 1000,
   firstFrameWaitMs: 3000,
   startBudgetMs: 10000,

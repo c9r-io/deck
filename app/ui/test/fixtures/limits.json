@@ -1,6 +1,6 @@
 {
   "terminal_waits": {
-    "attach_budget_ms": 5000,
+    "attach_budget_ms": 10000,
     "connecting_notice_ms": 1000,
     "first_frame_wait_ms": 3000,
     "start_budget_ms": 10000

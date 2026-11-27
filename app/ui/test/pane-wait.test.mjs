@@ -17,14 +17,14 @@ test('the waits are the backend list', () => {
 });
 
 test('each wait says what Deck observed and offers only its own action', () => {
-  assert.deepEqual(paneNotice('connecting'), { key: 'pane.connecting', params: { seconds: 5 }, action: null });
+  assert.deepEqual(paneNotice('connecting'), { key: 'pane.connecting', params: { seconds: 10 }, action: null });
   assert.deepEqual(paneNotice('starting').action, null);
   assert.equal(paneNotice('timeout').key, 'pane.attachTimeout');
   assert.equal(paneNotice('timeout').params.seconds, TERMINAL_WAITS.attachBudgetMs / 1000);
   assert.equal(paneNotice('timeout').action, 'retry');
   assert.equal(paneNotice('busy').action, 'retry');
   assert.equal(paneNotice('startTimeout').action, 'retry');
-  assert.deepEqual(paneNotice('noFrame'), { key: 'pane.noFrame', params: { seconds: 5 }, action: 'reconnect' });
+  assert.deepEqual(paneNotice('noFrame'), { key: 'pane.noFrame', params: { seconds: 10 }, action: 'reconnect' });
   assert.equal(paneNotice('other'), null);
 });
 

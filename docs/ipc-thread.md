@@ -36,7 +36,7 @@ threads that cannot reap their client are counted and logged
 
 | Command | Budget | Basis |
 |---|---|---|
-| `attach_session` | 5 s; "Connecting terminal…" after 1 s; "shows nothing yet" after 3 s without a first frame | app.log 2026-11-27, 321 attaches: attach → first read p50 6 ms, p99 32 ms, max 212 ms |
+| `attach_session` | 10 s (raised from 5 s: an endpoint-security agent taxes every exec and can slow a shell's start); "Connecting terminal…" after 1 s; "shows nothing yet" after 3 s without a first frame | app.log 2026-11-27, 321 attaches: attach → first read p50 6 ms, p99 32 ms, max 212 ms |
 | `start_session`, `mcp_start_session` | 10 s | 197 starts: total p50 30 ms, p99 137 ms, max 153 ms; room for a first Keychain read of a project's variables and an endpoint-security exec tax |
 | `kill_session` | 5 s | one tmux call (an MCP pane: one bounded runner stop first) |
 | `write_clipboard` | 3 s | one `pbcopy`; past it pbcopy is killed and reaped, never left to write an old copy over a newer one |

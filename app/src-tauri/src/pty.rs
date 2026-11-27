@@ -563,9 +563,11 @@ impl Attempt {
 pub(crate) const MAX_ATTACH_WORKERS: usize = 4;
 /// The caller's budget (limits.json `terminal_waits.attach_budget_ms`).
 /// app.log 2026-11-27: attach → first read p50 6 ms, p99 32 ms, max 212 ms
-/// over 321 attaches; 5 s is two orders of magnitude above the tail and
-/// still short enough that the pane says something before a person gives up.
-pub(crate) const ATTACH_BUDGET: Duration = Duration::from_secs(5);
+/// over 321 attaches. 10 s (5 s in the first draft, raised 2026-11-27 at
+/// the user's request): on a Mac with an endpoint-security agent every exec
+/// is taxed and a shell can be slow to start, and a timeout there would be
+/// a false failure; the pane still says "Connecting terminal…" after 1 s.
+pub(crate) const ATTACH_BUDGET: Duration = Duration::from_secs(10);
 /// A delivered attachment with no first read after this long is logged
 /// once (`no first read`; limits.json `terminal_waits.first_frame_wait_ms`,
 /// the pane's own "no picture yet" notice).
