@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.44 — 2026-11-27 (Nightly)
+
+- An orchestrator Agent can change a worker card's goal or next step while
+  the worker is still working. `deck_worker_interject` sends one line to a
+  worker card that the calling orchestrator card started, without waiting
+  for the card to fall quiet; it is part of "Drive worker cards", with
+  nothing new to allow. Deck proves which card is calling, so no other
+  orchestrator, no caller outside a card and no card it did not start can
+  use it. Everything else still holds the line: your takeover, an Agent
+  that asks you something, a paused or reviewed line, and the minute
+  between two lines of one card. Claude Code reads the line as soon as its
+  running tool finishes, Codex (`--no-daemon` workers) steers its running
+  turn with it, and Pi takes it as its own steering message from Deck's
+  extension, never typed. agy workers do not take interjections: agy does
+  not tell Deck when it asks for permission. `deck_worker_list` says for
+  each line how it goes and what it waits for.
+- Claude Code cards say they need input as soon as a permission or
+  question dialog appears, not about six seconds later: Deck's Claude Code
+  hooks now include `PermissionRequest`, added to an existing install when
+  Deck starts.
+- A Pi that was already running when Deck updated keeps the previous Deck
+  extension until Pi reloads or restarts; until then its card says its
+  status is unavailable and lines for it wait.
+- A list that holds an interjected line cannot be opened by Deck 0.8.43 or
+  earlier, which leaves the file untouched.
+
 ## 0.8.43 — 2026-11-26 (Nightly)
 
 - Deck no longer freezes when its shell service stops answering. Scrolling,
