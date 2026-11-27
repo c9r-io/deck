@@ -140,6 +140,15 @@ pub(super) struct Client {
     /// Trigger and send sequences per orchestrator card (`origin.rs`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub(super) lanes: super::origin::Lanes,
+    /// The epoch of the client's own lane (a caller from no card) under
+    /// `lane_epoch` binding (`admit.rs`).
+    #[serde(default, skip_serializing_if = "is_zero_epoch")]
+    pub(super) send_epoch: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_epoch(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -323,6 +332,9 @@ pub(super) struct DiskDoc {
     /// What worker cards reported for their orchestrators (`reports.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) reports: Vec<super::reports::Report>,
+    /// Worker requests accepted under `lane_epoch` (`admit.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) admitted: Vec<super::admit::Admitted>,
 }
 
 impl Default for DiskDoc {
@@ -339,6 +351,7 @@ impl Default for DiskDoc {
             proposals: Vec::new(),
             mention_marks: Vec::new(),
             reports: Vec::new(),
+            admitted: Vec::new(),
         }
     }
 }
@@ -795,7 +808,11 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if !is_default_worker_capacity(&doc.config.worker_capacity) {
+    if super::admit::uses_lane_epochs(doc) {
+        STATE_VERSION_LANE_EPOCHS
+    } else if super::reports::uses_report_fields(doc) {
+        STATE_VERSION_REPORT_FIELDS
+    } else if !is_default_worker_capacity(&doc.config.worker_capacity) {
         STATE_VERSION_WORKER_CAPACITY
     } else if super::workers::uses_worker_models(doc) {
         STATE_VERSION_WORKER_MODELS
@@ -831,7 +848,8 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
     let needed = needed_version(doc);
     let version_valid = (needed..=STATE_VERSION_LATEST).contains(&doc.version)
         && super::proposals::valid_proposals(doc)
-        && super::reports::valid_reports(doc);
+        && super::reports::valid_reports(doc)
+        && super::admit::valid_admitted(doc);
     let clients_valid = version_valid
         && (MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS)
             .contains(&doc.config.output_retention_ms)

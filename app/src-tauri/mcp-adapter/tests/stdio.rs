@@ -228,7 +228,25 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
         .iter()
         .find(|tool| tool["name"] == "deck_worker_start")
         .unwrap();
-    assert_sequence_field(worker_start, "send_sequence");
+    // a worker request names one of its lane's two bindings, checked at call
+    // time (exactly one): both are advertised as non-negative integers
+    for name in [
+        "deck_worker_start",
+        "deck_worker_send",
+        "deck_worker_interject",
+        "deck_worker_close",
+    ] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        for field in ["send_sequence", "lane_epoch"] {
+            let property = &tool["inputSchema"]["properties"][field];
+            assert_eq!(
+                property["type"],
+                json!(["integer", "null"]),
+                "{name} {field}: {property}"
+            );
+            assert_eq!(property["minimum"], 0, "{name} {field}");
+        }
+    }
     assert_eq!(
         worker_start["inputSchema"]["properties"]["column_id"]["type"],
         json!(["string", "null"]),
@@ -509,6 +527,264 @@ fn a_call_without_a_sequence_names_the_field_before_connecting() {
         response["result"]["structuredContent"]["error"]["code"],
         "FEATURE_DISABLED"
     );
+    drop(input);
+    assert!(child.wait().unwrap().success());
+}
+
+#[allow(clippy::disallowed_methods)] // this file's one lock, recovering
+fn locked<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Accepts connections and answers each request with what `answer` says;
+/// `None` holds the connection open without an answer until the test ends.
+fn mock_deck(
+    listener: UnixListener,
+    answer: impl Fn(usize, &Value) -> Option<Value> + Send + 'static,
+) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for (n, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { return };
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            locked(&log).push(request.clone());
+            match answer(n, &request) {
+                Some(reply) => writeln!(stream, "{reply}").unwrap(),
+                None => held.push(stream),
+            }
+        }
+    });
+    seen
+}
+
+fn initialized(
+    name: &str,
+    socket: &str,
+) -> (
+    std::process::Child,
+    std::process::ChildStdin,
+    BufReader<std::process::ChildStdout>,
+) {
+    let mut child = spawn_adapter(&["--client-id", "client_test", "--socket", socket]);
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":name,"version":"1"}}})).unwrap();
+    input.flush().unwrap();
+    read_response(&mut output, 1);
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    (child, input, output)
+}
+
+fn temp_root(tag: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("dm-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    root
+}
+
+fn wait_answer(changed: bool, reason: &str) -> Value {
+    json!({"ok": true, "changed": changed, "reason": reason, "events": [], "workers": [], "observed": true,
+           "mayReadReplies": false, "workerTypes": [], "nextSendSequence": 0, "laneEpoch": 0})
+}
+
+/// A wait longer than one Deck call is ONE tool call: the adapter strings
+/// bounded Deck calls together, passes the caller's cursors unchanged,
+/// tells a client that asked for progress, and answers once.
+#[test]
+fn a_long_wait_is_one_tool_call_over_bounded_deck_calls() {
+    let root = temp_root("wait");
+    let socket = root.join("c.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let seen = mock_deck(listener, |n, _| {
+        Some(match n {
+            0 | 2 => wait_answer(false, "timeout"),
+            1 => wait_answer(false, "busy"),
+            _ => wait_answer(true, "report"),
+        })
+    });
+    let (mut child, mut input, mut output) = initialized("claude-code", socket.to_str().unwrap());
+    let args = json!({"until": "report", "wait_ms": 600_000, "cards": [{"card_id": "W1", "episode": 2, "reports": 4}]});
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"deck_worker_wait","arguments":args,"_meta":{"progressToken":"tok-7"}}})).unwrap();
+    input.flush().unwrap();
+    let mut progress = 0;
+    let response = loop {
+        let mut line = String::new();
+        assert!(output.read_line(&mut line).unwrap() > 0);
+        let value: Value = serde_json::from_str(&line).unwrap();
+        if value["method"] == "notifications/progress" {
+            assert_eq!(value["params"]["progressToken"], "tok-7");
+            assert_eq!(value["params"]["total"], 600_000.0);
+            progress += 1;
+            continue;
+        }
+        assert_eq!(value["id"], 7, "no other answer before the wait's: {value}");
+        break value;
+    };
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["reason"], "report", "{response}");
+    assert_eq!(content["wait"]["deckCalls"], 4);
+    assert_eq!(content["wait"]["grantedMs"], 600_000);
+    assert!(content["wait"]["cappedBy"].is_null());
+    assert_eq!(progress, 3, "one per chunk that did not end the wait");
+    let requests = locked(&seen).clone();
+    assert_eq!(requests.len(), 4);
+    for request in &requests {
+        assert_eq!(request["tool"], "deck_worker_wait");
+        assert!(
+            request["arguments"]["wait_ms"].as_u64().unwrap() <= 20_000,
+            "{request}"
+        );
+        assert_eq!(
+            request["arguments"]["cards"][0]["reports"], 4,
+            "the cursor goes unchanged"
+        );
+        assert_eq!(request["arguments"]["until"], "report");
+    }
+    // past the bound, refused before Deck is asked
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"deck_worker_wait","arguments":{"wait_ms": 1_500_001, "cards": [{"card_id": "W1", "episode": 2}]}}})).unwrap();
+    input.flush().unwrap();
+    let too_long = read_response(&mut output, 8);
+    assert_eq!(
+        too_long["result"]["structuredContent"]["error"]["details"]["fieldPath"], "wait_ms",
+        "{too_long}"
+    );
+    assert_eq!(locked(&seen).len(), 4);
+    drop(input);
+    assert!(child.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A Codex client's long wait ends before Codex's own 60 s tool timeout,
+/// and says so; a cancelled wait ends at once and the adapter goes on
+/// serving.
+#[test]
+fn a_codex_wait_is_capped_and_a_cancelled_wait_ends_at_once() {
+    let root = temp_root("cancel");
+    let socket = root.join("c.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let seen = mock_deck(listener, |_, request| {
+        if request["arguments"]["cards"][0]["card_id"] == "HOLD" {
+            // a Deck chunk that ends with nothing new
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            Some(wait_answer(false, "timeout"))
+        } else {
+            Some(wait_answer(true, "report"))
+        }
+    });
+    let holds = |seen: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>| {
+        locked(seen)
+            .iter()
+            .filter(|r| r["arguments"]["cards"][0]["card_id"] == "HOLD")
+            .count()
+    };
+    let (mut child, mut input, mut output) =
+        initialized("codex-mcp-client", socket.to_str().unwrap());
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"deck_worker_wait","arguments":{"wait_ms": 120_000, "cards": [{"card_id": "W1", "episode": 0}]}}})).unwrap();
+    input.flush().unwrap();
+    let capped = read_response(&mut output, 3);
+    let wait = &capped["result"]["structuredContent"]["wait"];
+    assert_eq!(wait["grantedMs"], 50_000, "{capped}");
+    assert_eq!(wait["cappedBy"], "codex-default-tool-timeout-60s");
+    // a wait Deck holds open; the client cancels it
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"deck_worker_wait","arguments":{"wait_ms": 40_000, "cards": [{"card_id": "HOLD", "episode": 0}]}}})).unwrap();
+    input.flush().unwrap();
+    let started = std::time::Instant::now();
+    while holds(&seen) < 3 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4,"reason":"user pressed Esc"}})).unwrap();
+    input.flush().unwrap();
+    // at most the chunk already in Deck finishes; the loop asks for no more
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let after_cancel = holds(&seen);
+    std::thread::sleep(std::time::Duration::from_millis(1_000));
+    assert_eq!(
+        holds(&seen),
+        after_cancel,
+        "the cancelled wait made no further Deck call"
+    );
+    // and the adapter goes on serving; the cancelled call gets no answer
+    // (MCP: a cancelled request is not answered)
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"deck_worker_wait","arguments":{"wait_ms": 0, "cards": [{"card_id": "W1", "episode": 0}]}}})).unwrap();
+    input.flush().unwrap();
+    loop {
+        let mut line = String::new();
+        assert!(output.read_line(&mut line).unwrap() > 0);
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_ne!(
+            value["id"], 4,
+            "a cancelled request is not answered: {value}"
+        );
+        if value["id"] == 5 {
+            assert_eq!(
+                value["result"]["structuredContent"]["reason"], "report",
+                "{value}"
+            );
+            break;
+        }
+    }
+    drop(input);
+    assert!(child.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A worker request names exactly one binding, checked before Deck is asked.
+#[test]
+fn a_worker_request_names_exactly_one_binding_before_connecting() {
+    let (mut child, mut input, mut output) =
+        initialized("test", "/tmp/deck-mcp-binding-absent.sock");
+    let base = json!({"request_id": "r1", "card_id": "W1", "after_episode": 0, "text": "go"});
+    let with = |extra: Value| {
+        let mut args = base.clone();
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        args
+    };
+    for (id, args, field, category) in [
+        (10, with(json!({})), "send_sequence", "required"),
+        (
+            11,
+            with(json!({"send_sequence": 1, "lane_epoch": 0})),
+            "lane_epoch",
+            "conflict",
+        ),
+        (12, with(json!({"lane_epoch": -1})), "lane_epoch", "type"),
+    ] {
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"deck_worker_send","arguments":args}})).unwrap();
+        input.flush().unwrap();
+        let response = read_response(&mut output, id);
+        let error = &response["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "INVALID_ARGUMENTS", "{response}");
+        assert_eq!(error["details"]["fieldPath"], field, "{response}");
+        assert_eq!(error["details"]["category"], category, "{response}");
+    }
+    for (id, args) in [
+        (20, with(json!({"lane_epoch": 0}))),
+        (21, with(json!({"send_sequence": 0}))),
+    ] {
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"deck_worker_send","arguments":args}})).unwrap();
+        input.flush().unwrap();
+        let response = read_response(&mut output, id);
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"], "FEATURE_DISABLED",
+            "valid: it reaches the (absent) socket: {response}"
+        );
+    }
     drop(input);
     assert!(child.wait().unwrap().success());
 }

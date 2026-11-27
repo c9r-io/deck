@@ -287,6 +287,31 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 .and_then(|value| value.get("code"))
                 .and_then(Value::as_str)
                 .unwrap_or("rejected");
+            // which tool was refused and why, closed words only: the audit
+            // record carries no tool, and a refused worker request left no
+            // other trace to tell a lane's refusals apart
+            if let Some(tool) = [
+                "deck_worker_start",
+                "deck_worker_send",
+                "deck_worker_interject",
+                "deck_worker_close",
+                "deck_worker_report",
+                "deck_worker_wait",
+            ]
+            .into_iter()
+            .find(|known| *known == audit_tool)
+            {
+                let relation = error
+                    .get("error")
+                    .and_then(|value| value.get("relation"))
+                    .and_then(Value::as_str)
+                    .filter(|r| matches!(*r, "ahead" | "behind" | "retired"))
+                    .unwrap_or("-");
+                crate::applog::applog(&format!(
+                    "[mcp] refused {tool} code={} relation={relation}",
+                    closed_code(reason)
+                ));
+            }
             let _ = runtime.write(|doc| {
                 audit(
                     doc,
@@ -301,6 +326,18 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
         }
     }
     result.unwrap_or_else(|error| error)
+}
+
+/// An error code as a log word: upper-case letters and `_` only, else `other`.
+fn closed_code(code: &str) -> &str {
+    if !code.is_empty()
+        && code.len() <= 40
+        && code.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+    {
+        code
+    } else {
+        "other"
+    }
 }
 
 #[cfg(target_os = "macos")]

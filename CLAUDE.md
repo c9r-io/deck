@@ -303,9 +303,13 @@ evolution; it makes scope expansion deliberate.
   from the card it started it from (above). The agent in a worker card may hand
   Deck a report for its orchestrator (`deck_worker_report`, approved
   2026-11-19, `mcp/reports.rs`): Deck proves the calling card from the
-  kernel, files the text for the orchestrator card that started it, and
+  kernel, files the text (and, since 2026-11-28, the worker's own
+  structured claims: status, branch, commit, path, task label — shape
+  checked, never acted on) for the orchestrator card that started it, and
   the orchestrator pulls it under the replies choice; a report is data at
-  rest and never sends, wakes, moves or authorizes anything. The agent in
+  rest and never sends, moves or authorizes anything, and the one thing it
+  ends is a `deck_worker_wait` that orchestrator is itself making for it
+  (approved 2026-11-28: no Agent is woken, nothing is typed, nothing starts). The agent in
   ANY card may leave the user a note in that card's scratchpad
   (`deck_card_note`, approved 2026-11-23, `mcp/notes.rs`): the card proved
   from the kernel, no separate choice, through the webview's one Board

@@ -9,6 +9,7 @@
   "max_input_bytes": 32768,
   "wait_ms_default": 1000,
   "wait_ms_max": 5000,
+  "worker_wait_chunk_ms": 20000,
   "lease_ms_min": 1000,
   "lease_ms_max": 300000,
   "output_retention_ms_min": 60000,

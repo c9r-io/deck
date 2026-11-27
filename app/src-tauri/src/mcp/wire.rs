@@ -65,11 +65,21 @@ pub(super) struct WorkerSeen {
     pub(super) reports: Option<u64>,
 }
 
-/// `deck_worker_report`: the calling worker card's report.
+/// `deck_worker_report`: the calling worker card's report: its text and,
+/// optionally, the worker's own structured claims about it (`reports.rs`).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkerReportArgs {
     pub(super) text: String,
+    #[serde(default)]
+    pub(super) fields: Option<super::reports::ReportFields>,
+    /// A Deck operation of a line or start for this very card
+    /// (`reports::reply_target`): the report answers it.
+    #[serde(default)]
+    pub(super) in_reply_to: Option<String>,
+    /// The worker's own idempotency key for this report.
+    #[serde(default)]
+    pub(super) request_id: Option<String>,
 }
 
 /// `deck_worker_reports`: one worker card's kept reports after `after`.
@@ -88,6 +98,15 @@ pub(super) struct WorkerWaitArgs {
     pub(super) cards: Vec<WorkerSeen>,
     #[serde(default)]
     pub(super) wait_ms: Option<u64>,
+    /// `change` (the default: any of the conditions below) or `report`
+    /// (only a new report, or the card leaving the caller's reach: taken
+    /// over, exited, gone), `workers::WaitUntil`.
+    #[serde(default)]
+    pub(super) until: Option<String>,
+    /// Return the texts and fields of the reports newer than each card's
+    /// `reports` cursor inline (needs `allow_replies`, bounded).
+    #[serde(default)]
+    pub(super) include_reports: bool,
 }
 
 /// `deck_worker_reply`: one card's final message of one turn ending.
@@ -104,7 +123,11 @@ pub(super) struct WorkerReplyArgs {
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkerStartArgs {
     pub(super) request_id: String,
-    pub(super) send_sequence: u64,
+    /// Exactly one of `send_sequence` and `lane_epoch` (`admit.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) send_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) lane_epoch: Option<u64>,
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub(super) r#type: Option<String>,
     pub(super) text: String,
@@ -134,7 +157,10 @@ pub(super) struct WorkerStartArgs {
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkerCloseArgs {
     pub(super) request_id: String,
-    pub(super) send_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) send_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) lane_epoch: Option<u64>,
     pub(super) card_id: String,
     pub(super) after_episode: u64,
 }
@@ -145,7 +171,10 @@ pub(super) struct WorkerCloseArgs {
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkerSendArgs {
     pub(super) request_id: String,
-    pub(super) send_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) send_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) lane_epoch: Option<u64>,
     pub(super) card_id: String,
     pub(super) after_episode: u64,
     pub(super) text: String,

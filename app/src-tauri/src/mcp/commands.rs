@@ -455,6 +455,7 @@ pub(crate) fn mcp_client_add(
             allow_card_edits,
             rule_column,
             lanes: Default::default(),
+            send_epoch: 0,
         };
         doc.config.clients.push(client.clone());
         Ok(ClientView {
@@ -1780,11 +1781,15 @@ pub(crate) fn mcp_card_closed(card_id: String) -> Result<(), DeckError> {
         compact(doc, Some(&runtime.service_instance));
         Ok(removed)
     })?;
-    let mut emergency = runtime.emergency.lock_or_recover();
-    for session_id in removed {
-        emergency.human_sessions.remove(&session_id);
-        emergency.execution_unpersisted.remove(&session_id);
+    {
+        let mut emergency = runtime.emergency.lock_or_recover();
+        for session_id in removed {
+            emergency.human_sessions.remove(&session_id);
+            emergency.execution_unpersisted.remove(&session_id);
+        }
     }
+    // a wait following this card answers now, not at its deadline
+    note_worker_change();
     Ok(())
 }
 

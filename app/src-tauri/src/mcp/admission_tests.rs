@@ -48,6 +48,7 @@ fn client() -> Client {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
+        send_epoch: 0,
     }
 }
 

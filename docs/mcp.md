@@ -151,9 +151,9 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_automation_list` | The Agent automations this client is delegated to trigger: each rule's automation id, name, project and current revision, plus `nextTriggerSequence`. Needs the client's separate **automation delegation**. |
 | `deck_automation_trigger` | Hand one classified item (`text`, optional `from`/`where`/`link`) to one automation by id and revision. Deck creates the rule's card and sends its approved steps; the operation reports `committed` with `cardId` or `rejected` with a closed code (`RULE_CHANGED` with `currentRevision`, `TARGET_MISSING`, `TEMPLATE_MISSING`, `RULE_BLOCKED`, `RULE_MISSING`, `CLIENT_REVOKED`). Not session or execution authority. |
 | `deck_worker_list` | This client's worker cards (the cards its automation triggers created, and those `deck_worker_start` started, while it may drive them): card id, title, alive, Agent observation `{state, episode}` (`why` when unavailable), `takenOver`, unsent lines and the states of its recent lines, plus `mayReadReplies` and `nextSendSequence`. Content-free. Needs the client's separate **worker** choice. |
-| `deck_worker_wait` | The same views once one of the named cards moves past the episode the caller saw, is taken over or stops; at most 5 s (`wait_ms`), call again after `changed: false`. |
-| `deck_worker_report` | Called by the agent IN a worker card: hands Deck a text (at most 8192 bytes) for the orchestrator that started the card. It names no card and no recipient; Deck sees which card the call comes from. `NOT_A_WORKER_CARD` anywhere else. |
-| `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence and time; `after` for newer ones only). Durable; needs the **replies** choice. |
+| `deck_worker_wait` | The same views once one of the named cards changes, in one call of up to 25 minutes (`wait_ms`; a Codex client up to 50 s, below Codex's default 60 s tool timeout): `until: change` (default) on another episode, a report past the passed cursor, a takeover, an exit or the card leaving the Board; `until: report` only on a report past each card's `reports` cursor or the card leaving the caller's reach. Answers `changed`, `reason` (`report`, `taken-over`, `exited`, `gone`, `episode`, `timeout`), per-card `events`, `nextSendSequence`, `laneEpoch` and `wait` (requested, granted, waited); with `include_reports` the new reports inline (needs **replies**, bounded). Reading consumes nothing. |
+| `deck_worker_report` | Called by the agent IN a worker card: hands Deck a text (at most 8192 bytes) for the orchestrator that started the card, optionally with `fields` (the worker's own claims: `status` one of `in_progress`, `blocked`, `failed`, `ready_for_review`, `ready_to_merge`; `branch`; `commit`, a full hash; `report_path`, relative to the card's working directory, returned as `baseDir`; `task_ref`), `in_reply_to` (the operation of a start or line of this card; `IN_REPLY_TO_MISMATCH` / `IN_REPLY_TO_UNKNOWN` otherwise) and its own `request_id`. It names no card and no recipient; Deck sees which card the call comes from. `NOT_A_WORKER_CARD` anywhere else. |
+| `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence, time, text and the worker's fields, `inReplyTo`, `baseDir` when given; `after` for newer ones only; `firstKept`). Durable; needs the **replies** choice. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 64 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
 | `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the absolute directory `dir` (required), which decides the project: the one whose directory holds it (`PATH_NOT_ACCESSIBLE` when none does; `PATH_AMBIGUOUS`, listing the candidates, when several do — start again naming one with `project_id`), with its first line, and optionally one of the type's listed `models` (`model`, byte for byte: the card's command is the type's plus `--model <that entry>`; any other is `MODEL_NOT_LISTED`, listing the type's models, and starts nothing). It opens beside the orchestrator card when that is in the same project, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most the user's worker capacity per orchestrator card on the Board (Settings › MCP, default 16, 1–32; callers from no card together), four times that per client; `deck_capabilities` `workerCapacity` says both. |
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
@@ -170,7 +170,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_card_update` | Rename one card of the client's projects and/or move it to a column, of its own project or (`project_id`) of another the client reaches: `card_id`, `request_id`, `title` + `from_title`, `column_id` + `from_column_id`. Refused with `CARD_CHANGED` when the card is no longer where or named as the request says, `COLUMN_NOT_FOUND` for a column outside the target project or a project out of reach, `CAPACITY_EXCEEDED` past 30 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `card-changed`, `card-starting`, `card-collecting`, `card-managed` or `card-missing`. Types, starts and closes nothing. Needs the client's separate **organize cards** choice (and the card snapshot). |
 | `deck_card_note` | Leave, revise or withdraw one note for the user in the scratchpad of the card the call comes from (proved from the kernel; `NOT_IN_A_CARD` otherwise): `request_id`, `key` (the client's own; the same key revises the note while it is open), `title` (one line, at most 120 characters), `text` (at most 8 KiB), `acted` (the Agent already went ahead with its recommendation), or `withdraw: true` with the key alone. `NOTE_HANDLED` once the user handled that key, `CAPACITY_EXCEEDED` past 32 open notes on the card, `RATE_LIMITED` past 12 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `note-handled`, `note-capacity`, `note-conflict` or `card-missing`. Any locally authorized client; no separate choice. |
 | `deck_card_notes` | The caller's own notes in the card the call comes from: `key`, `title`, `acted`, `state` (`open` or `handled`), `updatedAt`. Never the user's notes or another client's. |
-| `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
+| `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence` (one request at a time) or `lane_epoch` (several at once; see "Several requests at once"). Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over, and for agy never while agy works (`agy-working`). |
 | `deck_worker_interject` | Send one line to a worker card the calling orchestrator card started, without waiting for the card to fall quiet (the same arguments as `deck_worker_send`; see "Interjecting" under Worker cards). `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `INTERJECT_UNSUPPORTED` for an agy worker, `INVALID_ARGUMENTS` for text with a control character other than newline and tab. Every other hold, the minute between two lines, the sequence, rate and unsent bound are `deck_worker_send`'s. Part of **Drive worker cards**. |
 | `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `after_episode`, `send_sequence`, `request_id`): `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `EPISODE_MOVED` when it moved on. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above when the card changed before the close ran. Part of **Drive worker cards**; 30 a minute together with lines. |
 
@@ -395,13 +395,63 @@ card's row in the list and the wait says how many reports it holds and the
 newest one's number, never their text, so a wait that passes the number it
 last saw returns when the card reports again. Reports survive a Deck
 restart and stay while Deck keeps the worker's record; the newest four per
-card are kept. Deck does nothing else with a report: it sends nothing,
-notifies nobody and moves no card, and on the worker's card you see only
-"reported" with the time. `deck_worker_send` queues one line: Deck refuses it when the
+card are kept. A report may carry the worker's own claims in `fields`
+(status, branch, full commit, report path, task label) and the line it
+answers (`in_reply_to`, an operation of that card): Deck checks their shape
+only. `ready_to_merge` is the worker's word; Deck runs no Git, reads no path
+and starts nothing because of it. The one thing a report does besides being
+kept is to end a wait the orchestrator is making for it; it sends nothing,
+notifies nobody else and moves no card, and on the worker's card you see
+only "reported" with the time.
+
+**Waiting for reports.** An orchestrator that has handed out work calls
+`deck_worker_wait` with `until: "report"`, the cards, each card's newest
+report number it has seen (`reports`), and a long `wait_ms` (up to 25
+minutes). The call returns as soon as one of them reports (all cards that
+reported meanwhile are in `events`; with `include_reports` their texts and
+fields come along), when one is taken over, exits or leaves the Board, or at
+the deadline (`reason: "timeout"`) — never with "nothing changed" in
+between. Nothing is marked read: after a timeout, a cancel (Esc) or a lost
+answer, wait again with the same numbers and nothing is missed; only the
+newest four reports per card are kept (`firstKept` says where they start).
+Deck itself blocks at most 20 s per call and lets at most 12 waits block at
+once, so waiting orchestrators never keep a worker's report or a line out;
+the adapter strings those calls together inside the one tool call, sends a
+progress notification per call to a client that asked for progress, and
+stops at once when the client cancels. Claude Code turns a call still
+running after two minutes into a background task and lets the
+conversation go on; Codex ends any MCP call after 60 s by default
+(`tool_timeout_sec`), so a Codex client's wait is capped at 50 s and says so
+(`wait.cappedBy`).
+
+**Several requests at once.** Start, send, interject and close share one
+lane per orchestrator card. With `send_sequence` they go one at a time:
+when one is refused for its own reason the sequence does not move, so the
+next one, prepared for the following number, is refused as `STALE_REQUEST`
+too (its `error` says `scope: worker-lane`, what it received and expected,
+`relation: ahead|behind` and `accepted: false`). With `lane_epoch` (the
+`laneEpoch` of `deck_worker_list` / `deck_worker_wait`, the same for every
+request you send now) independent requests may go at once and in any
+order, each decided on its own; every receipt's `lane` says where the lane
+stands. Each request keeps its own `request_id`: an exact retry returns the
+same operation, the same id with other arguments is `REQUEST_ID_CONFLICT`,
+and a request Deck accepted once is answered from its tombstone
+(`state: retired`) after its record is gone — it never runs twice. Deck
+accepts the lane's current epoch and the one before it (the epoch moves on
+after 64 accepted requests); an older one is refused with
+`relation: retired` ("Deck no longer knows whether it ran"). Never resend a
+refused request unchanged and never move an old request to a new epoch:
+read the lane, decide, and send a new request. `deck_worker_send` queues one line: Deck refuses it when the
 card's episode is no longer the one the line was written after, and
 otherwise types it only when the ordinary readiness holds allow, never
 while the agent is asking you something (after 10 s of quiet in the pane,
-and at least a minute after the card's previous line).
+and at least a minute after the card's previous line). An agy worker's
+line also waits while agy works (stage `agy-working`): agy does not tell
+Deck when it asks for permission, and a line typed into its question would
+be dropped and its Enter would approve the command. It goes once agy ends
+its turn; if agy waits for your answer in the card, answer it there. After
+a Deck restart, a later line into an agy waits for agy's next turn (or your
+send-now); only a new card's first line takes the worker first-send choice.
 
 **Interjecting.** `deck_worker_interject` (same arguments as
 `deck_worker_send`) sends a line WITHOUT waiting for the card to fall

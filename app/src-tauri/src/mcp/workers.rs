@@ -81,7 +81,28 @@
 //!   `held` is) until handing it back makes it unowned.
 //! - A worker card's agent may hand its result to Deck for its orchestrator
 //!   to read (`deck_worker_report`, `reports.rs`): data at rest, never a
-//!   send, a wake or authority.
+//!   send or authority; the one thing it ends is a `deck_worker_wait` its
+//!   orchestrator is making for it (approved 2026-11-28).
+//! - Waiting (`worker_wait`, approved 2026-11-28): `until: change` (the
+//!   original) or `until: report` (a new report past the caller's cursor,
+//!   or the card leaving its reach: taken over, exited, gone; never just
+//!   another episode); every answer names its `reason` and per-card
+//!   `events`, and with `include_reports` and `allow_replies` the new
+//!   reports inline (bounded). One Deck call blocks at most
+//!   `WORKER_WAIT_CHUNK_MS`; at most `WAIT_SLOTS` block at once, all
+//!   clients together (a wait past them answers `busy` at once), so waits
+//!   never take the connections a report or a line needs. Longer waits are
+//!   the adapter's string of such calls inside one tool call
+//!   (`mcp-adapter` `long_wait`). The order is the ledger's: a report is
+//!   persisted, then `note_worker_change` wakes the waits; a wait reads its
+//!   change mark BEFORE its snapshot, so a report between the two ends the
+//!   wait at once. Nothing is consumed: the caller's cursors stay good
+//!   after a timeout, a cancel or a lost answer.
+//! - Lane binding (`admit.rs`, approved 2026-11-28): start, send,
+//!   interject and close take `send_sequence` (one at a time, as before)
+//!   or `lane_epoch` (several at once, each decided on its own); every
+//!   receipt says where the lane stands (`lane`), every refusal of the
+//!   binding says what it expected (`STALE_REQUEST`, `scope: worker-lane`).
 //! - Withdrawing `allow_workers`, revoking the client or disabling MCP takes
 //!   the client out of `automation_delegations` under the settings fence the
 //!   scheduler's firing intent also takes: no delegated line starts after
@@ -161,7 +182,15 @@ pub(super) struct Worker {
     /// `None` when it chose none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) model: Option<String>,
+    /// The operations of the newest lines accepted for this card
+    /// (`queue_line`, at most `LINES_KEPT`): what a report may answer
+    /// (`reports::reply_target`) after the journal retired their records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) lines: Vec<String>,
 }
+
+/// Line operations a worker record keeps (`Worker.lines`).
+const LINES_KEPT: usize = 16;
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(n: &u64) -> bool {
@@ -286,6 +315,7 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
             .and_then(|r| r.get("model"))
             .and_then(Value::as_str)
             .map(str::to_owned),
+        lines: Vec::new(),
     });
 }
 
@@ -804,7 +834,93 @@ pub(super) fn worker_list(
         "mayReadReplies": replies,
         "workerTypes": types,
         "nextSendSequence": next,
+        "laneEpoch": lane_epoch(runtime, client_id),
     }))
+}
+
+/// What a `deck_worker_wait` returns for (`until`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitUntil {
+    /// Any of: a new report (when the caller named its cursor), another
+    /// episode, the card taken over, exited or gone (the original wait).
+    Change,
+    /// A new report, or the card leaving the caller's reach (taken over,
+    /// exited, gone); another episode alone does not end it.
+    Report,
+}
+
+/// The longest one backend wait blocks. A longer wait is the adapter's: it
+/// strings bounded waits together inside one tool call
+/// (`mcp-adapter` `long_wait`), so no connection is held longer than this
+/// and the caller's identity is proven from the kernel again for each.
+pub(super) const WORKER_WAIT_CHUNK_MS: u64 = 20_000;
+/// Worker waits that may block at once, all clients together: well under
+/// `MAX_CONNECTIONS`, so waiting orchestrators never take the slots a
+/// report, a line or a control call needs. Past it a wait that would block
+/// answers at once (`reason: "busy"`), and the adapter tries again shortly.
+pub(super) const WAIT_SLOTS: usize = 12;
+/// Report texts one wait returns inline (`include_reports`), all cards
+/// together: the rest are left to `deck_worker_reports`.
+const INLINE_REPORT_BYTES: usize = 64 * 1024;
+
+static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One blocking wait's slot, given back when it ends.
+struct WaitSlot;
+
+impl WaitSlot {
+    fn take() -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        let mut now = WAITING.load(Ordering::SeqCst);
+        loop {
+            if now >= WAIT_SLOTS {
+                return None;
+            }
+            match WAITING.compare_exchange(now, now + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(WaitSlot),
+                Err(seen) => now = seen,
+            }
+        }
+    }
+}
+
+impl Drop for WaitSlot {
+    fn drop(&mut self) {
+        WAITING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Why one asked card ends a wait, if it does: `report`, `taken-over`,
+/// `exited`, `gone` or (only `WaitUntil::Change`) `episode`.
+fn wait_reason(
+    until: WaitUntil,
+    asked: &WorkerSeen,
+    view: Option<&Value>,
+    observed: bool,
+) -> Option<&'static str> {
+    let Some(v) = view else {
+        return Some("gone");
+    };
+    let cursor = match until {
+        WaitUntil::Change => asked.reports,
+        // a report wait without a cursor waits for any report
+        WaitUntil::Report => Some(asked.reports.unwrap_or(0)),
+    };
+    if cursor.is_some_and(|seen| v["reports"]["latest"].as_u64() != Some(seen)) {
+        return Some("report");
+    }
+    if v["takenOver"] == true {
+        return Some("taken-over");
+    }
+    // an unread pane listing proves nothing: a report wait does not take
+    // it for an exit (the original wait still does)
+    if v["alive"] == false && (until == WaitUntil::Change || observed) {
+        return Some("exited");
+    }
+    if until == WaitUntil::Change && v["agent"]["episode"].as_u64() != Some(asked.episode) {
+        return Some("episode");
+    }
+    None
 }
 
 pub(super) fn worker_wait(
@@ -813,19 +929,31 @@ pub(super) fn worker_wait(
     arguments: Value,
 ) -> Result<Value, Value> {
     let args: WorkerWaitArgs = parse(arguments)?;
+    let until = match args.until.as_deref() {
+        None | Some("change") => WaitUntil::Change,
+        Some("report") => WaitUntil::Report,
+        Some(_) => {
+            return Err(error_value(
+                "INVALID_ARGUMENTS",
+                "until is `change` or `report`",
+                "Use until: report to wait only for reports (and the card leaving your reach).",
+            ))
+        }
+    };
     let wait = args.wait_ms.unwrap_or(DEFAULT_WAIT_MS);
     // one wait may follow every worker card the client may have
     let most = runtime.read(client_capacity).map_err(map_error)?;
-    if wait > MAX_WAIT_MS || args.cards.is_empty() || args.cards.len() > most {
+    if wait > WORKER_WAIT_CHUNK_MS || args.cards.is_empty() || args.cards.len() > most {
         return Err(error_value(
             "INVALID_ARGUMENTS",
             &format!(
-                "cards must name 1 to {most} worker cards and wait_ms be at most {MAX_WAIT_MS}"
+                "cards must name 1 to {most} worker cards and wait_ms be at most {WORKER_WAIT_CHUNK_MS} per Deck call"
             ),
             "Name the cards and episodes deck_worker_list returned; call again after a timeout.",
         ));
     }
     let deadline = Instant::now() + Duration::from_millis(wait);
+    let mut slot = None;
     loop {
         let mark = change_count();
         let (rows, next, replies, types) = snapshot(runtime, client_id)?;
@@ -837,29 +965,49 @@ pub(super) fn worker_wait(
             .filter(|row| args.cards.iter().any(|c| c.card_id == row.worker.card_id))
             .map(|row| view(runtime, client_id, row, seen, plans))
             .collect();
-        let changed = args.cards.iter().any(|asked| {
-            match views.iter().find(|v| v["cardId"] == asked.card_id.as_str()) {
-                None => true,
-                Some(v) => {
-                    v["takenOver"] == true
-                        || v["alive"] == false
-                        || v["agent"]["episode"].as_u64() != Some(asked.episode)
-                        || asked
-                            .reports
-                            .is_some_and(|seen| v["reports"]["latest"].as_u64() != Some(seen))
-                }
+        let events: Vec<(String, &'static str)> = args
+            .cards
+            .iter()
+            .filter_map(|asked| {
+                let found = views.iter().find(|v| v["cardId"] == asked.card_id.as_str());
+                wait_reason(until, asked, found, seen.is_some())
+                    .map(|why| (asked.card_id.clone(), why))
+            })
+            .collect();
+        let changed = !events.is_empty();
+        let timed_out = Instant::now() >= deadline;
+        // a wait that would block takes a slot; none free answers now
+        let busy = !changed && !timed_out && slot.is_none() && {
+            slot = WaitSlot::take();
+            slot.is_none()
+        };
+        if changed || timed_out || busy {
+            let reason = ["report", "taken-over", "exited", "gone", "episode"]
+                .into_iter()
+                .find(|r| events.iter().any(|(_, why)| why == r))
+                .unwrap_or(if busy { "busy" } else { "timeout" });
+            let mut answer = json!({
+                "ok": true,
+                "changed": changed,
+                "reason": reason,
+                "events": events
+                    .iter()
+                    .map(|(card, why)| json!({"cardId": card, "reason": why}))
+                    .collect::<Vec<_>>(),
+                "workers": views,
+                "observed": seen.is_some(),
+                "mayReadReplies": replies,
+                "workerTypes": types,
+                "nextSendSequence": next,
+                "laneEpoch": lane_epoch(runtime, client_id),
+            });
+            if busy {
+                answer["retryAfterMs"] = json!(1_000);
             }
-        });
-        if changed || Instant::now() >= deadline {
-            return Ok(json!({
-                    "ok": true,
-                    "changed": changed,
-                    "workers": views,
-                    "observed": seen.is_some(),
-                    "mayReadReplies": replies,
-            "workerTypes": types,
-                    "nextSendSequence": next,
-                }));
+            if args.include_reports {
+                answer["reportsInline"] = inline_reports(runtime, client_id, &args.cards, replies);
+            }
+            return Ok(answer);
         }
         wait_change(mark, deadline);
         // at most five listings a second, however busy the other agents are
@@ -867,6 +1015,66 @@ pub(super) fn worker_wait(
             Duration::from_millis(200).min(deadline.saturating_duration_since(Instant::now())),
         );
     }
+}
+
+/// The calling lane's epoch (`admit.rs`), for the views.
+fn lane_epoch(runtime: &Runtime, client_id: &str) -> u64 {
+    let orchestrator = super::origin::orchestrator();
+    runtime
+        .read(|doc| {
+            doc.config
+                .clients
+                .iter()
+                .find(|c| c.id == client_id)
+                .map(|c| super::admit::epoch(c, orchestrator.as_deref()))
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+/// The reports newer than each asked card's cursor, for a reader with
+/// `allow_replies` only; at most `INLINE_REPORT_BYTES` of them, the rest
+/// named as left out. Never marks anything read.
+fn inline_reports(
+    runtime: &Runtime,
+    client_id: &str,
+    asked: &[WorkerSeen],
+    replies: bool,
+) -> Value {
+    if !replies {
+        return json!({
+            "readable": false,
+            "note": "This client may not read report texts (the local user's permission to read replies); the counts above are all a wait shows."
+        });
+    }
+    let orchestrator = super::origin::orchestrator();
+    let cards = runtime
+        .read(|doc| {
+            let mut budget = INLINE_REPORT_BYTES;
+            asked
+                .iter()
+                .filter_map(|a| {
+                    let worker =
+                        own_card(doc, client_id, orchestrator.as_deref(), &a.card_id).ok()?;
+                    let newer = super::reports::newer_than(doc, &worker, a.reports.unwrap_or(0));
+                    if newer.is_empty() {
+                        return None;
+                    }
+                    let size: usize = newer.iter().map(|r| r.to_string().len()).sum();
+                    if size > budget {
+                        return Some(json!({"cardId": a.card_id, "omitted": newer.len()}));
+                    }
+                    budget -= size;
+                    Some(json!({"cardId": a.card_id, "reports": newer}))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "readable": true,
+        "cards": cards,
+        "note": super::reports::REPORT_NOTE,
+    })
 }
 
 pub(super) fn own_card(
@@ -935,6 +1143,71 @@ pub(super) fn worker_reply(
         "truncated": text.contains(crate::turn_summary::REPLY_CUT),
         "text": text,
     }))
+}
+
+/// A replay of a worker request: its kept operation, or, for one Deck
+/// accepted under `lane_epoch` and whose record it retired, the tombstone's
+/// answer (`admit.rs`). Asked before every other check.
+fn replay_worker(
+    runtime: &Runtime,
+    client_id: &str,
+    orchestrator: Option<&str>,
+    request_id: &str,
+    hash: &str,
+) -> Result<Option<Value>, Value> {
+    runtime
+        .read(|doc| -> Result<Option<Value>, DeckError> {
+            let client = permitted(doc, client_id, Choice::Workers)?;
+            let lane = super::admit::lane_view(client, orchestrator, None);
+            if let Some(operation) = existing_operation(doc, client_id, request_id, hash)? {
+                let mut view = operation_view(operation);
+                view["replayed"] = json!(true);
+                view["lane"] = lane;
+                return Ok(Some(view));
+            }
+            Ok(
+                super::admit::tombstone(doc, client_id, request_id, hash)?.map(|a| {
+                    let mut view = super::admit::retired_view(a);
+                    view["replayed"] = json!(true);
+                    view["lane"] = lane;
+                    view
+                }),
+            )
+        })
+        .map_err(map_error)?
+        .map_err(map_error)
+}
+
+/// A write's other answer: a tombstone's view (a success: the request ran
+/// once, never again) or a refusal.
+fn settled_answer(answer: Value) -> Result<Value, Value> {
+    if answer["ok"] == true {
+        Ok(answer)
+    } else {
+        Err(answer)
+    }
+}
+
+/// An accepted worker request's receipt: its operation and where the lane
+/// stands after it (`admit::lane_view`).
+fn receipt(
+    runtime: &Runtime,
+    client_id: &str,
+    orchestrator: Option<&str>,
+    binding: super::admit::Binding,
+    operation: &Operation,
+) -> Value {
+    let mut view = operation_view(operation);
+    if let Ok(Some(lane)) = runtime.read(|doc| {
+        doc.config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .map(|c| super::admit::lane_view(c, orchestrator, Some(binding)))
+    }) {
+        view["lane"] = lane;
+    }
+    view
 }
 
 fn send_window() -> &'static Mutex<HashMap<String, Vec<Instant>>> {
@@ -1040,7 +1313,7 @@ fn interject_unsupported() -> Value {
     error_value(
         "INTERJECT_UNSUPPORTED",
         "this card's agent cannot take an interjected line safely: it does not tell Deck when it asks the user something",
-        "Queue the line with deck_worker_send instead: it goes once the card is quiet, under the same checks.",
+        "Queue the line with deck_worker_send if it can wait: for agy, Deck types it only after agy ends its turn (a working agy may be showing a permission question Deck cannot see; such a line waits at `agy-working`, and an agy waiting for the user's answer waits for the user).",
     )
 }
 
@@ -1091,12 +1364,14 @@ fn queue_line(
             "Send the message as plain text with a fresh request id.",
         ));
     }
+    let binding = super::admit::Binding::of(args.send_sequence, args.lane_epoch)?;
     let hash = request_hash(line.tool(), &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
-    let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
-    if let Some(operation) = replay {
-        return Ok(operation_view(&operation));
+    if let Some(replayed) =
+        replay_worker(runtime, client_id, orchestrator, &args.request_id, &hash)?
+    {
+        return Ok(replayed);
     }
     // an interjected line: only from the orchestrator card that started the
     // card, never from no card (the kernel's word, never the client's)
@@ -1106,27 +1381,26 @@ fn queue_line(
         (Line::Queued, _) => None,
     };
     let (worker, stale) = runtime
-        .read(|doc| -> Result<Result<(Worker, bool), Value>, DeckError> {
-            let client = permitted(doc, client_id, Choice::Workers)?;
-            if !super::origin::lane_room(client, orchestrator) {
-                return Ok(Err(super::origin::no_lane()));
-            }
-            let stale = super::origin::send_sequence(client, orchestrator) != args.send_sequence;
-            let worker = match caller {
-                Some(caller) => opened_by(doc, client_id, caller, &args.card_id)
-                    .cloned()
-                    .ok_or_else(|| not_interjectable(false)),
-                None => own_card(doc, client_id, orchestrator, &args.card_id),
-            };
-            Ok(worker.map(|w| (w, stale)))
-        })
+        .read(
+            |doc| -> Result<Result<(Worker, Option<Value>), Value>, DeckError> {
+                let client = permitted(doc, client_id, Choice::Workers)?;
+                if !super::origin::lane_room(client, orchestrator) {
+                    return Ok(Err(super::origin::no_lane()));
+                }
+                let stale = super::admit::check(client, orchestrator, binding).err();
+                let worker = match caller {
+                    Some(caller) => opened_by(doc, client_id, caller, &args.card_id)
+                        .cloned()
+                        .ok_or_else(|| not_interjectable(false)),
+                    None => own_card(doc, client_id, orchestrator, &args.card_id),
+                };
+                Ok(worker.map(|w| (w, stale)))
+            },
+        )
         .map_err(map_error)?
         .map_err(map_error)??;
-    if stale {
-        return Err(map_error(DeckError::new(
-            ErrorKind::ContextChanged,
-            STALE_REQUEST,
-        )));
+    if let Some(refusal) = stale {
+        return Err(refusal);
     }
     // the target as the committed Board says now; a recovered Board admits
     // nothing
@@ -1187,8 +1461,11 @@ fn queue_line(
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(Ok(existing.clone()));
             }
-            if args.send_sequence != super::origin::send_sequence(client, orchestrator) {
-                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
+            if let Some(a) = super::admit::tombstone(doc, client_id, &args.request_id, &hash)? {
+                return Ok(Err(super::admit::retired_view(a)));
+            }
+            if let Err(refusal) = super::admit::check(client, orchestrator, binding) {
+                return Ok(Err(refusal));
             }
             // the card handed back to nobody meanwhile: refused whole
             if let Some(caller) = caller {
@@ -1218,15 +1495,32 @@ fn queue_line(
                     "accepted",
                 )
             };
-            if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
-                super::origin::bump_send(client, orchestrator);
+            super::admit::accept(doc, client_id, orchestrator, binding, &operation);
+            if let Some(record) = doc
+                .workers
+                .iter_mut()
+                .find(|w| w.card_id == worker.card_id && w.client_id == client_id)
+            {
+                record.lines.push(operation.operation_id.clone());
+                let over = record.lines.len().saturating_sub(LINES_KEPT);
+                record.lines.drain(..over);
             }
             doc.operations.push(operation.clone());
             Ok(Ok(operation))
         })
-        .map_err(map_error)??;
+        .map_err(map_error)?;
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(answer) => return settled_answer(answer),
+    };
     if operation.state != "accepted" || operation.operation_id != minted {
-        return Ok(operation_view(&operation));
+        return Ok(receipt(
+            runtime,
+            client_id,
+            orchestrator,
+            binding,
+            &operation,
+        ));
     }
     let app = runtime.app.clone().ok_or_else(|| {
         map_error(DeckError::new(
@@ -1278,7 +1572,7 @@ fn queue_line(
             Ok(record.clone())
         })
         .map_err(map_error)?;
-    Ok(operation_view(&settled))
+    Ok(receipt(runtime, client_id, orchestrator, binding, &settled))
 }
 
 /* ---------- closing ---------- */
@@ -1401,35 +1695,36 @@ pub(super) fn worker_close(
             "Use a cardId from deck_worker_list and a fresh request id.",
         ));
     }
+    let binding = super::admit::Binding::of(args.send_sequence, args.lane_epoch)?;
     let hash = request_hash("deck_worker_close", &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
-    let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
-    if let Some(operation) = replay {
-        return Ok(operation_view(&operation));
+    if let Some(replayed) =
+        replay_worker(runtime, client_id, orchestrator, &args.request_id, &hash)?
+    {
+        return Ok(replayed);
     }
     let Some(caller) = orchestrator else {
         return Err(not_opened_here(true));
     };
     let (worker, stale) = runtime
-        .read(|doc| -> Result<Result<(Worker, bool), Value>, DeckError> {
-            let client = permitted(doc, client_id, Choice::Workers)?;
-            if !super::origin::lane_room(client, orchestrator) {
-                return Ok(Err(super::origin::no_lane()));
-            }
-            let stale = super::origin::send_sequence(client, orchestrator) != args.send_sequence;
-            Ok(opened_by(doc, client_id, caller, &args.card_id)
-                .cloned()
-                .map(|w| (w, stale))
-                .ok_or_else(|| not_opened_here(false)))
-        })
+        .read(
+            |doc| -> Result<Result<(Worker, Option<Value>), Value>, DeckError> {
+                let client = permitted(doc, client_id, Choice::Workers)?;
+                if !super::origin::lane_room(client, orchestrator) {
+                    return Ok(Err(super::origin::no_lane()));
+                }
+                let stale = super::admit::check(client, orchestrator, binding).err();
+                Ok(opened_by(doc, client_id, caller, &args.card_id)
+                    .cloned()
+                    .map(|w| (w, stale))
+                    .ok_or_else(|| not_opened_here(false)))
+            },
+        )
         .map_err(map_error)?
         .map_err(map_error)??;
-    if stale {
-        return Err(map_error(DeckError::new(
-            ErrorKind::ContextChanged,
-            STALE_REQUEST,
-        )));
+    if let Some(refusal) = stale {
+        return Err(refusal);
     }
     // the card as the committed Board says now; a recovered Board closes
     // nothing
@@ -1475,8 +1770,11 @@ pub(super) fn worker_close(
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(Ok(existing.clone()));
             }
-            if args.send_sequence != super::origin::send_sequence(client, orchestrator) {
-                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
+            if let Some(a) = super::admit::tombstone(doc, client_id, &args.request_id, &hash)? {
+                return Ok(Err(super::admit::retired_view(a)));
+            }
+            if let Err(refusal) = super::admit::check(client, orchestrator, binding) {
+                return Ok(Err(refusal));
             }
             // taken over meanwhile: refused whole
             match opened_by(doc, client_id, caller, &worker.card_id) {
@@ -1505,15 +1803,23 @@ pub(super) fn worker_close(
                     "accepted",
                 )
             };
-            if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
-                super::origin::bump_send(client, orchestrator);
-            }
+            super::admit::accept(doc, client_id, orchestrator, binding, &operation);
             doc.operations.push(operation.clone());
             Ok(Ok(operation))
         })
-        .map_err(map_error)??;
+        .map_err(map_error)?;
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(answer) => return settled_answer(answer),
+    };
     emit_changed(runtime);
-    Ok(operation_view(&operation))
+    Ok(receipt(
+        runtime,
+        client_id,
+        orchestrator,
+        binding,
+        &operation,
+    ))
 }
 
 /* ---------- local commands ---------- */
@@ -1987,6 +2293,7 @@ pub(super) fn worker_start(
             "Send the absolute directory the card works in (dir), a first line of at most 16 KiB, an optional title of at most 80 characters, an optional column_id from deck_cards_snapshot (projects[].columns), and a fresh request id.",
         ));
     }
+    let binding = super::admit::Binding::of(args.send_sequence, args.lane_epoch)?;
     let hash = request_hash("deck_worker_start", &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
@@ -2000,9 +2307,13 @@ pub(super) fn worker_start(
         })
         .map_err(map_error)?
         .map_err(map_error)??;
-    let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
-    if let Some(operation) = replay {
-        return Ok(operation_view(&operation));
+    if let Some(mut replayed) =
+        replay_worker(runtime, client_id, orchestrator, &args.request_id, &hash)?
+    {
+        if let Some(result) = replayed.get_mut("result").and_then(Value::as_object_mut) {
+            result.remove("text");
+        }
+        return Ok(replayed);
     }
     if let Some(column) = args.column_id.as_deref() {
         named_column(runtime, client_id, &scope.project_id, column)?;
@@ -2012,6 +2323,9 @@ pub(super) fn worker_start(
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
                 return Ok(Ok(existing.clone()));
             }
+            if let Some(a) = super::admit::tombstone(doc, client_id, &args.request_id, &hash)? {
+                return Ok(Err(super::admit::retired_view(a)));
+            }
             let client = permitted(doc, client_id, Choice::Workers)?.clone();
             // withdrawn since the check above: the start is refused whole
             if args.column_id.is_some() && permitted(doc, client_id, Choice::CardEdits).is_err() {
@@ -2020,8 +2334,8 @@ pub(super) fn worker_start(
             if !super::origin::lane_room(&client, orchestrator) {
                 return Ok(Err(super::origin::no_lane()));
             }
-            if args.send_sequence != super::origin::send_sequence(&client, orchestrator) {
-                return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
+            if let Err(refusal) = super::admit::check(&client, orchestrator, binding) {
+                return Ok(Err(refusal));
             }
             let Some(worker_type) = (match args.r#type.as_deref() {
                 Some(name) => client.worker_types.iter().find(|t| t.name == name),
@@ -2093,15 +2407,17 @@ pub(super) fn worker_start(
                     "text": args.text,
                     "orchestratorCardId": orchestrator,
                 })), ..Operation::new(random_id("op_", 16)?, client_id, args.request_id.clone(), hash.clone(), WORKER_START_KIND, "accepted") };
-            if let Some(client) = doc.config.clients.iter_mut().find(|c| c.id == client_id) {
-                super::origin::bump_send(client, orchestrator);
-            }
+            super::admit::accept(doc, client_id, orchestrator, binding, &operation);
             doc.operations.push(operation.clone());
             Ok(Ok(operation))
         })
-        .map_err(map_error)??;
+        .map_err(map_error)?;
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(answer) => return settled_answer(answer),
+    };
     emit_changed(runtime);
-    let mut view = operation_view(&operation);
+    let mut view = receipt(runtime, client_id, orchestrator, binding, &operation);
     // the first line is the client's own text: not echoed back
     if let Some(result) = view.get_mut("result").and_then(Value::as_object_mut) {
         result.remove("text");

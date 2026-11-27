@@ -190,18 +190,27 @@
 //! Agent triggers start (recorded at the trigger's commit, `record_worker`;
 //! never any other card). `deck_worker_list` / `deck_worker_wait` are
 //! content-free views (alive, the Agent observation's closed word and
-//! episode, the human hold, the queue states of its lines); a wait is
-//! bounded by `MAX_WAIT_MS` and holds no lock. `deck_worker_reply` needs
+//! episode, the human hold, the queue states of its lines); a wait holds no
+//! lock, blocks at most `workers::WORKER_WAIT_CHUNK_MS` per call and at most
+//! `workers::WAIT_SLOTS` at once, may wait only for reports (`until:
+//! report`) and names why it returned (`reason`); the adapter strings such
+//! calls together for a wait of up to 25 minutes in one tool call. `deck_worker_reply` needs
 //! `allow_replies` too and returns the Claude Code final message the Stop
 //! hook forwarded (memory only, `turn_summary::reply_for`).
 //! `deck_worker_report` is the other direction: the agent IN a worker card
 //! hands Deck a text for the orchestrator that started the card (the
 //! calling card is the one `origin.rs` proves, and must be one of the
-//! client's worker cards); `deck_worker_reports` reads it under
-//! `allow_replies`. A report is durable data at rest, never a send, a wake
-//! or authority (`reports.rs`).
+//! client's worker cards), optionally with the worker's own structured
+//! claims (status, branch, commit, path, task label) and the line of this
+//! card it answers; `deck_worker_reports` (and a wait's `include_reports`)
+//! reads it under `allow_replies`. A report is durable data at rest, never
+//! a send or authority; it ends a wait its orchestrator makes for it and
+//! nothing else (`reports.rs`).
 //! `deck_worker_send` is bound to the client's `send_sequence` exactly as a
-//! trigger is to its own, and refuses a line whose `after_episode` is no
+//! trigger is to its own — or, for several requests of one lane at once, to
+//! the lane's epoch with a tombstone per accepted request (`admit.rs`, the
+//! one answer to "a retired request arrives again"; start, interject and
+//! close take the same two bindings) — and refuses a line whose `after_episode` is no
 //! longer the card's (`EPISODE_MOVED`): an observation may refuse a send,
 //! never release one. An accepted line becomes one scheduler row through
 //! `scheduler::worker_queue_add` (external admission, content class
@@ -414,6 +423,7 @@ pub(crate) const INTEGRATION: crate::extensions::AccessIntegration =
 
 #[cfg(test)]
 mod admission_tests;
+mod admit;
 mod automation;
 mod cards;
 pub(crate) use cards::{card_mark_for, card_readers_any, CardMarkView};
@@ -528,8 +538,17 @@ const STATE_VERSION_WORKER_MODELS: u32 = 18;
 /// other than the default (`Config::worker_capacity`): a v18 build, whose
 /// capacity was fixed, refuses it.
 const STATE_VERSION_WORKER_CAPACITY: u32 = 19;
+/// The sticky version a ledger takes once a worker report carries
+/// structured fields, a reply target or a request id, or a worker record
+/// keeps the operations of its lines (`reports::uses_report_fields`): a v19
+/// build would refuse the unknown members, never drop them.
+const STATE_VERSION_REPORT_FIELDS: u32 = 20;
+/// The sticky version a ledger takes once a worker lane was bound by its
+/// epoch (`admit::uses_lane_epochs`): a v20 build would not know the
+/// tombstones that keep retired requests from running again.
+const STATE_VERSION_LANE_EPOCHS: u32 = 21;
 /// The newest version this build reads and writes.
-const STATE_VERSION_LATEST: u32 = STATE_VERSION_WORKER_CAPACITY;
+const STATE_VERSION_LATEST: u32 = STATE_VERSION_LANE_EPOCHS;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

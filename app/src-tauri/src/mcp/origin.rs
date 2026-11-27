@@ -67,6 +67,14 @@ pub(super) struct Lane {
     pub(super) trigger: u64,
     #[serde(default)]
     pub(super) send: u64,
+    /// The lane's epoch under `lane_epoch` binding (`admit.rs`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(super) epoch: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 pub(super) type Lanes = BTreeMap<String, Lane>;
@@ -284,6 +292,13 @@ fn lane<'a>(client: &'a mut Client, card: &str) -> &'a mut Lane {
         }
     }
     client.lanes.entry(card.to_owned()).or_default()
+}
+
+/// Make sure the lane of `orchestrator` exists (`admit::accept`).
+pub(super) fn touch_lane(client: &mut Client, orchestrator: Option<&str>) {
+    if let Some(card) = orchestrator {
+        lane(client, card);
+    }
 }
 
 pub(super) fn bump_trigger(client: &mut Client, orchestrator: Option<&str>) {

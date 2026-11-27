@@ -331,6 +331,7 @@ fn client_record(root: &Path) -> Client {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
+        send_epoch: 0,
     }
 }
 
@@ -868,6 +869,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
+        send_epoch: 0,
     });
     let disabled = match client(&doc, "client_a") {
         Err(error) => error,
@@ -1723,6 +1725,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
                 orchestrator: None,
                 reported: 0,
                 model: None,
+                lines: Vec::new(),
             });
             doc.mention_marks.push(MentionMark {
                 key: "C1/1.000001".into(),
@@ -2227,6 +2230,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
+        send_epoch: 0,
     });
     assert!(validate_doc(&invalid).is_err());
     std::fs::remove_dir_all(root).unwrap();
@@ -5109,7 +5113,7 @@ fn control_protocol_and_limits_match_the_shared_fixture() {
         CONTROL_PROTOCOL
     );
     let limits = mcp_fixture!("limits.json");
-    let expected: [(&str, u64); 13] = [
+    let expected: [(&str, u64); 14] = [
         ("max_request_bytes", MAX_REQUEST_BYTES as u64),
         ("max_response_bytes", MAX_RESPONSE_BYTES as u64),
         ("max_executable", MAX_EXECUTABLE_BYTES as u64),
@@ -5119,6 +5123,7 @@ fn control_protocol_and_limits_match_the_shared_fixture() {
         ("max_input_bytes", MAX_INPUT_BYTES as u64),
         ("wait_ms_default", DEFAULT_WAIT_MS),
         ("wait_ms_max", MAX_WAIT_MS),
+        ("worker_wait_chunk_ms", WORKER_WAIT_CHUNK_MS),
         ("lease_ms_min", MIN_LEASE_MS),
         ("lease_ms_max", MAX_LEASE_MS),
         ("output_retention_ms_min", MIN_OUTPUT_RETENTION_MS),
@@ -5130,7 +5135,7 @@ fn control_protocol_and_limits_match_the_shared_fixture() {
     assert_eq!(limits["max_response_bytes_includes_newline"], true);
     assert_eq!(
         limits.as_object().unwrap().len(),
-        14,
+        15,
         "every fixture limit is asserted here"
     );
 }
@@ -5864,7 +5869,7 @@ fn worker_cards_are_recorded_listed_refused_and_taken_over() {
     assert_eq!(
         call(
             "deck_worker_wait",
-            json!({"cards": [{"card_id": "S1", "episode": 5}], "wait_ms": 6000})
+            json!({"cards": [{"card_id": "S1", "episode": 5}], "wait_ms": WORKER_WAIT_CHUNK_MS + 1})
         )["error"]["code"],
         "INVALID_ARGUMENTS"
     );
@@ -6653,6 +6658,7 @@ fn a_worker_card_closes_only_for_the_orchestrator_card_that_started_it() {
         orchestrator: Some(by.into()),
         reported: 0,
         model: None,
+        lines: Vec::new(),
     };
     runtime
         .write(|doc| {
@@ -7854,6 +7860,7 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
                 orchestrator: None,
                 reported: 0,
                 model: None,
+                lines: Vec::new(),
             });
             Ok(())
         })
@@ -8073,6 +8080,7 @@ fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
         orchestrator: orchestrator.map(str::to_owned),
         reported: 0,
         model: None,
+        lines: Vec::new(),
     };
     runtime
         .write(|doc| {
@@ -8295,6 +8303,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     orchestrator: Some("OA".into()),
                     reported: 0,
                     model: None,
+                    lines: Vec::new(),
                 });
             }
             Ok(())
@@ -8355,6 +8364,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     orchestrator: Some(format!("O{}", i / per)),
                     reported: 0,
                     model: None,
+                    lines: Vec::new(),
                 });
             }
             Ok(())
@@ -8414,6 +8424,7 @@ fn a_chosen_worker_capacity_sets_every_worker_bound() {
                     orchestrator: Some("OA".into()),
                     reported: 0,
                     model: None,
+                    lines: Vec::new(),
                 });
             }
             Ok(())
@@ -8515,6 +8526,7 @@ fn orchestrators_mark_mentions_for_the_user_and_never_dismiss_them() {
                     orchestrator: Some("OA".into()),
                     reported: 0,
                     model: None,
+                    lines: Vec::new(),
                 });
                 Ok(())
             })
@@ -9123,6 +9135,7 @@ fn only_the_orchestrator_card_that_started_a_worker_may_interject() {
         orchestrator: orchestrator.map(str::to_owned),
         reported: 0,
         model: None,
+        lines: Vec::new(),
     };
     runtime
         .write(|doc| {
@@ -9329,6 +9342,7 @@ fn an_interject_binding_stands_while_its_orchestrator_card_drives_the_card() {
                 orchestrator: Some("OA".into()),
                 reported: 0,
                 model: None,
+                lines: Vec::new(),
             });
             Ok(())
         })
@@ -9383,5 +9397,404 @@ fn an_interject_binding_stands_while_its_orchestrator_card_drives_the_card() {
         Some(HashSet::new()),
         "the worker choice withdrawn"
     );
+    drop(root);
+}
+
+/// C: one lane's requests under `send_sequence` refuse each other once one
+/// fails its own precondition; under `lane_epoch` they go at once, in any
+/// order, and a retired request is answered from its tombstone, never run
+/// again (`admit.rs`).
+#[test]
+fn independent_worker_requests_of_one_lane_go_at_once_under_lane_epoch() {
+    let (runtime, _runner, root) = fixture("lane-epoch", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    client_permissions(
+        &runtime,
+        "client_a",
+        super::commands::PermissionsInput {
+            allow_workers: true,
+            worker_types: vec![WorkerType {
+                name: "claude".into(),
+                cmd: "claude".into(),
+                description: "Write code".into(),
+                models: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let card = |id: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": "claude", "dir": "/tmp", "projectId": "P1", "columnId": "C1"});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("OA"), card("LA"), card("LB"), card("LC"), card("LD"), card("LE")]}),
+        true,
+    );
+    let worker = |id: &str, held: bool| Worker {
+        card_id: id.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{id}"),
+        automation_id: "claude".into(),
+        created_at: 1,
+        held,
+        orchestrator: Some("OA".into()),
+        reported: 0,
+        model: None,
+        lines: Vec::new(),
+    };
+    runtime
+        .write(|doc| {
+            doc.workers.extend([
+                worker("LA", false),
+                worker("LB", false),
+                worker("LC", false),
+                worker("LD", true),
+                worker("LE", false),
+            ]);
+            Ok(())
+        })
+        .unwrap();
+    let observed: HashMap<String, Seen> = ["deck-la", "deck-lb", "deck-lc", "deck-ld", "deck-le"]
+        .into_iter()
+        .map(|s| (s.to_owned(), seen_for_tests(Some("turn-done"), 2)))
+        .collect();
+    let close = |binding: (&str, u64), rid: &str, target: &str| {
+        let _as = super::origin::enter_as(Some("OA"));
+        OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(observed.clone())));
+        let mut args = json!({"request_id": rid, "card_id": target, "after_episode": 2});
+        args[binding.0] = json!(binding.1);
+        route(&runtime, request("deck_worker_close", args))
+    };
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+
+    // the original binding: n fails for its own reason, so n+1 is refused,
+    // and the refusal says which lane and which sequence it expected
+    assert_eq!(
+        code(&close(("send_sequence", 0), "seq_d", "LD")),
+        "WORKER_TAKEN_OVER"
+    );
+    let ahead = close(("send_sequence", 1), "seq_a", "LA");
+    assert_eq!(code(&ahead), "STALE_REQUEST", "{ahead}");
+    let error = &ahead["error"];
+    assert_eq!(error["scope"], "worker-lane");
+    assert_eq!(error["relation"], "ahead");
+    assert_eq!(error["accepted"], false);
+    assert_eq!(error["received"]["sendSequence"], 1);
+    assert_eq!(error["expected"]["sendSequence"], 0);
+    assert!(error["nextAction"]
+        .as_str()
+        .unwrap()
+        .contains("deck_worker_list"));
+    assert!(!error.to_string().contains("deck_session_inspect"));
+    let first = close(("send_sequence", 0), "seq_a", "LA");
+    assert_eq!(first["state"], "accepted", "{first}");
+    assert_eq!(first["lane"]["binding"], "send_sequence");
+    assert_eq!(
+        first["lane"]["nextSendSequence"], 1,
+        "the receipt says the sequence moved"
+    );
+    let behind = close(("send_sequence", 0), "seq_a2", "LB");
+    assert_eq!(behind["error"]["relation"], "behind", "{behind}");
+
+    // exactly one binding
+    let both = {
+        let _as = super::origin::enter_as(Some("OA"));
+        route(
+            &runtime,
+            request(
+                "deck_worker_close",
+                json!({"request_id": "both", "card_id": "LB", "after_episode": 2, "send_sequence": 1, "lane_epoch": 0}),
+            ),
+        )
+    };
+    assert_eq!(code(&both), "INVALID_ARGUMENTS", "{both}");
+    let neither = {
+        let _as = super::origin::enter_as(Some("OA"));
+        route(
+            &runtime,
+            request(
+                "deck_worker_close",
+                json!({"request_id": "neither", "card_id": "LB", "after_episode": 2}),
+            ),
+        )
+    };
+    assert_eq!(code(&neither), "INVALID_ARGUMENTS");
+
+    // the epoch binding: three independent calls at once, one refused for
+    // its own reason; the others are accepted whatever the order
+    let outcomes: Vec<(String, Value)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = [("ep_b", "LB"), ("ep_d", "LD"), ("ep_c", "LC")]
+            .into_iter()
+            .map(|(rid, target)| {
+                let close = &close;
+                scope.spawn(move || (target.to_owned(), close(("lane_epoch", 0), rid, target)))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for (target, out) in &outcomes {
+        if target == "LD" {
+            assert_eq!(code(out), "WORKER_TAKEN_OVER", "{out}");
+        } else {
+            assert_eq!(out["state"], "accepted", "{target}: {out}");
+            assert_eq!(out["lane"]["binding"], "lane_epoch");
+            assert_eq!(out["lane"]["laneEpoch"], 0);
+        }
+    }
+    // an exact retry is the same operation; the same id with other
+    // arguments is a conflict
+    let b_op = outcomes.iter().find(|(t, _)| t == "LB").unwrap().1["operationId"].clone();
+    let retry = close(("lane_epoch", 0), "ep_b", "LB");
+    assert_eq!(retry["operationId"], b_op, "{retry}");
+    assert_eq!(retry["replayed"], true);
+    assert_eq!(
+        code(&close(("lane_epoch", 0), "ep_b", "LE")),
+        "REQUEST_ID_CONFLICT"
+    );
+    // an epoch Deck never issued
+    let future = close(("lane_epoch", 5), "ep_future", "LE");
+    assert_eq!(future["error"]["relation"], "ahead", "{future}");
+    assert_eq!(future["error"]["expected"]["laneEpoch"], 0);
+
+    // the record retired (as the journal window does): the request is
+    // answered from its tombstone and never runs again
+    let closes = |runtime: &Runtime| {
+        runtime
+            .read(|doc| {
+                doc.operations
+                    .iter()
+                    .filter(|o| o.kind == WORKER_CLOSE_KIND)
+                    .count()
+            })
+            .unwrap()
+    };
+    let before = closes(&runtime);
+    runtime
+        .write(|doc| {
+            doc.operations.retain(|o| o.request_id != "ep_b");
+            Ok(())
+        })
+        .unwrap();
+    let retired = close(("lane_epoch", 0), "ep_b", "LB");
+    assert_eq!(retired["state"], "retired", "{retired}");
+    assert_eq!(retired["operationId"], b_op);
+    assert_eq!(closes(&runtime), before - 1, "nothing new was journaled");
+    assert_eq!(
+        code(&close(("lane_epoch", 0), "ep_b", "LE")),
+        "REQUEST_ID_CONFLICT",
+        "the tombstone still knows its arguments"
+    );
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_LANE_EPOCHS
+    );
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// B and A: a report may carry the worker's own structured claims, checked
+/// for shape only, read under the reply choice; a wait for reports ends on
+/// one, never on an episode, and says why.
+#[test]
+fn a_worker_report_carries_structured_claims_and_ends_a_report_wait() {
+    let (runtime, _runner, root) = fixture("report-fields", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |card: Option<&str>, tool: &str, args: Value| {
+        let _as = super::origin::enter_as(card);
+        route(&runtime, request(tool, args))
+    };
+    let permissions = |replies: bool| super::commands::PermissionsInput {
+        allow_automations: true,
+        allow_workers: true,
+        allow_replies: replies,
+        ..no_permissions(false)
+    };
+    client_permissions(&runtime, "client_a", permissions(false)).unwrap();
+    let worker = |card: &str, lines: Vec<String>| Worker {
+        card_id: card.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{card}"),
+        automation_id: "claude".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: Some("RO".into()),
+        reported: 0,
+        model: None,
+        lines,
+    };
+    runtime
+        .write(|doc| {
+            doc.workers.push(worker("RF1", vec!["op_line1".into()]));
+            doc.workers.push(worker("RF2", Vec::new()));
+            Ok(())
+        })
+        .unwrap();
+    let card = |id: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": "claude", "dir": "/work/repo"});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("RO"), card("RF1"), card("RF2")]}),
+        true,
+    );
+    let report = |args: Value| call(Some("RF1"), "deck_worker_report", args);
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+
+    // shape only: an unknown status word, a short hash, a branch with a space
+    for (bad, field) in [
+        (json!({"status": "merged"}), "fields.status"),
+        (json!({"commit": "abc123"}), "fields.commit"),
+        (json!({"branch": "work /x"}), "fields.branch"),
+        (json!({"surprise": 1}), ""),
+    ] {
+        let out = report(json!({"text": "done", "fields": bad}));
+        assert_eq!(code(&out), "INVALID_ARGUMENTS", "{out}");
+        if !field.is_empty() {
+            assert_eq!(out["error"]["field"], field);
+        }
+    }
+    // a reply target must be a start or line of THIS card
+    assert_eq!(
+        code(&report(json!({"text": "done", "in_reply_to": "op_RF2"}))),
+        "IN_REPLY_TO_UNKNOWN"
+    );
+    assert!(runtime.read(|doc| doc.reports.is_empty()).unwrap());
+
+    let hash = "ABCDEF0123456789abcdef0123456789ABCDEF01";
+    let first = report(
+        json!({"text": "ready", "in_reply_to": "op_line1", "fields": {
+        "status": "ready_for_review", "branch": "work/DEV64b", "commit": hash,
+        "report_path": "reports/DEV64b.md", "task_ref": "DEV64b"}}),
+    );
+    assert_eq!(first["sequence"], 1, "{first}");
+    assert_eq!(first["baseDir"], "/work/repo", "a relative path's base");
+    // the same claims in another key order: a retry, not a report
+    let same = report(
+        json!({"fields": {"task_ref": "DEV64b", "report_path": "reports/DEV64b.md",
+        "commit": hash.to_lowercase(), "branch": "work/DEV64b", "status": "ready_for_review"},
+        "in_reply_to": "op_line1", "text": "ready"}),
+    );
+    assert_eq!(
+        (same["sequence"].as_u64(), same["recorded"].as_bool()),
+        (Some(1), Some(false)),
+        "{same}"
+    );
+    // the same text with another commit is a new report
+    let other = report(
+        json!({"text": "ready", "in_reply_to": "op_line1", "fields": {
+        "status": "ready_for_review", "commit": "1".repeat(40)}}),
+    );
+    assert_eq!(other["sequence"], 2, "{other}");
+    // the worker's own request id: same content answers, other content conflicts
+    let keyed = report(
+        json!({"text": "blocked on review", "request_id": "rep-1", "fields": {"status": "blocked"}}),
+    );
+    assert_eq!(keyed["sequence"], 3);
+    assert_eq!(
+        report(
+            json!({"text": "blocked on review", "request_id": "rep-1", "fields": {"status": "blocked"}})
+        )["sequence"],
+        3
+    );
+    assert_eq!(
+        code(&report(
+            json!({"text": "something else", "request_id": "rep-1"})
+        )),
+        "REQUEST_ID_CONFLICT"
+    );
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_REPORT_FIELDS
+    );
+
+    // content-free views carry no claim; reading needs the reply choice
+    let listed = call(Some("RO"), "deck_worker_list", json!({}));
+    for secret in ["DEV64b", "ready_for_review", "abcdef0123", "blocked"] {
+        assert!(!listed.to_string().contains(secret), "{secret} in {listed}");
+    }
+    let inline = call(
+        Some("RO"),
+        "deck_worker_wait",
+        json!({"until": "report", "include_reports": true, "wait_ms": 0,
+               "cards": [{"card_id": "RF1", "episode": 0, "reports": 1}]}),
+    );
+    assert_eq!(inline["reason"], "report", "{inline}");
+    assert_eq!(inline["reportsInline"]["readable"], false);
+    assert!(!inline.to_string().contains("DEV64b"));
+    client_permissions(&runtime, "client_a", permissions(true)).unwrap();
+    let read = call(Some("RO"), "deck_worker_reports", json!({"card_id": "RF1"}));
+    let r1 = &read["reports"][0];
+    assert_eq!(r1["fields"]["commit"], hash.to_lowercase(), "{read}");
+    assert_eq!(r1["fields"]["branch"], "work/DEV64b");
+    assert_eq!(r1["inReplyTo"], "op_line1");
+    assert_eq!(r1["baseDir"], "/work/repo");
+    assert!(read["note"].as_str().unwrap().contains("claims"));
+    let inline = call(
+        Some("RO"),
+        "deck_worker_wait",
+        json!({"until": "report", "include_reports": true, "wait_ms": 0,
+               "cards": [{"card_id": "RF1", "episode": 0, "reports": 2}]}),
+    );
+    assert_eq!(
+        inline["reportsInline"]["cards"][0]["reports"][0]["sequence"], 3,
+        "{inline}"
+    );
+
+    // a report wait: no report and another episode is no reason; a report
+    // that arrives while it waits ends it, and the wait says why
+    OBSERVE_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some(HashMap::from([(
+            "deck-rf2".to_string(),
+            seen_for_tests(Some("working"), 9),
+        )])))
+    });
+    let quiet = call(
+        Some("RO"),
+        "deck_worker_wait",
+        json!({"until": "report", "wait_ms": 0, "cards": [{"card_id": "RF2", "episode": 1, "reports": 0}]}),
+    );
+    assert_eq!(
+        (quiet["changed"].as_bool(), quiet["reason"].as_str()),
+        (Some(false), Some("timeout")),
+        "{quiet}"
+    );
+    let started = Instant::now();
+    let waited = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let _as = super::origin::enter_as(Some("RO"));
+            OBSERVE_FOR_TESTS.with(|cell| {
+                *cell.borrow_mut() = Some(Some(HashMap::from([(
+                    "deck-rf2".to_string(),
+                    seen_for_tests(Some("working"), 9),
+                )])))
+            });
+            route(
+                &runtime,
+                request(
+                    "deck_worker_wait",
+                    json!({"until": "report", "wait_ms": 10_000, "cards": [{"card_id": "RF2", "episode": 1, "reports": 0}]}),
+                ),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            call(Some("RF2"), "deck_worker_report", json!({"text": "done"}))["sequence"],
+            1
+        );
+        waiter.join().unwrap()
+    });
+    assert_eq!(waited["reason"], "report", "{waited}");
+    assert_eq!(waited["events"][0]["cardId"], "RF2");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "returned when the report came"
+    );
+    // the card closed: the wait says so instead of sleeping to its deadline
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("RO"), card("RF1")]}),
+        true,
+    );
+    let gone = call(
+        Some("RO"),
+        "deck_worker_wait",
+        json!({"until": "report", "wait_ms": 0, "cards": [{"card_id": "RF2", "episode": 1, "reports": 1}]}),
+    );
+    assert_eq!(gone["reason"], "gone", "{gone}");
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
     drop(root);
 }
