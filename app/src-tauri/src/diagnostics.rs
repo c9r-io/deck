@@ -225,6 +225,19 @@ const KEY_CLASSES: &[&str] = &[
 /// recorded). Process names themselves stay out of the log.
 const FG_CLASSES: &[&str] = &["no-card", "no-fg", "agent", "editor", "repl", "other"];
 const SMOKE_CHECKS: &[&str] = &[
+    "stall-setup",
+    "stall-attach-notice",
+    "stall-ipc-responsive",
+    "stall-attach-retired",
+    "stall-attach-retry",
+    "stall-input-dropped",
+    "stall-start-timeout",
+    "stall-start-reconciled",
+    "stall-kill-kept",
+    "stall-clipboard",
+    "stall-server-stopped",
+    "stall-server-continued",
+    "stall-exception",
     "channel-bg-preflight",
     "channel-bg-config",
     "channel-bg-hidden",
@@ -1238,6 +1251,21 @@ const UI_EVENT_SPECS: &[(&str, DetailPolicy)] = &[
     ("pty-rx", DetailPolicy::None),
     // xterm consumed an attachment's first frame: a = generation, b = bytes
     ("pty-first", DetailPolicy::None),
+    // a pane's own wait notice (pane-wait-model.js) and its button
+    (
+        "pane-notice",
+        DetailPolicy::Closed(&[
+            "connecting",
+            "starting",
+            "timeout",
+            "busy",
+            "startTimeout",
+            "noFrame",
+            "retry",
+            "reconnect",
+            "retry-refused",
+        ]),
+    ),
     ("keydown", DetailPolicy::Closed(KEY_CLASSES)),
     ("composition", DetailPolicy::Closed(&["start", "end"])),
     // always-on IME commit probe (ui/js/terminal-ime-probe.js): labels,
@@ -1429,8 +1457,21 @@ pub(crate) fn reset_logs() -> Result<(), DeckError> {
     crate::applog::reset_logs_at(&crate::datadir::deck_dir())
 }
 
+/// Off the IPC thread (the census, `docs/ipc-thread.md`): it starts
+/// `sw_vers`, `uname`, one tmux listing and `open`, and copies app.log.
 #[tauri::command]
-pub(crate) fn export_logs() -> Result<PathBuf, DeckError> {
+pub(crate) async fn export_logs() -> Result<PathBuf, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "export_logs",
+        std::time::Duration::from_secs(10),
+        export_logs_now,
+    )
+    .await
+}
+
+/// The export itself, on whatever thread its caller runs (the menu handler
+/// starts its own). The session count is a bounded tmux call.
+pub(crate) fn export_logs_now() -> Result<PathBuf, DeckError> {
     let data_dir = crate::datadir::deck_dir();
     let dir = data_dir.join("exports");
     crate::datadir::create_private_dir(&dir)?;
@@ -1447,11 +1488,15 @@ pub(crate) fn export_logs() -> Result<PathBuf, DeckError> {
     }
     // classification only — the absolute tmux path stays out of exports
     header.push_str(&format!("tmux: {}\n", crate::tmux::tmux_kind()));
+    let sessions = {
+        let _bounded = crate::session_runtime::Deadline::until(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
+        tmux(&["list-sessions", "-F", "#{session_name}"])
+    };
     header.push_str(&format!(
         "sessions: {}\n",
-        tmux(&["list-sessions", "-F", "#{session_name}"])
-            .map(|s| s.lines().count())
-            .unwrap_or(0)
+        sessions.map(|s| s.lines().count()).unwrap_or(0)
     ));
     let log = std::fs::read_to_string(data_dir.join("app.log")).unwrap_or_default();
     // created 0600 from the first byte — never world-readable-then-chmod

@@ -1627,7 +1627,18 @@ pub(crate) struct AgentHooksStatus {
 }
 
 #[tauri::command]
-pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
+pub(crate) async fn agent_hooks_status() -> Result<AgentHooksStatus, crate::error::DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "agent_hooks_status",
+        std::time::Duration::from_secs(5),
+        move || Ok(agent_hooks_status_now()),
+    )
+    .await
+}
+
+/// `agent_hooks_status` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn agent_hooks_status_now() -> AgentHooksStatus {
     let mut agents = std::collections::BTreeMap::new();
     for adapter in crate::extensions::unambiguous_agents() {
         let status = match &adapter.install {
@@ -1712,7 +1723,18 @@ pub(crate) fn agent_hooks_status() -> AgentHooksStatus {
 /// Settings toggle. The only other writer is `migrate_agents_on_boot`, which
 /// rewrites deck's own entries and nothing else.
 #[tauri::command]
-pub(crate) fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckError> {
+pub(crate) async fn agent_hooks_set(agent: String, enable: bool) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "agent_hooks_set",
+        std::time::Duration::from_secs(5),
+        move || agent_hooks_set_now(agent, enable),
+    )
+    .await
+}
+
+/// `agent_hooks_set` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn agent_hooks_set_now(agent: String, enable: bool) -> Result<(), DeckError> {
     if crate::launch_args::debug_arg("--smoke-reentry-config").is_some() {
         return Err(DeckError::new(
             ErrorKind::Other,
@@ -1806,7 +1828,18 @@ pub(crate) fn codex_reply_forwarded() -> bool {
 /// the user to trust the changed Stop hook in `/hooks` once. Refusals are
 /// closed words: `unreadable`, `hooks-off`, `release-only`, `write`.
 #[tauri::command]
-pub(crate) fn codex_replies_set(enable: bool) -> Result<(), DeckError> {
+pub(crate) async fn codex_replies_set(enable: bool) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "codex_replies_set",
+        std::time::Duration::from_secs(5),
+        move || codex_replies_set_now(enable),
+    )
+    .await
+}
+
+/// `codex_replies_set` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn codex_replies_set_now(enable: bool) -> Result<(), DeckError> {
     let refused = |code: &'static str| {
         applog(&format!(
             "[agent-hooks] codex replies {} refused ({code})",
@@ -1850,7 +1883,18 @@ pub(crate) struct TurnSummaryStatus {
 }
 
 #[tauri::command]
-pub(crate) fn turn_summary_status() -> TurnSummaryStatus {
+pub(crate) async fn turn_summary_status() -> Result<TurnSummaryStatus, crate::error::DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "turn_summary_status",
+        std::time::Duration::from_secs(5),
+        move || Ok(turn_summary_status_now()),
+    )
+    .await
+}
+
+/// `turn_summary_status` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn turn_summary_status_now() -> TurnSummaryStatus {
     let install = CLAUDE_CODE.hook_install();
     let value = install
         .and_then(|install| (install.config_path)())
@@ -1873,7 +1917,18 @@ pub(crate) fn turn_summary_status() -> TurnSummaryStatus {
 /// user's own hooks and every other byte stay. Refusals are closed words:
 /// `unreadable`, `hooks-off`, `release-only`, `write`.
 #[tauri::command]
-pub(crate) fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
+pub(crate) async fn turn_summary_set(enable: bool) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "turn_summary_set",
+        std::time::Duration::from_secs(5),
+        move || turn_summary_set_now(enable),
+    )
+    .await
+}
+
+/// `turn_summary_set` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn turn_summary_set_now(enable: bool) -> Result<(), DeckError> {
     let refused = |code: &'static str| {
         applog(&format!(
             "[agent-hooks] turn summaries {} refused ({code})",
@@ -2004,7 +2059,21 @@ pub(crate) fn sync_worker_replies(wanted: bool) {
 /// stay; a release install is required exactly as for the status hooks, so
 /// a development or smoke build never edits the agent's settings.
 #[tauri::command]
-pub(crate) fn agent_lifecycle_hooks_set(
+pub(crate) async fn agent_lifecycle_hooks_set(
+    enable: bool,
+    source: Option<String>,
+) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "agent_lifecycle_hooks_set",
+        std::time::Duration::from_secs(5),
+        move || agent_lifecycle_hooks_set_now(enable, source),
+    )
+    .await
+}
+
+/// `agent_lifecycle_hooks_set` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn agent_lifecycle_hooks_set_now(
     enable: bool,
     source: Option<String>,
 ) -> Result<(), DeckError> {

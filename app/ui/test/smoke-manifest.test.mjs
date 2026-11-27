@@ -42,6 +42,7 @@ const CARRIERS = {
   'reentry-smoke.mjs': ['reentry'],
   'ux-layers-smoke.mjs': ['ux-layers'],
   'ux-failures-smoke.mjs': ['ux-failures'],
+  'ipc-stall-smoke.mjs': ['ipc-stall'],
   'pi-worker-smoke.mjs': ['pi-worker', 'pi-interject'],
   'terminal-input-smoke.mjs': ['terminal-input'],
   'terminal-perf-smoke.mjs': ['terminal-perf'],

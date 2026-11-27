@@ -793,7 +793,7 @@ mod native {
     //! - the Board poll's body (`commands::poll_from_listing`: reconcile, the
     //!   projection, the coverage word) on the one-shot form of the same
     //!   snapshot, at the webview's interval;
-    //! - the Settings commands (`agent_hooks_set("pi", …)`,
+    //! - the Settings commands (`agent_hooks_set_now("pi", …)`,
     //!   `agent_pi_replies_set`, `agent_hooks_status`), the boot migration
     //!   and the dismiss command (`notify_dismiss`);
     //! - the readers of a final message (`turn_summary`): the card's line
@@ -1049,7 +1049,8 @@ mod native {
 
     /// Pi's part of the Settings status command's reply.
     fn settings() -> Value {
-        let status = serde_json::to_value(agent_status::agent_hooks_status()).unwrap_or_default();
+        let status =
+            serde_json::to_value(agent_status::agent_hooks_status_now()).unwrap_or_default();
         json!({
             "pi": status.get("pi"),
             "pi_replies": status.get("pi_replies"),
@@ -1078,7 +1079,8 @@ mod native {
             "status" => settings(),
             "signal" => {
                 let enable = command.get("enable").and_then(Value::as_bool) == Some(true);
-                let result = agent_status::agent_hooks_set(crate::agent_pi::SOURCE.into(), enable);
+                let result =
+                    agent_status::agent_hooks_set_now(crate::agent_pi::SOURCE.into(), enable);
                 json!({
                     "ok": result.is_ok(),
                     "error": result.err().map(|error| error.message().to_owned()),
@@ -1087,7 +1089,7 @@ mod native {
             }
             "replies" => {
                 let enable = command.get("enable").and_then(Value::as_bool) == Some(true);
-                let result = crate::agent_pi::config::agent_pi_replies_set(enable);
+                let result = crate::agent_pi::config::agent_pi_replies_set_now(enable);
                 json!({
                     "ok": result.is_ok(),
                     "error": result.err().map(|error| error.message().to_owned()),

@@ -74,6 +74,7 @@ import { reminderRequestId, reminderAction, reminderClaim, reminderDay, reminder
 import { mutateBoard, mutateBoardDebounced } from './persistence.js';
 import { collapseHome, createConfirmationCounter, createExitRetirementTracker, effectiveCardStatus, initialLaunched, newSessionColumn, newSessionPlan, projectDefaults, projectMoveBlock, promptSummary, reorderById, runFinishHolds, sidebarGroups } from './pure.js';
 import { cardFollowUps, followUpSuggestion } from './follow-up-model.js';
+import { TERMINAL_WAITS } from './pane-wait-model.js';
 import { channelAgentCommand } from './channel-model.js';
 import { claimSessionTool, registerSessionTool, releaseSessionTool } from './session-tools.js';
 import { confirmDangerDialog, reminderDialog, confirmDialog, inlineRename, projectDefaultsDialog, toast } from './dialogs.js';
@@ -298,6 +299,11 @@ export const provider = {
     let started = null;
     let effectAttempted = false;
     let card;
+    /* a person's own new card says it is starting once the start takes
+       longer than a moment (the backend answers within its budget) */
+    const progress = opts.progress
+      ? setTimeout(() => toast(t('session.starting')), TERMINAL_WAITS.connectingNoticeMs)
+      : null;
     try {
       card = await this.create(fields, {
         beforePersist: async card => {
@@ -308,6 +314,9 @@ export const provider = {
             : await inv('start_session', {
               name: card.session, dir: card.dir, cmd: card.cmd,
               restoreShell: !!ctx.settings.sessionRestore, projectId: card.projectId,
+              /* no card references this session unless the start answers:
+                 one the backend makes after giving up on it is killed */
+              cardless: true,
             });
           if (opts.requireCreated && !result.created) {
             const error = new Error('deterministic session already exists without its card');
@@ -328,9 +337,14 @@ export const provider = {
     } catch (error) {
       if (error && typeof error === 'object') error.effectAttempted = effectAttempted;
       throw error;
+    } finally {
+      clearTimeout(progress);
     }
     return { card, started };
   },
+
+  /* a close of this card is in progress (its pane offers no retry) */
+  closing(sid) { return closeOperations.has(sid); },
 
   /* stop and delete are one operation; returns false when the card was
      KEPT (its schedule could not be cancelled reliably) */
@@ -396,6 +410,9 @@ export const provider = {
           try {
             await inv('kill_session', { name: card.session, mcpAdmission: admission });
           } catch (cause) {
+            /* no answer in time: the card stays, its recovery material too
+               (commands.rs), and closing it again is safe (kill is
+               idempotent) */
             const error = new Error('session could not be closed');
             error.stage = 'kill'; error.cause = cause;
             throw error;
@@ -407,7 +424,7 @@ export const provider = {
         });
       } catch (error) {
         const c = this.get(sid);
-        if (!opts.quiet && error.stage === 'kill') toast(t('error.sessionClose'));
+        if (!opts.quiet && error.stage === 'kill') toast(t(String(error.cause) === 'terminal-timeout' ? 'session.closeTimeout' : 'error.sessionClose'));
         if (!opts.quiet && error.stage !== 'cancel' && error.stage !== 'kill') toast(t('error.sessionSave'));
         if (c) emit('status', c);
         // `admitted`: an MCP close passed admission, so a side effect may

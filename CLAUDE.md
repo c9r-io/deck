@@ -405,6 +405,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | app.log, redaction, diagnostics | `applog.rs`, `redact.rs`, `diagnostics.rs` |
 | Single instance, launch flags | `instance_lock.rs`, `launch_args.rs` |
 | Session start/kill, poll | `commands.rs` |
+| What runs on the window's main (IPC) thread: the census of synchronous commands, the off-thread mechanisms and budgets, the main-thread watchdog | `docs/ipc-thread.md` (enforced by `tests/ipc_thread.rs`), `main_watch.rs`, `session_runtime.rs` (`off_ipc_thread`), `pane_client.rs` (the pane client's spawn) |
 | Project environment variables: Keychain only, names-only toward the webview, given to each new shell of the project's cards on tmux's stdin | `project_env.rs` (contract), `keychain.rs` (`ENV_SERVICE`), `commands.rs` (`create_session`), `ui/js/project-env-model.js`, `dialogs.js` (`projectDefaultsDialog`) |
 | tmux sidecar and long-lived clients | `tmux.rs`, `tmux_clients.rs` |
 | tmux server lifecycle, restart, verified shell exit, restart recovery | `tmux_lifecycle.rs`, `restart.rs`, `session_runtime.rs`, `shell_exit.rs`, `shell_state.rs` (+ `docs/tmux-server-lifecycle.md`) |

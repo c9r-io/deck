@@ -1,0 +1,173 @@
+# kernel (apfs) disk7 transaction stalls, 2026-11-27 12:00-19:20 (disk7 = external USB SSD container: volumes Yotta, c9r-io, YottaUnity)
+2026-11-27 12:46:09.015 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457408 took 1362586 us to flush
+2026-11-27 12:48:06.634 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457421 took 51670022 us to flush
+2026-11-27 12:48:13.100 Df kernel[0:2ab6476] (apfs) tx_flush:1280: disk7 tx xid 457421 took 6466568 us to sync and write superblock
+2026-11-27 12:48:25.878 Df kernel[0:2abf314] (apfs) tx_enter_internal:2385: disk7 waited 5519358 us to open tx xid 457423 (nx_tx_wait_closed)
+2026-11-27 12:48:36.907 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457422 took 11029284 us to flush
+2026-11-27 12:48:56.198 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457425 took 9592102 us to flush
+2026-11-27 12:49:00.570 Df kernel[0:2ab6476] (apfs) tx_flush:1280: disk7 tx xid 457425 took 4371895 us to sync and write superblock
+2026-11-27 12:49:12.706 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457426 took 3028730 us to flush
+2026-11-27 12:49:17.137 Df kernel[0:2ab6476] (apfs) tx_flush:1280: disk7 tx xid 457426 took 4431630 us to sync and write superblock
+2026-11-27 12:49:32.461 Df kernel[0:2ac07e6] (apfs) tx_leave:2516: disk7 tx xid 457427 took 2253200 us to close
+2026-11-27 12:49:40.871 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457427 took 8409681 us to flush
+2026-11-27 12:49:48.876 Df kernel[0:2ab6476] (apfs) tx_flush:1280: disk7 tx xid 457427 took 8005075 us to sync and write superblock
+2026-11-27 12:50:09.921 Df kernel[0:281] (apfs) tx_leave:2516: disk7 tx xid 457428 took 2821005 us to close
+2026-11-27 12:50:46.427 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457428 took 36504845 us to flush
+2026-11-27 12:50:47.400 Df kernel[0:281] (apfs) tx_enter_internal:2385: disk7 waited 5654251 us to open tx xid 457430 (nx_tx_wait_closed)
+2026-11-27 12:51:10.323 Df kernel[0:2ac13bb] (apfs) tx_leave:2516: disk7 tx xid 457430 took 3629530 us to close
+2026-11-27 12:51:11.294 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457429 took 23893823 us to flush
+2026-11-27 12:51:17.825 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457430 took 6527769 us to flush
+2026-11-27 12:51:33.241 Df kernel[0:2ac1fb0] (apfs) tx_leave:2516: disk7 tx xid 457433 took 1845912 us to close
+2026-11-27 12:51:33.242 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457432 took 12569305 us to flush
+2026-11-27 12:51:34.377 Df kernel[0:2ab6476] (apfs) tx_flush:1280: disk7 tx xid 457432 took 1134448 us to sync and write superblock
+2026-11-27 12:51:34.378 Df kernel[0:281] (apfs) tx_enter_internal:2385: disk7 waited 1137218 us to open tx xid 457434 (nx_tx_wait_closed)
+2026-11-27 12:51:52.790 Df kernel[0:2abfce3] (apfs) tx_leave:2516: disk7 tx xid 457434 took 1793634 us to close
+2026-11-27 12:51:53.545 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457433 took 19167436 us to flush
+2026-11-27 12:51:57.906 Df kernel[0:2ac1fb0] (apfs) tx_leave:2516: disk7 tx xid 457435 took 4339149 us to close
+2026-11-27 12:51:57.911 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457434 took 4364785 us to flush
+2026-11-27 12:51:57.912 Df kernel[0:281] (apfs) tx_enter_internal:2385: disk7 waited 3539550 us to open tx xid 457436 (nx_tx_wait_closed)
+2026-11-27 12:52:06.181 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457435 took 8269015 us to flush
+2026-11-27 12:52:09.187 Df kernel[0:2ab6476] (apfs) tx_flush:1280: disk7 tx xid 457435 took 3005402 us to sync and write superblock
+2026-11-27 12:52:28.390 Df kernel[0:2abfce3] (apfs) tx_leave:2516: disk7 tx xid 457437 took 2830301 us to close
+2026-11-27 12:52:28.394 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457436 took 14029848 us to flush
+2026-11-27 12:52:28.885 Df kernel[0:2ac3dac] (apfs) tx_enter_internal:2385: disk7 waited 2447577 us to open tx xid 457438 (nx_tx_wait_closed)
+2026-11-27 12:52:41.525 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457437 took 12640220 us to flush
+2026-11-27 12:52:46.603 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457438 took 4717156 us to flush
+2026-11-27 12:52:50.450 Df kernel[0:2ab6476] (apfs) tx_flush:1185: disk7 tx xid 457439 took 3845448 us to flush
+2026-11-27 12:52:51.722 Df kernel[0:2ab6476] (apfs) tx_flush:1280: disk7 tx xid 457439 took 1272565 us to sync and write superblock
+2026-11-27 13:47:16.764 Df kernel[0:2b1128b] (apfs) tx_flush:1185: disk7 tx xid 461345 took 1798709 us to flush
+2026-11-27 14:12:16.717 Df kernel[0:2b1af43] (apfs) tx_flush:1185: disk7 tx xid 463659 took 1748445 us to flush
+2026-11-27 14:12:28.029 Df kernel[0:2b1af43] (apfs) tx_flush:1185: disk7 tx xid 463661 took 1589303 us to flush
+2026-11-27 14:12:30.071 Df kernel[0:2b1af43] (apfs) tx_flush:1185: disk7 tx xid 463662 took 1009359 us to flush
+2026-11-27 14:12:31.329 Df kernel[0:2b1af43] (apfs) tx_flush:1280: disk7 tx xid 463662 took 1257777 us to sync and write superblock
+2026-11-27 14:12:36.064 Df kernel[0:2b1af43] (apfs) tx_flush:1185: disk7 tx xid 463664 took 1924903 us to flush
+2026-11-27 14:12:55.148 Df kernel[0:2b1af43] (apfs) tx_flush:1185: disk7 tx xid 463676 took 2623802 us to flush
+2026-11-27 14:12:58.479 Df kernel[0:2b1af43] (apfs) tx_flush:1185: disk7 tx xid 463677 took 2814408 us to flush
+2026-11-27 15:24:58.908 Df kernel[0:2b957f2] (apfs) tx_flush:1280: disk7 tx xid 467235 took 1593649 us to sync and write superblock
+2026-11-27 15:25:02.091 Df kernel[0:2b957f2] (apfs) tx_flush:1280: disk7 tx xid 467241 took 1283993 us to sync and write superblock
+2026-11-27 15:25:31.777 Df kernel[0:2b957f2] (apfs) tx_flush:1280: disk7 tx xid 467266 took 1783394 us to sync and write superblock
+2026-11-27 15:27:15.078 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467280 took 1746146 us to sync and write superblock
+2026-11-27 15:27:17.020 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467281 took 1936269 us to sync and write superblock
+2026-11-27 15:27:19.087 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467282 took 2046626 us to sync and write superblock
+2026-11-27 15:27:43.326 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467293 took 2613522 us to sync and write superblock
+2026-11-27 15:27:51.244 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467297 took 1568403 us to sync and write superblock
+2026-11-27 15:27:56.543 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467299 took 1819413 us to sync and write superblock
+2026-11-27 15:28:10.218 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467307 took 1844743 us to sync and write superblock
+2026-11-27 15:28:16.240 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467312 took 1608030 us to sync and write superblock
+2026-11-27 15:28:20.202 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467317 took 1957518 us to sync and write superblock
+2026-11-27 15:28:22.019 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467321 took 1778641 us to sync and write superblock
+2026-11-27 15:28:24.007 Df kernel[0:2b965cb] (apfs) tx_flush:1280: disk7 tx xid 467326 took 1905599 us to sync and write superblock
+2026-11-27 15:34:07.696 Df kernel[0:2b99251] (apfs) tx_flush:1185: disk7 tx xid 467329 took 172694158 us to flush
+2026-11-27 16:59:00.222 Df kernel[0:2be9acd] (apfs) tx_flush:1185: disk7 tx xid 470495 took 80467424 us to flush
+2026-11-27 16:59:31.185 Df kernel[0:2be9acd] (apfs) tx_flush:1280: disk7 tx xid 470495 took 30962820 us to sync and write superblock
+2026-11-27 17:01:56.142 Df kernel[0:2be9acd] (apfs) tx_flush:1185: disk7 tx xid 470496 took 70536644 us to flush
+2026-11-27 17:45:31.934 Df kernel[0:2c0cd56] (apfs) tx_flush:1185: disk7 tx xid 471615 took 1952159 us to flush
+2026-11-27 17:45:31.936 Df kernel[0:2c1c18d] (apfs) tx_enter_internal:2385: disk7 waited 1254893 us to open tx xid 471617 (nx_tx_wait_closed)
+2026-11-27 17:45:35.467 Df kernel[0:2c0cd56] (apfs) tx_flush:1185: disk7 tx xid 471616 took 3530849 us to flush
+2026-11-27 17:45:35.470 Df kernel[0:2c1c220] (apfs) tx_enter_internal:2385: disk7 waited 2831368 us to open tx xid 471618 (nx_tx_wait_closed)
+2026-11-27 17:45:38.480 Df kernel[0:2c0cd56] (apfs) tx_flush:1185: disk7 tx xid 471617 took 3009933 us to flush
+2026-11-27 17:45:39.024 Df kernel[0:2c1c347] (apfs) tx_enter_internal:2385: disk7 waited 1416546 us to open tx xid 471619 (nx_tx_wait_closed)
+2026-11-27 17:45:45.460 Df kernel[0:2c0cd56] (apfs) tx_flush:1185: disk7 tx xid 471618 took 6436496 us to flush
+2026-11-27 17:45:52.006 Df kernel[0:2c0cd56] (apfs) tx_flush:1185: disk7 tx xid 471619 took 2332286 us to flush
+2026-11-27 17:57:40.524 Df kernel[0:2c1ea41] (apfs) tx_flush:1185: disk7 tx xid 472002 took 1798528 us to flush
+2026-11-27 17:57:40.631 Df kernel[0:2c28c15] (apfs) tx_enter_internal:2385: disk7 waited 1507929 us to open tx xid 472004 (nx_tx_wait_closed)
+2026-11-27 17:58:26.683 Df kernel[0:2c1ea41] (apfs) tx_flush:1185: disk7 tx xid 472063 took 3562375 us to flush
+2026-11-27 17:58:26.705 Df kernel[0:2c2ac3b] (apfs) tx_enter_internal:2385: disk7 waited 1192584 us to open tx xid 472065 (nx_tx_wait_closed)
+2026-11-27 18:09:47.938 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472222 took 2794202 us to flush
+2026-11-27 18:09:59.354 Df kernel[0:2c3f57a] (apfs) tx_flush:1280: disk7 tx xid 472223 took 3218379 us to sync and write superblock
+2026-11-27 18:10:17.118 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472225 took 1975467 us to flush
+2026-11-27 18:10:19.644 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472226 took 1145487 us to flush
+2026-11-27 18:10:24.336 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472227 took 1744106 us to flush
+2026-11-27 18:10:55.433 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472228 took 10289093 us to flush
+2026-11-27 18:11:02.757 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472229 took 1943886 us to flush
+2026-11-27 18:11:24.970 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472230 took 6135512 us to flush
+2026-11-27 18:11:26.052 Df kernel[0:2c3f57a] (apfs) tx_flush:1045: disk7 tx xid 472231 took 1050394 us to prepare to flush
+2026-11-27 18:11:31.372 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472231 took 5320415 us to flush
+2026-11-27 18:11:34.910 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472232 took 3520517 us to flush
+2026-11-27 18:11:39.691 Df kernel[0:2c3f57a] (apfs) tx_flush:1280: disk7 tx xid 472232 took 4780529 us to sync and write superblock
+2026-11-27 18:11:55.615 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472233 took 9173639 us to flush
+2026-11-27 18:12:05.480 Df kernel[0:2c3f57a] (apfs) tx_flush:1280: disk7 tx xid 472233 took 9865058 us to sync and write superblock
+2026-11-27 18:13:26.917 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472234 took 10228633 us to flush
+2026-11-27 18:13:34.351 Df kernel[0:2c3f57a] (apfs) tx_flush:1280: disk7 tx xid 472234 took 7434220 us to sync and write superblock
+2026-11-27 18:13:36.435 Df kernel[0:2c3f57a] (apfs) tx_flush:1185: disk7 tx xid 472236 took 1988090 us to flush
+2026-11-27 18:13:40.908 Df kernel[0:2c3f57a] (apfs) tx_flush:1280: disk7 tx xid 472236 took 4473010 us to sync and write superblock
+2026-11-27 18:40:21.408 Df kernel[0:2c62774] (apfs) tx_flush:1185: disk7 tx xid 472808 took 1816875 us to flush
+2026-11-27 18:40:21.443 Df kernel[0:2c646de] (apfs) tx_enter_internal:2385: disk7 waited 1203140 us to open tx xid 472810 (nx_tx_wait_closed)
+2026-11-27 18:40:55.959 Df kernel[0:2c62774] (apfs) tx_flush:1185: disk7 tx xid 472844 took 4115022 us to flush
+2026-11-27 18:40:55.976 Df kernel[0:2c64b35] (apfs) tx_enter_internal:2385: disk7 waited 1675496 us to open tx xid 472846 (nx_tx_wait_closed)
+2026-11-27 18:55:17.929 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473131 took 2677362 us to flush
+2026-11-27 18:55:23.736 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473132 took 3745023 us to flush
+2026-11-27 18:57:16.244 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473157 took 1209521 us to flush
+2026-11-27 18:57:21.497 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473160 took 1149094 us to flush
+2026-11-27 18:59:47.193 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473186 took 2157815 us to flush
+2026-11-27 18:59:54.691 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473187 took 1489496 us to flush
+2026-11-27 19:00:17.038 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473189 took 2016620 us to flush
+2026-11-27 19:00:23.797 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473190 took 1296766 us to flush
+2026-11-27 19:00:26.334 Df kernel[0:2c6c624] (apfs) tx_flush:1280: disk7 tx xid 473191 took 1394530 us to sync and write superblock
+2026-11-27 19:00:42.557 Df kernel[0:281] (apfs) tx_leave:2516: disk7 tx xid 473192 took 4272065 us to close
+2026-11-27 19:00:42.557 Df kernel[0:2c886fb] (apfs) tx_enter_internal:2385: disk7 waited 4272366 us to open tx xid 473193 (nx_tx_wait_closing)
+2026-11-27 19:02:23.028 Df kernel[0:281] (apfs) tx_leave:2516: disk7 tx xid 473193 took 100351431 us to close
+2026-11-27 19:02:23.556 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473192 took 100998577 us to flush
+2026-11-27 19:02:40.532 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473193 took 16974489 us to flush
+2026-11-27 19:02:41.006 Df kernel[0:2c886fb] (apfs) tx_enter_internal:2385: disk7 waited 6776821 us to open tx xid 473195 (nx_tx_wait_closed)
+2026-11-27 19:03:00.609 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473194 took 19602876 us to flush
+2026-11-27 19:03:00.673 Df kernel[0:2c886fb] (apfs) tx_enter_internal:2385: disk7 waited 19131062 us to open tx xid 473196 (nx_tx_wait_closed)
+2026-11-27 19:03:02.010 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473195 took 1336825 us to flush
+2026-11-27 19:03:48.124 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473282 took 1005984 us to flush
+2026-11-27 19:03:49.965 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473283 took 1766268 us to flush
+2026-11-27 19:03:51.802 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473286 took 1485256 us to flush
+2026-11-27 19:03:51.803 Df kernel[0:2c8f278] (apfs) tx_enter_internal:2385: disk7 waited 1338743 us to open tx xid 473288 (nx_tx_wait_closed)
+2026-11-27 19:03:54.933 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473287 took 3129266 us to flush
+2026-11-27 19:04:00.425 Df kernel[0:281] (apfs) tx_leave:2516: disk7 tx xid 473290 took 2947873 us to close
+2026-11-27 19:04:00.987 Df kernel[0:2c8f277] (apfs) tx_enter_internal:2385: disk7 waited 2279036 us to open tx xid 473292 (nx_tx_wait_closed)
+2026-11-27 19:04:04.320 Df kernel[0:2c8fea8] (apfs) tx_leave:2516: disk7 tx xid 473292 took 2288221 us to close
+2026-11-27 19:04:04.717 Df kernel[0:2c6c624] (apfs) tx_flush:1280: disk7 tx xid 473291 took 3677308 us to sync and write superblock
+2026-11-27 19:04:04.864 Df kernel[0:2c8f27a] (apfs) tx_enter_internal:2385: disk7 waited 1826367 us to open tx xid 473293 (nx_tx_wait_closed)
+2026-11-27 19:04:07.642 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473292 took 2777780 us to flush
+2026-11-27 19:04:07.697 Df kernel[0:2c8f27a] (apfs) tx_enter_internal:2385: disk7 waited 2504341 us to open tx xid 473294 (nx_tx_wait_closed)
+2026-11-27 19:04:10.916 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473293 took 3219140 us to flush
+2026-11-27 19:04:10.954 Df kernel[0:2c8f27a] (apfs) tx_enter_internal:2385: disk7 waited 1708022 us to open tx xid 473295 (nx_tx_wait_closed)
+2026-11-27 19:04:12.786 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473297 took 1488157 us to flush
+2026-11-27 19:04:17.921 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473301 took 4142056 us to flush
+2026-11-27 19:04:17.925 Df kernel[0:2c8e32f] (apfs) tx_enter_internal:2385: disk7 waited 1081839 us to open tx xid 473303 (nx_tx_wait_closed_prev_flushing)
+2026-11-27 19:04:19.301 Df kernel[0:2c6c624] (apfs) tx_flush:1280: disk7 tx xid 473303 took 1282814 us to sync and write superblock
+2026-11-27 19:04:26.786 Df kernel[0:281] (apfs) tx_leave:2516: disk7 tx xid 473305 took 1365421 us to close
+2026-11-27 19:04:26.995 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473304 took 5652285 us to flush
+2026-11-27 19:04:27.104 Df kernel[0:2c8f279] (apfs) tx_enter_internal:2385: disk7 waited 1499873 us to open tx xid 473306 (nx_tx_wait_closed)
+2026-11-27 19:04:29.348 Df kernel[0:2c6c624] (apfs) tx_flush:1280: disk7 tx xid 473306 took 1732555 us to sync and write superblock
+2026-11-27 19:04:31.744 Df kernel[0:2c90b55] (apfs) tx_leave:2516: disk7 tx xid 473307 took 3732121 us to close
+2026-11-27 19:04:36.375 Df kernel[0:2c6c624] (apfs) tx_flush:1280: disk7 tx xid 473310 took 1495661 us to sync and write superblock
+2026-11-27 19:04:41.319 Df kernel[0:2c6c624] (apfs) tx_flush:1185: disk7 tx xid 473314 took 3210242 us to flush
+2026-11-27 19:04:42.509 Df kernel[0:2c6c624] (apfs) tx_flush:1280: disk7 tx xid 473314 took 1189195 us to sync and write superblock
+
+# other processes at the release
+2026-11-27 19:02:23.596 Df spindump[50518:2c89b8d] [com.apple.spindump:logging] Brave Browser [72552]: slow hid response (61.4s): not sampling due to conditions 0x8002
+2026-11-27 19:01:19.101 Df launchservicesd[589:2c89b31] [com.apple.processmanager:front-35286506] SETFRONT: pid=72552 asn=0x-0x14ef4ee foreground=1 oldFrontPid=
+2026-11-27 19:01:32.820 Df launchservicesd[589:2c8a052] [com.apple.processmanager:front-35286506] SETFRONT: pid=59610 asn=0x-0x47cd7c9 foreground=1 oldFrontPid=
+2026-11-27 19:02:09.084 Df launchservicesd[589:2c8a057] [com.apple.processmanager:front-35286506] SETFRONT: pid=72552 asn=0x-0x14ef4ee foreground=1 oldFrontPid=
+2026-11-27 19:02:26.767 Df launchservicesd[589:2c89eac] [com.apple.processmanager:front-35286506] SETFRONT: pid=59610 asn=0x-0x47cd7c9 foreground=1 oldFrontPid=
+2026-11-27 19:02:32.001 Df launchservicesd[589:2c8aa29] [com.apple.processmanager:front-35286506] SETFRONT: pid=75727 asn=0x-0x3ddcdd9 foreground=1 oldFrontPid=
+2026-11-27 19:02:40.281 Df launchservicesd[589:2c8aa05] [com.apple.processmanager:front-35286506] SETFRONT: pid=59610 asn=0x-0x47cd7c9 foreground=1 oldFrontPid=
+2026-11-27 19:00:58.425 Df spindump[50518:2c8305a] [com.apple.SkyLight:default] New connection 0x72cc83 main
+2026-11-27 19:01:21.117 Df spindump[50518:2c89b8d] [com.apple.SkyLight:default] New connection 0x71a5ab main
+2026-11-27 19:01:30.619 Df spindump[50518:2c89b8d] [com.apple.SkyLight:default] New connection 0x72674b main
+2026-11-27 19:03:07.526 Df spindump[50518:2c8dc9a] [com.apple.SkyLight:default] New connection 0x72b06f main
+2026-11-27 19:02:19.205 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.08000000-0600-0000-0000-000000000000 [2016]:] exited due to SIGKILL | sent by mds[574], ran for 111262ms
+2026-11-27 19:02:19.205 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.0F000000-0500-0000-0000-000000000000 [599]:] exited due to SIGKILL | sent by mds[574], ran for 132044ms
+2026-11-27 19:02:19.896 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.07000000-0500-0000-0000-000000000000 [2017]:] exited due to SIGKILL | sent by mds[574], ran for 111951ms
+2026-11-27 19:02:19.896 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.06000000-0300-0000-0000-000000000000 [2628]:] exited due to SIGKILL | sent by mds[574], ran for 108938ms
+2026-11-27 19:02:21.045 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.04000000-0200-0000-0000-000000000000 [2015]:] exited due to SIGKILL | sent by mds[574], ran for 113118ms
+2026-11-27 19:02:21.045 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.0C000000-0300-0000-0000-000000000000 [2652]:] exited due to SIGKILL | sent by mds[574], ran for 108844ms
+2026-11-27 19:02:21.977 Df launchd[1:2c8a8d3] [user/89/com.apple.mdworker.shared.0D000000-0300-0000-0000-000000000000 [2616]:] exited due to SIGKILL | sent by mds[574], ran for 112371ms
+2026-11-27 19:02:21.981 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.10000000-0300-0000-0000-000000000000 [2629]:] exited due to SIGKILL | sent by mds[574], ran for 111023ms
+2026-11-27 19:02:22.559 Df launchd[1:2c8a8d3] [user/89/com.apple.mdworker.shared.01000000-0500-0000-0000-000000000000 [97767]:] exited due to SIGKILL | sent by mds[574], ran for 181525ms
+2026-11-27 19:02:23.548 Df launchd[1:2c8a538] [user/89/com.apple.mdworker.shared.09000000-0500-0000-0000-000000000000 [2617]:] exited due to SIGKILL | sent by mds[574], ran for 113865ms
+2026-11-27 19:01:28.602 Df launchservicesd[589:2c89ead] [com.apple.processmanager:front-35286506] SETFRONT: pid=28043 asn=0x-0x2209207 foreground=1 oldFrontPid=
+
+# input method (SCIM_Extension 3504) main thread 717d, last line before and first line after
+2026-11-27 19:00:52.610 A  SCIM_Extension[3504:717d] (CoreFoundation) Loading Preferences From User CFPrefsD
+2026-11-27 19:02:23.568 A  SCIM_Extension[3504:717d] (InputMethodKit) Activate Server
+
+# deck-app main thread 2759b50: last line before / first line after
+2026-11-27 19:00:52.614 Df deck-app[59610:2759b50] [com.apple.WebKit:ProcessSuspension] 0x126124120 - [PID=59616, throttler=0x1260e0710] ProcessThrottler::Activity::invalidate: Ending foreground activ
+2026-11-27 19:02:23.570 Df deck-app[59610:2759b50] [com.apple.WebKit:ActivityState] WebViewImpl 0x1260d8100 (page 7) windowDidChangeOcclusionState

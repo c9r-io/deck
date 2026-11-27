@@ -78,6 +78,8 @@ const DEBUG_ONLY: &[&str] = &[
     "connector_smoke_window",
     "smoke_clipboard_metrics",
     "smoke_fault_set",
+    "smoke_attach_state",
+    "smoke_tmux_server_signal",
     "smoke_flush_queue",
     "smoke_query_channel",
     "smoke_signal_fixture",

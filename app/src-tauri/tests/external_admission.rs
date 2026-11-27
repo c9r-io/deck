@@ -890,7 +890,7 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
     // The attachment's input handle (a dup of its master): only its own
     // input pump writes through it, the bytes `pty_write` queued for that
     // generation (pty.rs `PtyInput`).
-    ("pty.rs", "attach_session", "master_input(", 1, Input::Owner),
+    ("pty.rs", "attach_now", "master_input(", 1, Input::Owner),
     // The real-pty round trip of the pty_write generation check.
     ("pty.rs", "attach_real", "master_input(", 1, Input::Fixture),
     // Ending an attachment types nothing: the pump's handle over a real pty.
@@ -950,7 +950,7 @@ const TERMINAL_INPUT: &[(&str, &str, &str, usize, Input)] = &[
     ),
     (
         "commands.rs",
-        "create_session",
+        "create_session_gated",
         "send-keys",
         1,
         Input::Config,

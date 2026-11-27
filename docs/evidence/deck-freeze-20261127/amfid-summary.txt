@@ -1,0 +1,25 @@
+# amfid (code-signature validation for exec) around the 2026-11-27 19:00 stall: lines per minute, and the volume class of the
+# binaries named in its first lines after the recovery. Read-only: /usr/bin/log show --predicate 'process == "amfid"' 18:40-19:05.
+# Paths are reduced to a volume class; no file name is kept.
+== lines per minute
+  19 18:41
+  15 18:42
+  23 18:43
+  27 18:44
+  45 18:45
+ 156 18:49
+  44 18:50
+  35 18:51
+   8 18:52
+1152 18:53
+ 107 18:54
+  33 18:58
+   8 19:00
+1734 19:02
+ 808 19:03
+ 775 19:04
+== last line before the gap: 19:00:05.776 (a validation under /private/tmp); first line after: 19:02:23.711
+== volume class of paths named 19:02:23-19:03:00 (path mentions)
+     6 internal (/private/tmp)
+== first mention of a binary on the external disk after the recovery: 19:03:19.374
+== system extensions / third-party kexts on this Mac (systemextensionsctl list, kextstat): none

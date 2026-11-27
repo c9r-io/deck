@@ -1,6 +1,24 @@
 {
   "note": "Expected smoke-check lines per WKWebView smoke mode (app/src-tauri/src/main.rs dispatch; DECK_SMOKE_WKWEBVIEW=<mode>, run is the default). A rule {} means every occurrence has a positive a; \"a\": N means exactly N; \"a\": [..] means exactly those values once each; \"metric\" only requires presence; \"failureOnly\" names are emitted only on an exception path. \"terminal\" is the checkpoint that must come last with a=1 (null: the mode stays open for an external step). Judged by scripts/smoke-verdict; the name set equals diagnostics.rs SMOKE_CHECKS and each carrier's report literals.",
   "modes": {
+    "ipc-stall": {
+      "terminal": "done",
+      "checks": {
+        "stall-setup": {},
+        "stall-attach-notice": {},
+        "stall-ipc-responsive": {},
+        "stall-attach-retired": {},
+        "stall-attach-retry": {},
+        "stall-input-dropped": {},
+        "stall-start-timeout": {},
+        "stall-start-reconciled": {},
+        "stall-kill-kept": {},
+        "stall-clipboard": {},
+        "stall-server-stopped": {},
+        "stall-server-continued": {},
+        "stall-exception": { "failureOnly": true }
+      }
+    },
     "selection-events": {
       "terminal": null,
       "checks": { "selection-events-ready": {} }

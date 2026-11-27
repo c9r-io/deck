@@ -99,8 +99,26 @@ use crate::error::{DeckError, ErrorKind};
 use crate::storage;
 use crate::sync::LockRecover;
 
+/// Off the IPC thread (`docs/ipc-thread.md`): the view reads one pane
+/// listing for each row's wait (`queue_view`), a tmux call that a stopped
+/// server held on the main thread (found 2026-11-27 by `main_watch.rs`'s
+/// stack sample in the `ipc-stall` smoke). The listing runs under the
+/// budget's deadline; a listing that does not answer gives the view without
+/// observations, as a failed one always did.
 #[tauri::command]
-pub(crate) fn queue_list(state: State<'_, Queues>) -> QueueView {
+pub(crate) async fn queue_list(app: AppHandle) -> Result<QueueView, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "queue_list",
+        std::time::Duration::from_secs(3),
+        move || {
+            let state = tauri::Manager::state::<Queues>(&app);
+            Ok(queue_list_now(state))
+        },
+    )
+    .await
+}
+
+pub(crate) fn queue_list_now(state: State<'_, Queues>) -> QueueView {
     let q = state.q.lock_or_recover().clone();
     queue_view(q)
 }
@@ -118,7 +136,24 @@ pub(crate) struct ContextProbeView {
 /// not start a session, mutate the queue, consume an attempt, or capture pane
 /// contents.
 #[tauri::command]
-pub(crate) fn queue_probe_context(
+pub(crate) async fn queue_probe_context(
+    app: AppHandle,
+    id: String,
+) -> Result<ContextProbeView, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "queue_probe_context",
+        std::time::Duration::from_secs(5),
+        move || {
+            let state = tauri::Manager::state::<Queues>(&app);
+            queue_probe_context_now(state, id)
+        },
+    )
+    .await
+}
+
+/// `queue_probe_context` itself, on the pool thread its wrapper gives it (the IPC-thread
+/// census, `docs/ipc-thread.md`).
+pub(crate) fn queue_probe_context_now(
     state: State<'_, Queues>,
     id: String,
 ) -> Result<ContextProbeView, DeckError> {
@@ -1614,7 +1649,21 @@ pub(crate) fn queue_clear_sessions(
 /// Immediate delivery is one-shot and uses the scheduled send's guards
 /// unchanged: exact identity and the expected foreground process.
 #[tauri::command]
-pub(crate) fn queue_send_now(
+pub(crate) async fn queue_send_now(app: AppHandle, id: String) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_answer(
+        "queue_send_now",
+        std::time::Duration::from_secs(15),
+        move || {
+            let state = tauri::Manager::state::<Queues>(&app);
+            queue_send_now_now(state, app.clone(), id)
+        },
+    )
+    .await
+}
+
+/// `queue_send_now` itself, on the pool thread its wrapper gives it (the IPC-thread
+/// census, `docs/ipc-thread.md`).
+pub(crate) fn queue_send_now_now(
     state: State<'_, Queues>,
     app: AppHandle,
     id: String,

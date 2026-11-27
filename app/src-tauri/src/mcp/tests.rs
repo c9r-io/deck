@@ -579,22 +579,22 @@ fn control_socket_exists_only_while_mcp_is_enabled() {
 #[test]
 fn scope_preview_classifies_paths_and_final_scope_check_rejects_stale_project() {
     let root = test_root("scope-preview");
-    let missing = mcp_scope_preview(root.join("missing").display().to_string());
+    let missing = mcp_scope_preview_now(root.join("missing").display().to_string());
     assert!(!missing.ok);
     assert_eq!(missing.error, Some("not_found"));
     let file = root.join("file.txt");
     std::fs::write(&file, b"file").unwrap();
-    let not_directory = mcp_scope_preview(file.display().to_string());
+    let not_directory = mcp_scope_preview_now(file.display().to_string());
     assert!(!not_directory.ok);
     assert_eq!(not_directory.error, Some("not_directory"));
-    let valid = mcp_scope_preview(root.display().to_string());
+    let valid = mcp_scope_preview_now(root.display().to_string());
     assert!(valid.ok);
-    let whole_disk = mcp_scope_preview("/".into());
+    let whole_disk = mcp_scope_preview_now("/".into());
     assert!(!whole_disk.ok);
     assert_eq!(whole_disk.error, Some("too_broad"));
     let home = crate::mcp_fs::home_directory().unwrap();
     assert_eq!(
-        mcp_scope_preview(home.display().to_string()).error,
+        mcp_scope_preview_now(home.display().to_string()).error,
         Some("too_broad")
     );
     let inaccessible = canonical_project_root_with_access(root.to_str().unwrap(), |_| {
@@ -1552,14 +1552,14 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     )
     .unwrap();
     assert_eq!(added.name, "Client B");
-    let preview = mcp_scope_preview(root.display().to_string());
+    let preview = mcp_scope_preview_now(root.display().to_string());
     assert!(preview.ok);
     assert_eq!(
         preview.root.unwrap(),
         std::fs::canonicalize(&root).unwrap().display().to_string()
     );
     assert_eq!(
-        mcp_client_delete(added.id.clone()).unwrap_err().kind(),
+        mcp_client_delete_now(added.id.clone()).unwrap_err().kind(),
         ErrorKind::Perm
     );
 
@@ -1597,10 +1597,10 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
 
     // Retention is a closed range, applied to every live runner.
     assert_eq!(
-        mcp_output_retention(59_999).unwrap_err().kind(),
+        mcp_output_retention_now(59_999).unwrap_err().kind(),
         ErrorKind::Invalid
     );
-    mcp_output_retention(120_000).unwrap();
+    mcp_output_retention_now(120_000).unwrap();
     assert_eq!(
         runtime.read(|doc| doc.config.output_retention_ms).unwrap(),
         120_000
@@ -1620,11 +1620,11 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     mcp_execution_revoke("M1".into()).unwrap();
     assert!(!mcp_session_ui("M1".into()).unwrap().execution_grant_active);
     assert_eq!(
-        mcp_client_delete("bad id".into()).unwrap_err().kind(),
+        mcp_client_delete_now("bad id".into()).unwrap_err().kind(),
         ErrorKind::Invalid
     );
     assert_eq!(
-        mcp_close_admit("missing".into()).err().unwrap().kind(),
+        mcp_close_admit_now("missing".into()).err().unwrap().kind(),
         ErrorKind::ContextChanged
     );
     assert!(runner_socket_matches(
@@ -1660,8 +1660,8 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     assert_eq!(mcp_pending().unwrap().len(), 1);
     let claimed = mcp_claim(create_id.clone()).unwrap();
     assert_eq!(claimed.kind, "session-create");
-    assert!(mcp_complete(create_id.clone(), "invalid".into(), None, None).is_err());
-    mcp_complete(
+    assert!(mcp_complete_now(create_id.clone(), "invalid".into(), None, None).is_err());
+    mcp_complete_now(
         create_id,
         "committed".into(),
         None,
@@ -1694,11 +1694,11 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
     mcp_card_closed(created_session.card_id).unwrap();
 
     assert!(mcp_claim("missing".into()).is_err());
-    assert!(mcp_start_session(
+    assert!(tauri::async_runtime::block_on(mcp_start_session(
         "missing".into(),
         "deck-valid".into(),
         root.display().to_string()
-    )
+    ))
     .is_err());
     // what only the client's presence keeps: a draft, a worker record and
     // a mark — deleting the client takes them with it
@@ -1737,7 +1737,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
         })
         .unwrap();
     mcp_client_revoke(added.id.clone()).unwrap();
-    mcp_client_delete(added.id.clone()).unwrap();
+    mcp_client_delete_now(added.id.clone()).unwrap();
     assert!(runtime
         .read(|doc| doc.proposals.iter().all(|p| p.client_id != added.id)
             && doc.workers.iter().all(|w| w.client_id != added.id)

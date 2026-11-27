@@ -38,10 +38,12 @@ mod ledger;
 #[cfg(test)]
 mod limits_mirror;
 mod links;
+mod main_watch;
 mod mcp;
 mod mcp_fs;
 mod model_api;
 mod notify;
+mod pane_client;
 mod procinfo;
 mod project_env;
 mod prompt_delivery;
@@ -236,6 +238,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("projects", "m.verifyProjects()"),
     ("reentry-shapes", "m.verifyReentryShapes()"),
     ("ux-failures", "m.verifyUxFailures()"),
+    ("ipc-stall", "m.verifyIpcStall()"),
     ("pi-worker", "m.verifyPiWorker()"),
     ("pi-interject", "m.verifyPiInterject()"),
 ];
@@ -247,7 +250,20 @@ fn smoke_entry(mode: &str) -> &'static str {
         .map_or("m.run()", |(_, entry)| entry)
 }
 
+/// The one wrapper around every IPC request: the command's name is in
+/// flight on the main thread for as long as a synchronous command runs there
+/// (`main_watch.rs`). An async command only dispatches here.
+fn watched<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let _in_flight = main_watch::command(invoke.message.command());
+        handler(invoke)
+    }
+}
+
 fn main() {
+    main_watch::init();
     launch_args::configure_isolated_carrier();
     if smoke_native::reminder_maintenance() {
         return;
@@ -303,6 +319,9 @@ fn main() {
             // legacy/old server as pending, and replaces only an empty one.
             tmux_lifecycle::reconcile_on_boot();
             tmux::exit_on_termination_signals(app.handle().clone());
+            // which command holds the main thread, and how long it went
+            // without a turn (main_watch.rs): observation only
+            main_watch::spawn(app.handle().clone());
             // Deck's automatic work starts once the launch is known to be an
             // ordinary one, which the webview's first question about its
             // window settles. A launch the system made to deliver "remind in
@@ -413,13 +432,13 @@ fn main() {
                 }
                 if e.id() == "export-logs" {
                     // never log the export's absolute path (it embeds the
-                    // user's home directory) — Finder reveals it anyway
-                    match diagnostics::export_logs() {
+                    // user's home directory) — Finder reveals it anyway.
+                    // Off the main thread: it copies files and reveals the
+                    // result with `open` (main_watch.rs, the census).
+                    std::thread::spawn(|| match diagnostics::export_logs_now() {
                         Ok(_) => applog("[export] logs written"),
-                        Err(err) => {
-                            applog(&format!("[export] FAILED ({})", err.code()))
-                        }
-                    }
+                        Err(err) => applog(&format!("[export] FAILED ({})", err.code())),
+                    });
                 }
             });
             Ok(())
@@ -461,7 +480,7 @@ fn main() {
                 api.prevent_close();
             }
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(watched(tauri::generate_handler![
             intelligence::translation::translation_capability,
             intelligence::translation::translation_translate,
             intelligence::translation::translation_cancel,
@@ -670,6 +689,8 @@ fn main() {
             tunnel_helper::tunnel_helper_remove,
             tunnel_helper::tunnel_helper_setup_command,
             smoke_faults::smoke_fault_set,
+            smoke_faults::smoke_attach_state,
+            smoke_faults::smoke_tmux_server_signal,
             smoke_faults::smoke_clipboard_metrics,
             smoke_faults::smoke_query_channel,
             smoke_faults::smoke_signal_fixture,
@@ -685,7 +706,7 @@ fn main() {
             smoke_native::smoke_native_fixture_receipt,
             smoke_native::smoke_native_scenario,
             smoke_native::smoke_native_account_root,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building deck")
         .run(|app, event| {

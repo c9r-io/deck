@@ -9,6 +9,10 @@
 //! after the call returned.
 //! `off_ipc_thread` is how a terminal IPC command leaves the window's main
 //! thread: it installs the deadline on the pool thread that does the work.
+//! `off_ipc_answer` bounds only the caller's answer, for work whose own
+//! calls must not be cut (a send's firing window). Which commands use
+//! which, and which stay on the IPC thread, is `docs/ipc-thread.md`
+//! (enforced by `tests/ipc_thread.rs`).
 //! This module knows no panes, agents, snapshots, scheduler or restart policy.
 //! Existing IPC error codes remain stable for callers.
 use crate::applog::applog;
@@ -142,13 +146,37 @@ pub(crate) async fn off_ipc_thread<T: Send + 'static>(
     budget: Duration,
     work: impl FnOnce() -> Result<T, DeckError> + Send + 'static,
 ) -> Result<T, DeckError> {
+    off_ipc(op, budget, true, work).await
+}
+
+/// `off_ipc_thread` for work that must NOT be cut by a deadline (a send
+/// whose firing window the scheduler's own workers also run unbounded,
+/// `queue_send_now`): the caller's answer is bounded by `budget`, the work
+/// runs to its own end exactly as on a scheduler worker, and its late
+/// answer is dropped and logged.
+pub(crate) async fn off_ipc_answer<T: Send + 'static>(
+    op: &'static str,
+    budget: Duration,
+    work: impl FnOnce() -> Result<T, DeckError> + Send + 'static,
+) -> Result<T, DeckError> {
+    off_ipc(op, budget, false, work).await
+}
+
+async fn off_ipc<T: Send + 'static>(
+    op: &'static str,
+    budget: Duration,
+    scoped: bool,
+    work: impl FnOnce() -> Result<T, DeckError> + Send + 'static,
+) -> Result<T, DeckError> {
     use std::sync::atomic::Ordering;
     let started = Instant::now();
     let end = started + budget;
     TERMINAL_WORKERS.fetch_add(1, Ordering::AcqRel);
     let task = tauri::async_runtime::spawn_blocking(move || {
-        let result = {
+        let result = if scoped {
             let _deadline = Deadline::until(end);
+            work()
+        } else {
             work()
         };
         let running = TERMINAL_WORKERS.fetch_sub(1, Ordering::AcqRel) - 1;

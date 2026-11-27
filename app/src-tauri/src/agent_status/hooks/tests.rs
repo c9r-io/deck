@@ -106,7 +106,7 @@ fn hook_commands_are_unchanged_by_protocol_v2() {
 
 #[test]
 fn hook_status_command_returns_both_closed_agent_fields() {
-    let status = serde_json::to_value(agent_hooks_status()).unwrap();
+    let status = serde_json::to_value(agent_hooks_status_now()).unwrap();
     let object = status.as_object().unwrap();
     // Generic per-source settings plus the legacy two Signal toggles, the
     // separate re-entry observation opt-in, and Pi's two switches/state.
@@ -158,7 +158,7 @@ fn hook_status_command_returns_both_closed_agent_fields() {
     // a test binary is no stable install: it may read, never write
     assert_eq!(installation, "unsupported-location");
     assert_eq!(
-        agent_hooks_set(crate::agent_pi::SOURCE.into(), true)
+        agent_hooks_set_now(crate::agent_pi::SOURCE.into(), true)
             .unwrap_err()
             .message(),
         "pi-config-unsupported-location"
@@ -166,14 +166,14 @@ fn hook_status_command_returns_both_closed_agent_fields() {
     // the final-message switch is Pi's own command, under the same rule
     for enable in [true, false] {
         assert_eq!(
-            crate::agent_pi::config::agent_pi_replies_set(enable)
+            crate::agent_pi::config::agent_pi_replies_set_now(enable)
                 .unwrap_err()
                 .message(),
             "pi-config-unsupported-location"
         );
     }
     assert_eq!(
-        agent_hooks_set(crate::agent_pi::SOURCE.into(), false)
+        agent_hooks_set_now(crate::agent_pi::SOURCE.into(), false)
             .unwrap_err()
             .message(),
         "pi-config-unsupported-location"
@@ -233,7 +233,7 @@ const UNIQUE_ADAPTERS: &[AgentAdapter] = &[AgentAdapter {
 fn unique_registered_agent_appears_without_a_new_fixed_status_field() {
     let _table = crate::extensions::testing::with_agents(UNIQUE_ADAPTERS);
     DUPLICATE_STATUS_READS.store(0, std::sync::atomic::Ordering::SeqCst);
-    let status = serde_json::to_value(agent_hooks_status()).unwrap();
+    let status = serde_json::to_value(agent_hooks_status_now()).unwrap();
     assert_eq!(
         DUPLICATE_STATUS_READS.load(std::sync::atomic::Ordering::SeqCst),
         1
@@ -255,7 +255,7 @@ fn unique_registered_agent_appears_without_a_new_fixed_status_field() {
 fn duplicate_agent_registry_has_no_status_reads_or_legacy_projection() {
     let _table = crate::extensions::testing::with_agents(DUPLICATE_ADAPTERS);
     DUPLICATE_STATUS_READS.store(0, std::sync::atomic::Ordering::SeqCst);
-    let status = serde_json::to_value(agent_hooks_status()).unwrap();
+    let status = serde_json::to_value(agent_hooks_status_now()).unwrap();
     assert_eq!(
         DUPLICATE_STATUS_READS.load(std::sync::atomic::Ordering::SeqCst),
         0
@@ -1667,9 +1667,9 @@ fn claude_and_codex_declare_a_reentry_capability_and_lifecycle_hooks() {
         assert_eq!(family.owns(command), owns, "{family:?} {command}");
     }
     // a development build cannot install either family, for either source
-    assert!(agent_lifecycle_hooks_set(true, None).is_err());
-    assert!(agent_lifecycle_hooks_set(true, Some("codex".into())).is_err());
-    assert!(agent_lifecycle_hooks_set(true, Some("pi".into())).is_err());
+    assert!(agent_lifecycle_hooks_set_now(true, None).is_err());
+    assert!(agent_lifecycle_hooks_set_now(true, Some("codex".into())).is_err());
+    assert!(agent_lifecycle_hooks_set_now(true, Some("pi".into())).is_err());
 }
 
 /// Not a test of its own: the child of

@@ -68,8 +68,36 @@ impl VoiceSettings {
     }
 }
 
+/// Every link command runs off the IPC thread (the census): each one stats
+/// or canonicalizes a path (a card's directory is often on an external
+/// volume) or starts `open`. No answer within `LINK_BUDGET` is the closed
+/// `link-open-failed` (the frontend's "could not open"); an `open` already
+/// started is not stopped and may still open its target late.
+const LINK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn off_ipc<T: Send + 'static>(
+    op: &'static str,
+    work: impl FnOnce() -> Result<T, DeckError> + Send + 'static,
+) -> Result<T, DeckError> {
+    crate::session_runtime::off_ipc_thread(op, LINK_BUDGET, work)
+        .await
+        .map_err(|e| {
+            if e.message() == crate::session_runtime::TERMINAL_TIMEOUT
+                || e.message() == crate::session_runtime::TERMINAL_BUSY
+            {
+                DeckError::new(ErrorKind::Other, LINK_OPEN_FAILED)
+            } else {
+                e
+            }
+        })
+}
+
 #[tauri::command]
-pub(crate) fn voice_open_settings(kind: VoiceSettings) -> Result<(), DeckError> {
+pub(crate) async fn voice_open_settings(kind: VoiceSettings) -> Result<(), DeckError> {
+    off_ipc("voice_open_settings", move || voice_open_settings_now(kind)).await
+}
+
+fn voice_open_settings_now(kind: VoiceSettings) -> Result<(), DeckError> {
     let status = Command::new("/usr/bin/open")
         .arg(kind.url())
         .status()
@@ -182,11 +210,14 @@ pub(crate) fn resolve_clicked_parent(
 }
 
 #[tauri::command]
-pub(crate) fn resolve_parent_dir(
+pub(crate) async fn resolve_parent_dir(
     value: String,
     cwd: String,
 ) -> Result<ResolvedPathTarget, DeckError> {
-    resolve_clicked_parent(&value, &cwd)
+    off_ipc("resolve_parent_dir", move || {
+        resolve_clicked_parent(&value, &cwd)
+    })
+    .await
 }
 
 /// What open_target is allowed to hand to `open`, decided BEFORE any
@@ -331,13 +362,16 @@ const LINK_CODES: [&str; 4] = [
 ];
 
 #[tauri::command]
-pub(crate) fn open_target(kind: String, value: String, cwd: String) -> Result<(), DeckError> {
-    logged(open_with_editor(
-        &kind,
-        &value,
-        &cwd,
-        crate::documents::editor_app,
-    ))
+pub(crate) async fn open_target(kind: String, value: String, cwd: String) -> Result<(), DeckError> {
+    off_ipc("open_target", move || {
+        logged(open_with_editor(
+            &kind,
+            &value,
+            &cwd,
+            crate::documents::editor_app,
+        ))
+    })
+    .await
 }
 
 // ---------- a pane whose program is ssh ------------------------------------------
@@ -452,8 +486,15 @@ fn remote_scheme(editor: Option<&str>) -> Option<(&'static str, &'static str)> {
 }
 
 #[tauri::command]
-pub(crate) fn link_remote(session: String) -> Option<RemoteHost> {
-    let remote = remote_of(&session)?;
+pub(crate) async fn link_remote(session: String) -> Option<RemoteHost> {
+    off_ipc("link_remote", move || Ok(link_remote_now(&session)))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn link_remote_now(session: &str) -> Option<RemoteHost> {
+    let remote = remote_of(session)?;
     let editor = crate::documents::editor_app();
     Some(RemoteHost {
         open: remote.plain && remote_scheme(editor.as_deref()).is_some(),
@@ -499,7 +540,14 @@ fn remote_open(
 /// Open a clicked path of the machine `session`'s `ssh` is connected to, in
 /// the chosen editor's remote mode. The destination is read here, now.
 #[tauri::command]
-pub(crate) fn open_remote_target(session: String, value: String) -> Result<(), DeckError> {
+pub(crate) async fn open_remote_target(session: String, value: String) -> Result<(), DeckError> {
+    off_ipc("open_remote_target", move || {
+        open_remote_target_now(session, value)
+    })
+    .await
+}
+
+fn open_remote_target_now(session: String, value: String) -> Result<(), DeckError> {
     logged((|| {
         let remote = remote_of(&session)
             .ok_or_else(|| DeckError::new(ErrorKind::Invalid, LINK_NOT_ALLOWED))?;
@@ -586,6 +634,15 @@ pub(crate) fn regex_strip_lineno(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The commands answer through `off_ipc`; their contract tests call
+    /// them as the webview does and wait for the answer.
+    fn open_target(kind: String, value: String, cwd: String) -> Result<(), DeckError> {
+        tauri::async_runtime::block_on(super::open_target(kind, value, cwd))
+    }
+    fn resolve_parent_dir(value: String, cwd: String) -> Result<ResolvedPathTarget, DeckError> {
+        tauri::async_runtime::block_on(super::resolve_parent_dir(value, cwd))
+    }
 
     #[test]
     fn voice_settings_accept_only_fixed_setup_destinations() {

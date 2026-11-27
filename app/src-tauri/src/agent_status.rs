@@ -2910,13 +2910,13 @@ mod tests {
         assert!(parse_event(&builtin).is_ok());
         assert_eq!(parse_event(&fake), Err("unknown-source"));
         assert_eq!(
-            agent_hooks_set("fake-agent".into(), true)
+            agent_hooks_set_now("fake-agent".into(), true)
                 .unwrap_err()
                 .message(),
             "unknown agent"
         );
         assert_eq!(
-            agent_hooks_set("claude".into(), true)
+            agent_hooks_set_now("claude".into(), true)
                 .unwrap_err()
                 .message(),
             "unknown agent",

@@ -3567,7 +3567,7 @@ fn state_only_commands_fail_closed_without_the_smoke_hooks_or_the_item() {
     a.at = Some(NOW);
     app.manage(Queues::new(qs(vec![a])));
     let state = app.state::<Queues>();
-    let err = queue_probe_context(state.clone(), "missing".into())
+    let err = queue_probe_context_now(state.clone(), "missing".into())
         .err()
         .expect("no probe without the item");
     assert_eq!(err.kind(), ErrorKind::Missing);

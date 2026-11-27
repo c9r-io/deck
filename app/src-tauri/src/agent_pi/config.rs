@@ -740,7 +740,18 @@ pub(crate) fn set(capability: Capability, enable: bool) -> Result<(), DeckError>
 /// (`agent_hooks_set`) and refused without it. Its readers are those of
 /// every agent's final message (`turn_summary`); it lifts no hold.
 #[tauri::command]
-pub(crate) fn agent_pi_replies_set(enable: bool) -> Result<(), DeckError> {
+pub(crate) async fn agent_pi_replies_set(enable: bool) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "agent_pi_replies_set",
+        std::time::Duration::from_secs(5),
+        move || agent_pi_replies_set_now(enable),
+    )
+    .await
+}
+
+/// `agent_pi_replies_set` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn agent_pi_replies_set_now(enable: bool) -> Result<(), DeckError> {
     if crate::extensions::agent(super::SOURCE).is_none() {
         return Err(DeckError::new(ErrorKind::Other, "unknown agent"));
     }

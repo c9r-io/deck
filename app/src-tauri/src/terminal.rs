@@ -1822,15 +1822,25 @@ mod tests {
     fn command_boundaries_reject_invalid_sessions_before_any_tmux_effect() {
         let bad = "bad:name".to_string();
         assert!(
-            crate::commands::start_session(bad.clone(), "/tmp".into(), "".into(), false, None)
-                .is_err()
+            tauri::async_runtime::block_on(crate::commands::start_session(
+                bad.clone(),
+                "/tmp".into(),
+                "".into(),
+                false,
+                None,
+                None,
+            ))
+            .is_err()
         );
         assert!(scroll_session_now(bad.clone(), 1, None, None).is_err());
         assert!(scroll_bottom_now(bad.clone()).is_err());
         assert!(terminal_search_now(bad.clone(), "q".into(), "start".into(), false).is_err());
         clear_history_now(bad.clone());
         assert!(terminal_metrics_now(bad.clone()).is_err());
-        assert!(crate::commands::kill_session(bad.clone(), None).is_err());
+        assert!(
+            tauri::async_runtime::block_on(crate::commands::kill_session(bad.clone(), None))
+                .is_err()
+        );
 
         let grid = TerminalSelectionGrid { cols: 80, rows: 24 };
         assert!(terminal_selection_start_now(bad.clone(), 1, 0, 0, 0, 0, grid).is_err());

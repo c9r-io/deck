@@ -292,7 +292,18 @@ fn schedule_clean_relaunch() -> Result<(), DeckError> {
 /// Future updates never use Tauri's child-process restart. The command is
 /// accepted only after this process successfully installed a verified update.
 #[tauri::command]
-pub(crate) fn relaunch_after_update(app: AppHandle) -> Result<(), DeckError> {
+pub(crate) async fn relaunch_after_update(app: AppHandle) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "relaunch_after_update",
+        std::time::Duration::from_secs(10),
+        move || relaunch_after_update_now(app),
+    )
+    .await
+}
+
+/// `relaunch_after_update` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn relaunch_after_update_now(app: AppHandle) -> Result<(), DeckError> {
     if !crate::tmux_lifecycle::app_update_installing() {
         return Err(DeckError::new(
             ErrorKind::Other,

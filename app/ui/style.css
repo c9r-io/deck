@@ -996,6 +996,16 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
 .follow-bar .follow-btn.suggested { color: var(--accent); border-color: var(--accent); background: var(--sel); }
 .follow-bar .follow-btn[aria-disabled="true"] { opacity: .55; cursor: default; }
 .follow-bar .follow-reason { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: var(--fs-11); }
+/* a pane's own notice while its terminal is not there yet (pane-wait-model.js) */
+.spane-notice {
+  position: absolute; left: var(--sp-12); top: var(--sp-8); z-index: 3;
+  display: flex; align-items: center; gap: var(--sp-10); max-width: calc(100% - 2 * var(--sp-12));
+  padding: var(--sp-6) var(--sp-12); border-radius: var(--radius);
+  background: var(--raised); border: 1px solid var(--border-soft);
+  color: var(--muted); font-size: var(--fs-12);
+}
+.spane-notice > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spane-notice .btn { flex: none; font-size: var(--fs-11); padding: var(--sp-4) var(--sp-10); }
 .spane-follow { flex: none; padding: var(--sp-6) var(--sp-16); background: var(--quickbar-bg); border-top: 1px solid var(--border-soft); }
 .attention-row .attention-follow { grid-column: 1 / -1; }
 .attention-row .attention-mark { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--sp-8); min-width: 0; color: var(--muted); font-size: var(--fs-11); }

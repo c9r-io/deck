@@ -57,8 +57,10 @@
 //! - Detach, replacement and `detach_all` remove the entry under the lock
 //!   and `retire` it outside: the gate closes, the pump is told to give up,
 //!   and a short reaper thread kills and REAPS that attachment's own tmux
-//!   client and then closes its master (portable-pty's `kill` sleeps up to
-//!   200 ms). portable-pty's writer is never taken (`master_input`): its
+//!   client and closes its master — once the client is gone, or 300 ms
+//!   after the kill if it is not: a session leader exits only after its
+//!   tty's output drained, and nothing reads this master any more (the
+//!   kill's own grace is 200 ms). portable-pty's writer is never taken (`master_input`): its
 //!   drop blocks on a full tty and types Enter and Ctrl-D into a live one.
 //!   Ending an attachment types nothing.
 //! - `pty_resize` takes the terminal operation lock, which a command waiting
@@ -66,10 +68,46 @@
 //! - Per generation, app.log carries: `attached ... gen=N client started`,
 //!   `first read`, `first emit ... (emit Xms)`; the webview adds `pty-first`
 //!   when xterm consumed that generation's first frame.
+//!
+//! # Attach lifecycle (2026-11-27 freeze, `docs/evidence/deck-freeze-20261127/`)
+//! `attach_session` is async: openpty, starting this attachment's own tmux
+//! client (`pane_client.rs`: its spawn returns once tmux is running, or with
+//! exec's error), the entry and its reader/emitter run on a pool
+//! thread, and the caller is answered within `ATTACH_BUDGET` whatever
+//! process creation does (`attach_within`). Each request has ONE life,
+//! every transition under the table lock (`Table`: the attachments and the
+//! one attach still in flight per session):
+//! - `InFlight` → `Delivered`: its worker's `deliver` inserted it, still
+//!   wanted. Only then do its reader and emitter start: nothing of an attach
+//!   nobody wanted ever emits (the frontend adopts a NEWER generation from
+//!   events, so a late emit would hijack the pane).
+//! - `InFlight` → `Abandoned`: the caller's budget ran out first; it is
+//!   answered `terminal-timeout` and the request leaves the table.
+//! - `InFlight` → `Superseded`: a newer attach of the same session, a
+//!   detach, or `detach_all` replaced it (`attach … superseded`).
+//!
+//! A worker that ends Abandoned or Superseded RETIRES what it made — kills
+//! and reaps its own client, closes its master — and inserts nothing,
+//! emits nothing, changes no current generation (`late attach … retired`).
+//! A worker that delivered before the caller decided makes the caller
+//! succeed, with exactly the inserted generation. At most
+//! `MAX_ATTACH_WORKERS` workers run (one a stalled spawn holds keeps
+//! counting); past that an attach is refused `terminal-busy`. `detach`
+//! waits for nothing. Generations are assigned when a request BEGINS, so a
+//! request that never delivers only burns a number; input bound to it names
+//! a generation that was never current and is refused (`stale-attachment`,
+//! never moved to the successor). The activity guard is held for a whole
+//! worker: an attach never races a server replacement, and while a stalled
+//! spawn holds a worker a restart is refused as busy (as during a delivery).
+//! `attached()` does NOT count an attach in flight: its pane shows no
+//! terminal yet (see `PtyState::attached`). app.log adds: `attach … still
+//! spawning after Nms (attach workers=K)`, `late attach … retired`,
+//! `attach … superseded`, `attach … refused`, `no first read from … gen=N
+//! within Nms`, `client not reaped … (reapers=N)` / `client reaped after`.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -199,23 +237,86 @@ impl PtyEntry {
     /// take, and let a short-lived reaper kill and reap this attachment's
     /// own tmux client and then close its master. Nothing here waits on the
     /// tty or on tmux, so detach, replacement and restart never block the
-    /// IPC thread (portable-pty's own `kill` sleeps up to 200 ms).
+    /// IPC thread (the client's kill grants it up to 200 ms).
     fn retire(self) {
         self.gate.close();
         self.input.close();
         let PtyEntry {
-            mut child, master, ..
+            child,
+            master,
+            generation,
+            gate,
+            ..
         } = self;
-        let spawned = std::thread::Builder::new()
-            .name("deck-pty-reap".into())
-            .spawn(move || {
-                let _ = child.kill();
-                let _ = child.wait();
-                drop(master);
-            });
-        if spawned.is_err() {
-            applog("[pty] reaper thread unavailable; client left to its own exit");
-        }
+        reap(&gate.name, generation, child, master);
+    }
+}
+
+/// Reaper threads whose client has not been reaped yet: a client the kernel
+/// holds in an uninterruptible wait keeps its reaper in `wait`, so this
+/// count is what shows that in app.log (`client not reaped`).
+static REAPING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// How long a reaper waits before it says its client has not gone.
+const REAP_NOTICE: Duration = Duration::from_secs(2);
+/// How long a killed client may take to go before its master is closed
+/// under it (the kill's own grace is 200 ms).
+const MASTER_GRACE: Duration = Duration::from_millis(300);
+
+/// Kill and reap one attachment's (or one abandoned attach's) own tmux
+/// client on a reaper thread, then close its master. A client that does
+/// not go within `REAP_NOTICE` is logged with the number of reapers still
+/// waiting; the reaper keeps waiting (a kill cannot be taken back), and the
+/// line `client reaped after` closes the episode.
+fn reap(
+    name: &str,
+    generation: u64,
+    mut child: Box<dyn Child + Send + Sync>,
+    master: Box<dyn MasterPty + Send>,
+) {
+    use std::sync::atomic::Ordering;
+    let tag = crate::applog::session_tag(name);
+    REAPING.fetch_add(1, Ordering::AcqRel);
+    let spawned = std::thread::Builder::new()
+        .name("deck-pty-reap".into())
+        .spawn(move || {
+            let started = std::time::Instant::now();
+            let _ = child.kill();
+            let mut noticed = false;
+            let mut master = Some(master);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    // a session leader exits only once its tty's output
+                    // drained, and nothing reads this master any more:
+                    // closing it releases that wait
+                    Ok(None) if started.elapsed() >= MASTER_GRACE && master.is_some() => {
+                        drop(master.take());
+                    }
+                    Ok(None) if started.elapsed() >= REAP_NOTICE && !noticed => {
+                        noticed = true;
+                        applog(&format!(
+                            "[pty] client not reaped {tag} gen={generation} after {}ms (reapers={})",
+                            started.elapsed().as_millis(),
+                            REAPING.load(Ordering::Acquire)
+                        ));
+                        let _ = child.wait();
+                        break;
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
+            drop(master);
+            REAPING.fetch_sub(1, Ordering::AcqRel);
+            if noticed {
+                applog(&format!(
+                    "[pty] client reaped {tag} gen={generation} after {}ms",
+                    started.elapsed().as_millis()
+                ));
+            }
+        });
+    if spawned.is_err() {
+        REAPING.fetch_sub(1, Ordering::AcqRel);
+        applog("[pty] reaper thread unavailable; client left to its own exit");
     }
 }
 
@@ -406,29 +507,211 @@ fn set_nonblocking(fd: std::os::fd::RawFd) -> Result<(), DeckError> {
     Ok(())
 }
 
+/// The attachments, and the one attach still in flight per session, under
+/// ONE lock: whether a finished attach is still wanted, and every change
+/// that makes it unwanted (a newer attach, a detach, `detach_all`), are
+/// decided under the same lock. Derefs to the attachments.
+#[derive(Default)]
+pub(crate) struct Table {
+    entries: HashMap<String, PtyEntry>,
+    pending: HashMap<String, Arc<Attempt>>,
+}
+
+impl std::ops::Deref for Table {
+    type Target = HashMap<String, PtyEntry>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl std::ops::DerefMut for Table {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entries
+    }
+}
+
+/// Where one attach request is in its life. Every transition happens under
+/// the table lock; a request leaves `InFlight` exactly once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Phase {
+    /// its worker is still opening the pty / starting the client
+    InFlight,
+    /// its attachment is the one in the table under its generation
+    Delivered,
+    /// its caller stopped waiting (`terminal-timeout`): retired when it ends
+    Abandoned,
+    /// a newer attach, a detach or `detach_all` replaced it: retired
+    Superseded,
+}
+
+/// One attach request: its generation is assigned when it begins, so a
+/// request that never delivers burns a number and nothing else.
+pub(crate) struct Attempt {
+    generation: u64,
+    phase: Mutex<Phase>,
+}
+
+impl Attempt {
+    pub(crate) fn phase(&self) -> Phase {
+        *self.phase.lock_or_recover()
+    }
+}
+
+/// Past this many attach workers started and not yet returned (answered or
+/// not: one held by a stalled process creation keeps counting), a new
+/// attach is refused `terminal-busy` (`PtyState::workers`).
+pub(crate) const MAX_ATTACH_WORKERS: usize = 4;
+/// The caller's budget (limits.json `terminal_waits.attach_budget_ms`).
+/// app.log 2026-11-27: attach → first read p50 6 ms, p99 32 ms, max 212 ms
+/// over 321 attaches; 5 s is two orders of magnitude above the tail and
+/// still short enough that the pane says something before a person gives up.
+pub(crate) const ATTACH_BUDGET: Duration = Duration::from_secs(5);
+/// A delivered attachment with no first read after this long is logged
+/// once (`no first read`; limits.json `terminal_waits.first_frame_wait_ms`,
+/// the pane's own "no picture yet" notice).
+pub(crate) const FIRST_READ_WAIT: Duration = Duration::from_secs(3);
+pub(crate) const ATTACH_SUPERSEDED: &str = "attach-superseded";
+
 #[derive(Default)]
 pub(crate) struct PtyState {
-    map: Mutex<HashMap<String, PtyEntry>>,
+    map: Mutex<Table>,
     counter: Mutex<u64>,
+    /// attach workers started and not yet returned
+    workers: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PtyState {
-    /// Detach every GUI tmux client before an intentional server restart.
-    /// The tmux sessions still belong to the server until the lifecycle
-    /// transaction kills it; this only prevents stale PTY-exit events and
-    /// releases all ACK waiters.
     /// The sessions a pane shows right now: each visible pane holds one
     /// attach here, and nothing else does (the Board's query client is not
-    /// in this map).
+    /// in this map). An attach still in flight is NOT counted: its pane
+    /// shows no terminal yet, so a bell then is not one a person saw, and
+    /// marking it seen would drop a notice nobody read (`bell.rs`). The
+    /// frontend's `hasPane`, which guards every automatic close, counts the
+    /// pane from its creation, whatever its attach is doing.
     pub(crate) fn attached(&self) -> std::collections::HashSet<String> {
         self.map.lock_or_recover().keys().cloned().collect()
     }
 
+    /// Detach every GUI tmux client before an intentional server restart.
+    /// The tmux sessions still belong to the server until the lifecycle
+    /// transaction kills it; this only prevents stale PTY-exit events and
+    /// releases all ACK waiters. Every attach still in flight is superseded:
+    /// whatever it starts later is retired, never inserted.
     pub(crate) fn detach_all(&self) {
-        let entries: Vec<PtyEntry> = self.map.lock_or_recover().drain().map(|(_, e)| e).collect();
+        let entries: Vec<PtyEntry> = {
+            let mut map = self.map.lock_or_recover();
+            for (name, attempt) in map.pending.drain() {
+                supersede(&name, &attempt);
+            }
+            map.entries.drain().map(|(_, e)| e).collect()
+        };
         for entry in entries {
             entry.retire();
         }
+    }
+
+    /// Begin one attach of `name`: refuse past the worker bound, supersede
+    /// the session's attach still in flight, retire its current attachment
+    /// (exactly what a re-attach always did), and record this one as the
+    /// one wanted.
+    pub(crate) fn begin_attach(&self, name: &str) -> Result<Arc<Attempt>, DeckError> {
+        use std::sync::atomic::Ordering;
+        let running = self.workers.load(Ordering::Acquire);
+        if running >= MAX_ATTACH_WORKERS {
+            applog(&format!(
+                "[pty] attach {} refused: {running} attach workers still running",
+                crate::applog::session_tag(name)
+            ));
+            return Err(DeckError::new(
+                ErrorKind::Tmux,
+                crate::session_runtime::TERMINAL_BUSY,
+            ));
+        }
+        let generation = {
+            let mut c = self.counter.lock_or_recover();
+            *c += 1;
+            *c
+        };
+        let attempt = Arc::new(Attempt {
+            generation,
+            phase: Mutex::new(Phase::InFlight),
+        });
+        let previous = {
+            let mut map = self.map.lock_or_recover();
+            if let Some(old) = map.pending.insert(name.to_string(), attempt.clone()) {
+                supersede(name, &old);
+            }
+            map.entries.remove(name)
+        };
+        // replacing an attachment closes its gate, which releases an emitter
+        // waiting on ACKs that will never come
+        if let Some(old) = previous {
+            old.retire();
+        }
+        Ok(attempt)
+    }
+
+    /// The worker's attachment is ready: insert it if this attempt is still
+    /// the one wanted, else hand it back to be retired. Never emits.
+    fn deliver(&self, name: &str, attempt: &Arc<Attempt>, entry: PtyEntry) -> Result<(), PtyEntry> {
+        let mut map = self.map.lock_or_recover();
+        let wanted = map
+            .pending
+            .get(name)
+            .is_some_and(|current| Arc::ptr_eq(current, attempt));
+        let mut phase = attempt.phase.lock_or_recover();
+        if !wanted || *phase != Phase::InFlight {
+            return Err(entry);
+        }
+        map.pending.remove(name);
+        *phase = Phase::Delivered;
+        map.entries.insert(name.to_string(), entry);
+        Ok(())
+    }
+
+    /// The caller's budget ran out: abandon the attempt unless it was
+    /// delivered (or replaced) first. Returns the phase it ends in.
+    pub(crate) fn abandon(&self, name: &str, attempt: &Arc<Attempt>) -> Phase {
+        let mut map = self.map.lock_or_recover();
+        let mut phase = attempt.phase.lock_or_recover();
+        if *phase == Phase::InFlight {
+            *phase = Phase::Abandoned;
+            if map
+                .pending
+                .get(name)
+                .is_some_and(|current| Arc::ptr_eq(current, attempt))
+            {
+                map.pending.remove(name);
+            }
+        }
+        *phase
+    }
+}
+
+/// Smoke evidence only (`smoke_faults::smoke_attach_state`): whether
+/// `name` has a current attachment and an attach in flight, how many attach
+/// workers have not returned, and how many reapers have not reaped.
+pub(crate) fn smoke_counts(state: &PtyState, name: &str) -> (bool, bool, usize, usize) {
+    use std::sync::atomic::Ordering;
+    let map = state.map.lock_or_recover();
+    (
+        map.entries.contains_key(name),
+        map.pending.contains_key(name),
+        state.workers.load(Ordering::Acquire),
+        REAPING.load(Ordering::Acquire),
+    )
+}
+
+/// Mark a replaced attempt (under the table lock) and say so once.
+fn supersede(name: &str, attempt: &Arc<Attempt>) {
+    let mut phase = attempt.phase.lock_or_recover();
+    if *phase == Phase::InFlight {
+        *phase = Phase::Superseded;
+        applog(&format!(
+            "[pty] attach {} gen={} superseded",
+            crate::applog::session_tag(name),
+            attempt.generation
+        ));
     }
 }
 
@@ -448,25 +731,94 @@ pub(crate) struct PtyExit {
 
 /// Attach = subscribe to the session's byte stream. The tmux session keeps
 /// running whether or not anyone is attached; detach just closes the stream.
+/// Off the IPC thread (module header, "Attach lifecycle"): the caller is
+/// answered within `ATTACH_BUDGET` whatever process creation does.
 #[tauri::command]
-pub(crate) fn attach_session(
+pub(crate) async fn attach_session(
     app: AppHandle,
-    state: State<'_, PtyState>,
     name: String,
     cols: u16,
     rows: u16,
 ) -> Result<u64, DeckError> {
-    let _activity = crate::session_runtime::activity_guard()?;
     crate::tmux::validate_session_name(&name)?;
-    // replace any previous attachment for this session; closing its gate
-    // releases an emitter that may be waiting on ACKs that will never come
-    let previous = state.map.lock_or_recover().remove(&name);
-    if let Some(old) = previous {
-        old.retire();
-    }
+    let state = app.state::<PtyState>();
+    attach_within(&state, &name, ATTACH_BUDGET, {
+        let app = app.clone();
+        let name = name.clone();
+        move |attempt| attach_now(&app, &name, cols, rows, &attempt)
+    })
+    .await
+}
 
-    let pty = native_pty_system();
-    let pair = pty
+/// The attach lifecycle around `work` (the blocking part, run on a pool
+/// thread): begin, wait at most `budget`, then decide under the table lock.
+/// Split from the command so tests drive it with a work they control.
+pub(crate) async fn attach_within(
+    state: &PtyState,
+    name: &str,
+    budget: Duration,
+    work: impl FnOnce(Arc<Attempt>) -> Result<u64, DeckError> + Send + 'static,
+) -> Result<u64, DeckError> {
+    use std::sync::atomic::Ordering;
+    let attempt = state.begin_attach(name)?;
+    let started = std::time::Instant::now();
+    let workers = state.workers.clone();
+    workers.fetch_add(1, Ordering::AcqRel);
+    let mut task = tauri::async_runtime::spawn_blocking({
+        let attempt = attempt.clone();
+        let workers = workers.clone();
+        move || {
+            // counted down however the work ends, a panic included
+            let _counted = crate::sync::CountDown(&workers);
+            work(attempt)
+        }
+    });
+    let tag = crate::applog::session_tag(name);
+    match tokio::time::timeout(budget, &mut task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(DeckError::new(ErrorKind::Tmux, "terminal-worker-failed")),
+        Err(_) => match state.abandon(name, &attempt) {
+            // delivered in the race with the budget: the caller is told the
+            // truth, and the generation it is told is the inserted one
+            Phase::Delivered => Ok(attempt.generation),
+            Phase::Superseded => Err(DeckError::new(ErrorKind::ContextChanged, ATTACH_SUPERSEDED)),
+            Phase::Abandoned | Phase::InFlight => {
+                applog(&format!(
+                    "[pty] attach {tag} gen={} still spawning after {}ms (attach workers={})",
+                    attempt.generation,
+                    started.elapsed().as_millis(),
+                    workers.load(Ordering::Acquire)
+                ));
+                Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    crate::session_runtime::TERMINAL_TIMEOUT,
+                ))
+            }
+        },
+    }
+}
+
+/// The blocking part of one attach, on its worker: open a pty, start this
+/// attachment's own tmux client (`pane_client.rs`), and offer the result to
+/// the table. A result nobody wants any more (abandoned, superseded) is
+/// retired here — its client killed and reaped, its master closed — and is
+/// never inserted and never emits. The activity guard is held for the
+/// whole worker: an attach never races a server replacement, and while a
+/// worker is held by a stalled process creation, a restart is refused as
+/// busy, exactly as it is during a delivery (module header).
+fn attach_now(
+    app: &AppHandle,
+    name: &str,
+    cols: u16,
+    rows: u16,
+    attempt: &Arc<Attempt>,
+) -> Result<u64, DeckError> {
+    let _activity = crate::session_runtime::activity_guard()?;
+    crate::smoke_faults::stall_point(crate::smoke_faults::ATTACH_SPAWN);
+    let state = app.state::<PtyState>();
+    let generation = attempt.generation;
+    let tag = crate::applog::session_tag(name);
+    let pair = native_pty_system()
         .openpty(PtySize {
             rows,
             cols,
@@ -474,101 +826,132 @@ pub(crate) fn attach_session(
             pixel_height: 0,
         })
         .map_err(|e| DeckError::classified(e.to_string()))?;
-
+    let master_fd = pair
+        .master
+        .as_raw_fd()
+        .ok_or_else(|| DeckError::new(ErrorKind::Other, "pty unavailable"))?;
+    let tty = crate::pane_client::slave_path(master_fd)?;
     let conf = tmux_conf();
-    let mut cmd = CommandBuilder::new(tmux_program()?);
-    cmd.args([
+    let program = tmux_program()?;
+    let target = session_target(name);
+    let mut args = vec![
         crate::tmux_clients::UTF8_CLIENT,
         "-f",
         &conf,
         "-L",
         socket(),
-    ]);
-    cmd.args(crate::tmux_clients::pane_client_args(&session_target(
-        &name,
-    )));
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("LANG", "en_US.UTF-8");
-    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+    ];
+    args.extend(crate::tmux_clients::pane_client_args(&target));
+    let child = crate::pane_client::spawn(
+        std::path::Path::new(program),
+        &args,
+        &[("TERM", "xterm-256color"), ("LANG", "en_US.UTF-8")],
+        &tty,
+    )
+    .inspect_err(|error| {
         // the raw error (may embed the tmux path) goes to the caller only
-        let error = DeckError::classified(e.to_string());
         applog(&format!(
-            "[pty] attach spawn failed for {} ({})",
-            crate::applog::session_tag(&name),
+            "[pty] attach spawn failed for {tag} ({})",
             error.code()
         ));
-        error
     })?;
+    // the client holds the slave now; ours is not needed
     drop(pair.slave);
+    let child: Box<dyn Child + Send + Sync> = Box::new(child);
     let attached_at = std::time::Instant::now();
-    let generation = {
-        let mut c = state.counter.lock_or_recover();
-        *c += 1;
-        *c
-    };
-    let tag = crate::applog::session_tag(&name);
-    // the tmux client was started; that is all this line says
-    applog(&format!(
-        "[pty] attached {tag} gen={generation} ({cols}x{rows}) client started"
-    ));
 
-    let fd = pair.master.as_raw_fd();
     let started = (|| {
-        let fd = fd.ok_or_else(|| DeckError::new(ErrorKind::Other, "pty unavailable"))?;
-        set_nonblocking(fd)?;
+        set_nonblocking(master_fd)?;
         // the reader and the pump each poll their OWN descriptor: the
         // master's own number is closed by the reaper and may be reused
-        let reader = master_dup(fd)?;
-        let read_fd = reader.as_raw_fd();
-        let writer = master_input(fd)?;
+        let reader = master_dup(master_fd)?;
+        let writer = master_input(master_fd)?;
         let write_fd = writer.as_raw_fd();
         Ok::<_, DeckError>((
-            read_fd,
             reader,
-            PtyInput::start(&name, generation, Box::new(writer), Some(write_fd))?,
+            PtyInput::start(name, generation, Box::new(writer), Some(write_fd))?,
         ))
     })();
-    let (fd, mut reader, input) = match started {
+    let (reader, input) = match started {
         Ok(parts) => parts,
         Err(error) => {
-            let mut child = child;
-            let master = pair.master;
-            let _ = std::thread::Builder::new()
-                .name("deck-pty-reap".into())
-                .spawn(move || {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    drop(master);
-                });
+            reap(name, generation, child, pair.master);
             return Err(error);
         }
     };
-    let gate = AckGate::new(name.clone());
-    state.map.lock_or_recover().insert(
-        name.clone(),
-        PtyEntry {
-            input,
-            master: pair.master,
-            child,
-            generation,
-            gate: gate.clone(),
-        },
-    );
+    let gate = AckGate::new(name.to_string());
+    let entry = PtyEntry {
+        input,
+        master: pair.master,
+        child,
+        generation,
+        gate: gate.clone(),
+    };
+    offer(&state, name, attempt, entry)?;
+    // the tmux client is running (the spawn returned after its exec);
+    // that is all this line says
+    applog(&format!(
+        "[pty] attached {tag} gen={generation} ({cols}x{rows}) client started"
+    ));
+    stream(app, name, generation, reader, gate, attached_at);
+    Ok(generation)
+}
 
-    // Pipeline: reader → bounded sync channel → coalescing, ACK-gated
-    // emitter (see module docs). The channel caps reader→emitter in-flight
-    // data at PTY_CHANNEL_CHUNKS × 8KB; the emitter drains whatever
-    // accumulated into ONE pty-data event (up to EMIT_COALESCE_MAX) so a
-    // fast producer yields few large events, and never runs more than
-    // MAX_INFLIGHT_BATCHES ahead of the webview's ACKs.
+/// Offer a finished attach to the table: inserted if still wanted, else
+/// retired here (its client killed and reaped, its master closed) and
+/// answered as what replaced it. Never emits.
+fn offer(
+    state: &PtyState,
+    name: &str,
+    attempt: &Arc<Attempt>,
+    entry: PtyEntry,
+) -> Result<(), DeckError> {
+    let Err(unwanted) = state.deliver(name, attempt, entry) else {
+        return Ok(());
+    };
+    let phase = attempt.phase();
+    applog(&format!(
+        "[pty] late attach {} gen={} retired ({})",
+        crate::applog::session_tag(name),
+        attempt.generation,
+        match phase {
+            Phase::Abandoned => "abandoned",
+            _ => "superseded",
+        }
+    ));
+    unwanted.retire();
+    Err(match phase {
+        Phase::Abandoned => {
+            DeckError::new(ErrorKind::Tmux, crate::session_runtime::TERMINAL_TIMEOUT)
+        }
+        _ => DeckError::new(ErrorKind::ContextChanged, ATTACH_SUPERSEDED),
+    })
+}
+
+/// Pipeline of one DELIVERED attachment: reader → bounded sync channel →
+/// coalescing, ACK-gated emitter (see module docs). The channel caps
+/// reader→emitter in-flight data at PTY_CHANNEL_CHUNKS × 8KB; the emitter
+/// drains whatever accumulated into ONE pty-data event (up to
+/// EMIT_COALESCE_MAX) so a fast producer yields few large events, and never
+/// runs more than MAX_INFLIGHT_BATCHES ahead of the webview's ACKs. Started
+/// only after `deliver`: nothing of an attach nobody wanted ever emits.
+fn stream(
+    app: &AppHandle,
+    name: &str,
+    generation: u64,
+    mut reader: std::fs::File,
+    gate: Arc<AckGate>,
+    attached_at: std::time::Instant,
+) {
     const PTY_CHANNEL_CHUNKS: usize = 64; // × 8KB = 512KB bound
     const EMIT_COALESCE_MAX: usize = 256 * 1024;
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_CHANNEL_CHUNKS);
-
-    let read_tag = tag.clone();
+    let fd = reader.as_raw_fd();
+    let read_tag = crate::applog::session_tag(name);
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         let mut first = true;
+        let mut quiet_noted = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -584,7 +967,16 @@ pub(crate) fn attach_session(
                         break; // emitter gone
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => wait_readable(fd),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if first && !quiet_noted && attached_at.elapsed() >= FIRST_READ_WAIT {
+                        quiet_noted = true;
+                        applog(&format!(
+                            "[pty] no first read from {read_tag} gen={generation} within {}ms",
+                            FIRST_READ_WAIT.as_millis()
+                        ));
+                    }
+                    wait_readable(fd)
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => break,
             }
@@ -593,7 +985,7 @@ pub(crate) fn attach_session(
     });
 
     let thread_app = app.clone();
-    let thread_name = name.clone();
+    let thread_name = name.to_string();
     std::thread::spawn(move || {
         let mut emits: u64 = 0;
         pump_gated(
@@ -650,8 +1042,6 @@ pub(crate) fn attach_session(
             );
         }
     });
-
-    Ok(generation)
 }
 
 /// Drain the channel into as-large-as-available batches: blocking recv for
@@ -1342,6 +1732,262 @@ mod tests {
         assert!(gate_b.state().2 && gate_c.state().2);
         assert!(state.map.lock_or_recover().is_empty());
     }
+    /// One attachment-shaped entry for `offer`: its input lands in `sink`
+    /// and `killed` says whether its client was killed.
+    /// An attachment-shaped entry, its input sink, its client's killed
+    /// flag, and the slave it keeps alive.
+    type FakeEntry = (
+        PtyEntry,
+        Arc<std::sync::Mutex<Vec<u8>>>,
+        Arc<std::sync::atomic::AtomicBool>,
+        Box<dyn portable_pty::SlavePty + Send>,
+    );
+
+    fn fake_entry(name: &str, generation: u64) -> FakeEntry {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize::default())
+            .expect("pty pair");
+        let sink = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entry = PtyEntry {
+            input: super::PtyInput::start(
+                name,
+                generation,
+                Box::new(SharedSink(sink.clone())),
+                None,
+            )
+            .expect("input pump"),
+            master: pair.master,
+            child: Box::new(RecordingChild(killed.clone())),
+            generation,
+            gate: AckGate::new(name.into()),
+        };
+        (entry, sink, killed, pair.slave)
+    }
+
+    fn block_on<T>(f: impl std::future::Future<Output = T>) -> T {
+        tauri::async_runtime::block_on(f)
+    }
+
+    /// An attach whose worker outlives the budget: the caller is answered
+    /// `terminal-timeout` in time; what the worker finishes later is retired
+    /// — never inserted, its own client killed — and the session's current
+    /// attachment and generation are unchanged.
+    #[test]
+    fn a_late_attach_is_retired_and_never_becomes_current() {
+        let state = Arc::new(PtyState::default());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let worker_state = state.clone();
+        let begin = Instant::now();
+        let answer = block_on(super::attach_within(
+            &state,
+            "deck-pty-late",
+            Duration::from_millis(100),
+            move |attempt| {
+                let _ = held.recv(); // the stalled spawn
+                let (entry, _sink, killed, _slave) =
+                    fake_entry("deck-pty-late", attempt.generation);
+                let offered = super::offer(&worker_state, "deck-pty-late", &attempt, entry);
+                done_tx
+                    .send((offered.map_err(|e| e.message().to_string()), killed))
+                    .unwrap();
+                Err(DeckError::new(ErrorKind::Other, "unused"))
+            },
+        ));
+        assert_eq!(
+            answer.unwrap_err().message(),
+            crate::session_runtime::TERMINAL_TIMEOUT
+        );
+        assert!(begin.elapsed() < Duration::from_secs(1));
+        release.send(()).unwrap();
+        let (offered, killed) = done
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker ended");
+        assert_eq!(
+            offered.unwrap_err(),
+            crate::session_runtime::TERMINAL_TIMEOUT
+        );
+        assert!(
+            eventually(|| killed.load(Ordering::SeqCst)),
+            "its client was killed"
+        );
+        assert!(state.attached().is_empty(), "nothing was inserted");
+        assert!(state.map.lock_or_recover().pending.is_empty());
+        assert!(eventually(|| state.workers.load(Ordering::SeqCst) == 0));
+    }
+
+    /// A newer attach of the same session, a detach, and `detach_all` each
+    /// supersede the attach still in flight; whatever it finishes later is
+    /// retired, and a newer attach that delivers is the one current.
+    #[test]
+    fn newer_attach_detach_and_detach_all_supersede_an_attach_in_flight() {
+        let state = PtyState::default();
+        // a newer attach of the same session
+        let old = state.begin_attach("deck-pty-sup").unwrap();
+        let new = state.begin_attach("deck-pty-sup").unwrap();
+        assert_eq!(old.phase(), super::Phase::Superseded);
+        let (entry, _s, old_killed, _a) = fake_entry("deck-pty-sup", old.generation);
+        assert_eq!(
+            super::offer(&state, "deck-pty-sup", &old, entry)
+                .unwrap_err()
+                .message(),
+            super::ATTACH_SUPERSEDED
+        );
+        assert!(eventually(|| old_killed.load(Ordering::SeqCst)));
+        let (entry, _s, _k, _b) = fake_entry("deck-pty-sup", new.generation);
+        super::offer(&state, "deck-pty-sup", &new, entry).expect("the newest is wanted");
+        assert_eq!(new.phase(), super::Phase::Delivered);
+        assert_eq!(
+            state.map.lock_or_recover()["deck-pty-sup"].generation,
+            new.generation
+        );
+        assert!(new.generation > old.generation);
+
+        // a detach supersedes the one in flight
+        let pending = state.begin_attach("deck-pty-det").unwrap();
+        state.detach("deck-pty-det");
+        assert_eq!(pending.phase(), super::Phase::Superseded);
+        let (entry, _s, killed, _c) = fake_entry("deck-pty-det", pending.generation);
+        assert!(super::offer(&state, "deck-pty-det", &pending, entry).is_err());
+        assert!(eventually(|| killed.load(Ordering::SeqCst)));
+        assert!(!state.attached().contains("deck-pty-det"));
+
+        // detach_all supersedes every one in flight and drains the table
+        let a = state.begin_attach("deck-pty-all-a").unwrap();
+        let b = state.begin_attach("deck-pty-all-b").unwrap();
+        state.detach_all();
+        assert_eq!(a.phase(), super::Phase::Superseded);
+        assert_eq!(b.phase(), super::Phase::Superseded);
+        assert!(
+            state.attached().is_empty(),
+            "the delivered one was drained too"
+        );
+        let (entry, _s, _k, _d) = fake_entry("deck-pty-all-a", a.generation);
+        assert!(super::offer(&state, "deck-pty-all-a", &a, entry).is_err());
+        assert!(state.attached().is_empty());
+    }
+
+    /// The race between delivery and the budget: a worker that delivered
+    /// before the caller decided makes the caller succeed, with exactly the
+    /// generation that was inserted.
+    #[test]
+    fn a_delivery_that_beats_the_timeout_decision_is_a_success() {
+        let state = Arc::new(PtyState::default());
+        let worker_state = state.clone();
+        let answer = block_on(super::attach_within(
+            &state,
+            "deck-pty-race",
+            Duration::from_millis(100),
+            move |attempt| {
+                let (entry, _sink, _killed, slave) =
+                    fake_entry("deck-pty-race", attempt.generation);
+                super::offer(&worker_state, "deck-pty-race", &attempt, entry).unwrap();
+                // delivered; the worker's own answer comes after the budget
+                std::thread::sleep(Duration::from_millis(300));
+                drop(slave);
+                Ok(attempt.generation)
+            },
+        ));
+        let generation = answer.expect("delivered before the decision");
+        assert_eq!(
+            state.map.lock_or_recover()["deck-pty-race"].generation,
+            generation,
+            "the caller was told the inserted attachment"
+        );
+        state.detach("deck-pty-race");
+    }
+
+    /// Attach workers are bounded: while `MAX_ATTACH_WORKERS` are held by a
+    /// stalled spawn, the next attach is refused `terminal-busy` at once.
+    #[test]
+    fn stuck_attach_workers_are_bounded() {
+        let state = Arc::new(PtyState::default());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let held = Arc::new(std::sync::Mutex::new(held));
+        for i in 0..super::MAX_ATTACH_WORKERS {
+            let held = held.clone();
+            let answer = block_on(super::attach_within(
+                &state,
+                &format!("deck-pty-cap-{i}"),
+                Duration::from_millis(30),
+                move |_| {
+                    let _ = held.lock_or_recover().recv();
+                    Err(DeckError::new(ErrorKind::Other, "unused"))
+                },
+            ));
+            assert_eq!(
+                answer.unwrap_err().message(),
+                crate::session_runtime::TERMINAL_TIMEOUT
+            );
+        }
+        let begin = Instant::now();
+        let refused = block_on(super::attach_within(
+            &state,
+            "deck-pty-cap-next",
+            Duration::from_secs(5),
+            |_| Ok(0),
+        ));
+        assert_eq!(
+            refused.unwrap_err().message(),
+            crate::session_runtime::TERMINAL_BUSY
+        );
+        assert!(begin.elapsed() < Duration::from_millis(100));
+        for _ in 0..super::MAX_ATTACH_WORKERS {
+            release.send(()).unwrap();
+        }
+        assert!(eventually(|| state.workers.load(Ordering::SeqCst) == 0));
+        assert!(block_on(super::attach_within(
+            &state,
+            "deck-pty-cap-next",
+            Duration::from_secs(1),
+            |_| { Err(DeckError::new(ErrorKind::Other, "ran")) }
+        ))
+        .is_err_and(|e| e.message() == "ran"));
+    }
+
+    /// Input bound to an attach that timed out names a generation that was
+    /// never inserted: it is refused, and the successor that did deliver
+    /// receives only what was bound to it.
+    #[test]
+    fn input_bound_to_a_timed_out_attach_never_reaches_its_successor() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(PtyState::default());
+        let state = || app.state::<PtyState>();
+        let timed_out = state().begin_attach("deck-pty-bound").unwrap();
+        assert_eq!(
+            state().abandon("deck-pty-bound", &timed_out),
+            super::Phase::Abandoned
+        );
+        let next = state().begin_attach("deck-pty-bound").unwrap();
+        let (entry, sink, _killed, _slave) = fake_entry("deck-pty-bound", next.generation);
+        super::offer(&state(), "deck-pty-bound", &next, entry).unwrap();
+        let refused = pty_write(
+            state(),
+            "deck-pty-bound".into(),
+            Some(timed_out.generation),
+            B64.encode("typed while connecting\n"),
+        )
+        .unwrap_err();
+        assert_eq!(refused.message(), STALE_ATTACHMENT);
+        pty_write(
+            state(),
+            "deck-pty-bound".into(),
+            Some(next.generation),
+            B64.encode("ok\n"),
+        )
+        .expect("bound to the successor");
+        assert!(eventually(|| *sink.lock_or_recover() == b"ok\n"));
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            *sink.lock_or_recover(),
+            b"ok\n",
+            "nothing of the timed-out one arrived"
+        );
+        state().detach("deck-pty-bound");
+    }
+
     /// A pane client whose reaping waits for the test: the reaper keeps the
     /// master open meanwhile (closing the last master flushes the tty's
     /// input queue, which would hide what was typed into it).
@@ -1696,8 +2342,17 @@ impl PtyState {
         }
     }
 
+    /// Fast and waits for nothing: the attachment leaves the table, the
+    /// session's attach still in flight is superseded (whatever it starts
+    /// later is retired), and the reaper does the rest.
     fn detach(&self, name: &str) {
-        let entry = self.map.lock_or_recover().remove(name);
+        let entry = {
+            let mut map = self.map.lock_or_recover();
+            if let Some(attempt) = map.pending.remove(name) {
+                supersede(name, &attempt);
+            }
+            map.entries.remove(name)
+        };
         if let Some(entry) = entry {
             entry.retire();
         }

@@ -154,6 +154,18 @@ fn publish_delivery_waits(waits: &HashMap<String, DeliveryWait>) {
     );
 }
 
+/// The tick's pane listing under a deadline: a tmux server that does not
+/// answer cuts it (its client killed and reaped) and the tick selects
+/// nothing, instead of holding the tick thread — and with it the bell
+/// fallback — for as long as tmux does not answer (2026-11-27). A stalled
+/// process creation is not cut by this (the spawn itself is not
+/// interruptible); it holds only this thread.
+fn bounded_listing() -> Option<Vec<crate::tmux::PaneRow>> {
+    let _bounded =
+        crate::session_runtime::Deadline::until(std::time::Instant::now() + Duration::from_secs(5));
+    crate::tmux_lifecycle::scheduler_pane_listing().ok()
+}
+
 pub(crate) fn spawn_scheduler(app: AppHandle) {
     // the delivery waits the last tick published (`review::delivery_waits`)
     let mut waits: HashMap<String, DeliveryWait> = HashMap::new();
@@ -186,9 +198,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
         // snapshot per tick; a failed listing sends nothing this tick
         // a failed listing selects nothing; a POSITIVELY empty or absent
         // Deck server is an empty listing (`scheduler_pane_listing`)
-        let mut listing = crate::tmux_lifecycle::scheduler_pane_listing()
-            .ok()
-            .map(observe);
+        let mut listing = bounded_listing().map(observe);
         // expired rules die quietly, transactionally like every other change
         let now = now_epoch();
         if state
@@ -403,11 +413,7 @@ pub(crate) fn spawn_scheduler(app: AppHandle) {
                     },
                     &StabilizationOps {
                         sleep: &std::thread::sleep,
-                        observe: &|| {
-                            crate::tmux_lifecycle::scheduler_pane_listing()
-                                .ok()
-                                .map(observe)
-                        },
+                        observe: &|| bounded_listing().map(observe),
                     },
                 );
                 release_session(&state.busy, &session);

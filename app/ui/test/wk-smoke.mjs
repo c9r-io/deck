@@ -3569,6 +3569,13 @@ export async function verifyWorkersCapacity() {
 
 // Each place a refused credential or a failed check says why, in the real
 // webview, kept as evidence/uxf-*.png (ux-failures-smoke.mjs).
+// Stalled process creation, start, kill, clipboard and tmux server
+// (2026-11-27 freeze; ipc-stall-smoke.mjs).
+export async function verifyIpcStall() {
+  const { runIpcStallSmoke } = await import('./ipc-stall-smoke.mjs');
+  await runIpcStallSmoke();
+}
+
 export async function verifyUxFailures() {
   const { runUxFailuresSmoke } = await import('./ux-failures-smoke.mjs');
   await runUxFailuresSmoke();

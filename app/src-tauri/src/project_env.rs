@@ -280,7 +280,18 @@ pub(crate) struct EnvEntry {
 /// The names of a project's variables, in order. Reads the item's data (the
 /// first read in a process may raise macOS's access prompt).
 #[tauri::command]
-pub(crate) fn project_env_names(project_id: String) -> Result<Vec<String>, DeckError> {
+pub(crate) async fn project_env_names(project_id: String) -> Result<Vec<String>, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "project_env_names",
+        std::time::Duration::from_secs(10),
+        move || project_env_names_now(project_id),
+    )
+    .await
+}
+
+/// `project_env_names` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn project_env_names_now(project_id: String) -> Result<Vec<String>, DeckError> {
     Ok(for_project(&project_id)?
         .into_iter()
         .map(|(name, _)| name)
@@ -289,7 +300,21 @@ pub(crate) fn project_env_names(project_id: String) -> Result<Vec<String>, DeckE
 
 /// Replace a project's list (module header). Returns the stored names.
 #[tauri::command]
-pub(crate) fn project_env_set(
+pub(crate) async fn project_env_set(
+    project_id: String,
+    entries: Vec<EnvEntry>,
+) -> Result<Vec<String>, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "project_env_set",
+        std::time::Duration::from_secs(10),
+        move || project_env_set_now(project_id, entries),
+    )
+    .await
+}
+
+/// `project_env_set` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn project_env_set_now(
     project_id: String,
     entries: Vec<EnvEntry>,
 ) -> Result<Vec<String>, DeckError> {
@@ -330,7 +355,18 @@ fn merge(entries: Vec<EnvEntry>, stored: &HashMap<String, String>) -> Result<Var
 
 /// Delete a project's item (the project was removed). Absent is success.
 #[tauri::command]
-pub(crate) fn project_env_clear(project_id: String) -> Result<(), DeckError> {
+pub(crate) async fn project_env_clear(project_id: String) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "project_env_clear",
+        std::time::Duration::from_secs(10),
+        move || project_env_clear_now(project_id),
+    )
+    .await
+}
+
+/// `project_env_clear` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn project_env_clear_now(project_id: String) -> Result<(), DeckError> {
     let _write = WRITE.lock_or_recover();
     crate::keychain::env_delete(&project_id)
 }
@@ -395,9 +431,11 @@ mod tests {
         // and clearing it is the way out
         crate::keychain::env_set("Ptest_broken", "not json").unwrap();
         assert_eq!(for_project("Ptest_broken").unwrap_err().message(), INVALID);
-        assert!(project_env_names("Ptest_broken".into()).is_err());
-        project_env_clear("Ptest_broken".into()).unwrap();
-        assert!(project_env_names("Ptest_broken".into()).unwrap().is_empty());
+        assert!(project_env_names_now("Ptest_broken".into()).is_err());
+        project_env_clear_now("Ptest_broken".into()).unwrap();
+        assert!(project_env_names_now("Ptest_broken".into())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -427,14 +465,14 @@ mod tests {
             value: value.map(str::to_string),
         };
         // keeping a value that was never stored is refused
-        assert!(project_env_set(project.into(), vec![entry("A", None)]).is_err());
-        let names = project_env_set(
+        assert!(project_env_set_now(project.into(), vec![entry("A", None)]).is_err());
+        let names = project_env_set_now(
             project.into(),
             vec![entry(" A ", Some("one")), entry("B", Some("two"))],
         )
         .unwrap();
         assert_eq!(names, ["A", "B"]);
-        let names = project_env_set(
+        let names = project_env_set_now(
             project.into(),
             vec![entry("B", None), entry("C", Some("three"))],
         )
@@ -444,16 +482,16 @@ mod tests {
             for_project(project).unwrap(),
             vars(&[("B", "two"), ("C", "three")])
         );
-        assert_eq!(project_env_names(project.into()).unwrap(), ["B", "C"]);
-        assert!(project_env_set(project.into(), vec![entry("TMUX_X", Some("1"))]).is_err());
+        assert_eq!(project_env_names_now(project.into()).unwrap(), ["B", "C"]);
+        assert!(project_env_set_now(project.into(), vec![entry("TMUX_X", Some("1"))]).is_err());
         // a refused write leaves the stored list as it was
-        assert_eq!(project_env_names(project.into()).unwrap(), ["B", "C"]);
-        project_env_set(project.into(), Vec::new()).unwrap();
+        assert_eq!(project_env_names_now(project.into()).unwrap(), ["B", "C"]);
+        project_env_set_now(project.into(), Vec::new()).unwrap();
         assert!(for_project(project).unwrap().is_empty());
-        project_env_set(project.into(), vec![entry("A", Some("1"))]).unwrap();
-        project_env_clear(project.into()).unwrap();
+        project_env_set_now(project.into(), vec![entry("A", Some("1"))]).unwrap();
+        project_env_clear_now(project.into()).unwrap();
         assert!(for_project(project).unwrap().is_empty());
-        project_env_clear(project.into()).unwrap();
+        project_env_clear_now(project.into()).unwrap();
     }
 
     #[test]

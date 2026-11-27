@@ -304,7 +304,11 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str, &str)] = &[
     // injectable argument exists only so an isolated bundled tmux can test
     // the real protocol without touching the deck/deck-dev sockets.
     ("tmux.rs", "connect_with", "program"),
-    ("commands.rs", "tmux_available", "tmux_sidecar"),
+    ("commands.rs", "tmux_runs", "tmux_sidecar"),
+    // a visible pane's tmux client (2026-11-27, replaced portable-pty's
+    // spawn): its only caller is pty.rs attach_now with tmux_program()
+    // (`pty_launches_only_the_reviewed_bundled_tmux`)
+    ("pane_client.rs", "spawn", "program"),
     ("tmux_lifecycle.rs", "helper_version", "tmux_sidecar"),
     ("relaunch.rs", "helper_command", "executable"),
     // Optional Tunnel integration executes only the separately signed helper
@@ -319,7 +323,7 @@ const ALLOWED_EXPRESSIONS: &[(&str, &str, &str)] = &[
 /// compiled into isolated smoke builds only.
 const DEBUG_ONLY_LITERALS: &[(&str, &str)] = &[("smoke_faults.rs", "/usr/bin/pbpaste")];
 
-const EXPECTED_COMMAND_SITES: usize = 23;
+const EXPECTED_COMMAND_SITES: usize = 24;
 
 type UsedLiteral = (String, String);
 type UsedExpression = (String, String, String);
@@ -936,15 +940,42 @@ fn local_sockets_are_a_reviewed_list_and_nothing_binds_a_datagram() {
     }
 }
 
+/// A visible pane's client is the bundled tmux and nothing else: the one
+/// `pane_client::spawn` call is `pty.rs` `attach_now`, whose program is
+/// `tmux_program()` (its `Command::new(program)` is the reviewed site in
+/// `ALLOWED_EXPRESSIONS`), and portable-pty spawns nothing (no
+/// `CommandBuilder`).
 #[test]
 fn pty_launches_only_the_reviewed_bundled_tmux() {
-    let mut sites = Vec::new();
+    let mut builders = Vec::new();
+    let mut calls = Vec::new();
     for (name, src) in production_sources() {
         for site in constructor_sites(&src, "CommandBuilder") {
-            sites.push((name.clone(), site.argument));
+            builders.push((name.clone(), site.argument));
+        }
+        let code = code_only(&src);
+        for (at, _) in code.match_indices("pane_client::spawn(") {
+            calls.push((name.clone(), enclosing_function(&code, at)));
         }
     }
-    assert_eq!(sites, vec![("pty.rs".into(), "tmux_program()?".into())]);
+    assert!(builders.is_empty(), "{builders:?}");
+    assert_eq!(calls, vec![("pty.rs".into(), "attach_now".into())]);
+    let pty = code_only(&std::fs::read_to_string(manifest("src/pty.rs")).unwrap());
+    let body = &pty[pty.find("fn attach_now(").unwrap()..];
+    let body = &body[..body.find("\nfn ").unwrap_or(body.len())];
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        compact.contains("letprogram=tmux_program()?;"),
+        "the program is the sidecar"
+    );
+    assert!(
+        compact.contains("pane_client::spawn(std::path::Path::new(program),&args,"),
+        "the spawned program is that sidecar"
+    );
+    assert!(
+        compact.contains("args.extend(crate::tmux_clients::pane_client_args(&target));"),
+        "with the reviewed pane client argv"
+    );
 }
 
 #[test]

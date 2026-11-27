@@ -271,7 +271,24 @@ pub(crate) fn confirm_review(
 }
 
 #[tauri::command]
-pub(crate) fn queue_review_preview(
+pub(crate) async fn queue_review_preview(
+    app: AppHandle,
+    id: String,
+) -> Result<ReviewPreview, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "queue_review_preview",
+        std::time::Duration::from_secs(5),
+        move || {
+            let state = tauri::Manager::state::<Queues>(&app);
+            queue_review_preview_now(state, id)
+        },
+    )
+    .await
+}
+
+/// `queue_review_preview` itself, on the pool thread its wrapper gives it (the IPC-thread
+/// census, `docs/ipc-thread.md`).
+pub(crate) fn queue_review_preview_now(
     state: State<'_, Queues>,
     id: String,
 ) -> Result<ReviewPreview, DeckError> {
@@ -294,7 +311,24 @@ pub(crate) fn queue_review_preview(
 }
 
 #[tauri::command]
-pub(crate) fn queue_review_confirm(
+pub(crate) async fn queue_review_confirm(
+    app: AppHandle,
+    decision: ReviewDecision,
+) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "queue_review_confirm",
+        std::time::Duration::from_secs(5),
+        move || {
+            let state = tauri::Manager::state::<Queues>(&app);
+            queue_review_confirm_now(state, app.clone(), decision)
+        },
+    )
+    .await
+}
+
+/// `queue_review_confirm` itself, on the pool thread its wrapper gives it (the IPC-thread
+/// census, `docs/ipc-thread.md`).
+pub(crate) fn queue_review_confirm_now(
     state: State<'_, Queues>,
     app: AppHandle,
     decision: ReviewDecision,

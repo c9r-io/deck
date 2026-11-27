@@ -1,0 +1,32 @@
+{
+  "run": "v7dda560d",
+  "label": "reg",
+  "mode": "ux-layers",
+  "head": "a254b81e",
+  "binMtime": "2026-11-27 22:16:12",
+  "verdict": "FAIL (exit 1)",
+  "seconds": 102,
+  "finished": true,
+  "failedChecks": [
+    "smoke-check ux-terminal-click a=-1 b=0",
+    "smoke-check ux-terminal-click-drag a=-1 b=0",
+    "smoke-check ux-terminal-click-link a=-1 b=11",
+    "smoke-check ux-spacing a=-46 b=1",
+    "smoke-check done a=-1 b=0"
+  ],
+  "checksOfInterest": [
+    "smoke-check done a=-1 b=0\n"
+  ],
+  "mainThreadLines": [],
+  "pollIdle": 0,
+  "freezeLines": [
+    "[pty] attached sess-9c624 gen=1 (129x25) client started",
+    "[pty] attached sess-9c624 gen=2 (133x25) client started",
+    "[pty] attached sess-9c624 gen=3 (72x13) client started"
+  ],
+  "leftover": "",
+  "rootTrashed": true,
+  "cleanupExit": 0,
+  "machineUnchanged": true,
+  "host": "air2 (macOS 27.2.1)"
+}

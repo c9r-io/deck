@@ -1,0 +1,29 @@
+{
+  "run": "v71f04487",
+  "label": "final",
+  "mode": "ux-layers",
+  "head": "a254b81e",
+  "binMtime": "2026-11-27 22:50:08",
+  "verdict": "FAIL (exit 1)",
+  "seconds": 78,
+  "finished": true,
+  "failedChecks": [
+    "smoke-check ux-spacing a=-46 b=1",
+    "smoke-check done a=-1 b=0"
+  ],
+  "checksOfInterest": [
+    "smoke-check done a=-1 b=0\n"
+  ],
+  "mainThreadLines": [],
+  "pollIdle": 0,
+  "freezeLines": [
+    "[pty] attached sess-e37e7 gen=1 (131x25) client started",
+    "[pty] attached sess-e37e7 gen=2 (133x25) client started",
+    "[pty] attached sess-e37e7 gen=3 (72x13) client started"
+  ],
+  "leftover": "",
+  "rootTrashed": true,
+  "cleanupExit": 0,
+  "machineUnchanged": true,
+  "host": "air2 (macOS 27.2.1)"
+}

@@ -64,6 +64,16 @@ fn recover<G>(poison: PoisonError<G>) -> G {
     poison.into_inner()
 }
 
+/// Decrements its counter when dropped: a worker counted while it runs is
+/// counted down however it ends, a panic included.
+pub(crate) struct CountDown<'a>(pub(crate) &'a std::sync::atomic::AtomicUsize);
+
+impl Drop for CountDown<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

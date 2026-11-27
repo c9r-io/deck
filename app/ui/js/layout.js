@@ -9,6 +9,18 @@
 // Its return point follows only that card from Attention to its session, or
 // from its located Board card into that session. Opening another Board card
 // clears it; switching directly between sessions preserves the current point.
+// While a pane's attach (or its stopped card's start) has not answered, the
+// pane says so itself after a second ("Connecting terminal…", "Starting…");
+// a timeout or busy refusal leaves "did not start within N s" with ONE
+// button, and an attachment whose first frame xterm has not consumed after
+// the first-frame wait says "shows nothing yet" with a reconnect (detach,
+// then a new attach and generation). That button is the only way a pane
+// attaches again after its open, and only while pane-wait-model.js
+// retryAllowed says so: never for a pane whose stream ended, a stopped
+// card's attach, a card being closed, or during a restart. Keys typed
+// meanwhile stay bound to the request they were typed under; a request
+// that timed out names no generation, so they are cancelled, never sent to
+// the retry. No toast for any of this.
 // A pane that is already open is only focused: a detached pane (shell exited,
 // attach failed) is never re-attached or restarted by a click; the poll in
 // board.js decides whether its card retires (only on the backend's verified
@@ -79,6 +91,7 @@ import { appendInputCleanup, createTerminalDataHandler } from './terminal-input.
 import { wireImeProbe } from './terminal-ime-probe.js';
 import { forwardTerminalClick, keepLocalTerminalMouse } from './terminal-mouse.js';
 import { paintFollowUps } from './follow-up-bar.js';
+import { attachFailure, paneNotice, retryAllowed, startFailure, startFailureToastKey, TERMINAL_WAITS } from './pane-wait-model.js';
 import { createTerminalFind } from './terminal-find.js';
 import { noteHumanInput, paintWorkerButton } from './workers.js';
 
@@ -860,6 +873,73 @@ function paneExited(pane, gen) {
   pollNow();
 }
 
+/* The pane's own notice over its terminal while the terminal is not there
+   yet (pane-wait-model.js): never a toast, and its one button is the only
+   way a pane ever attaches again after its open. */
+function showPaneNotice(pane, kind, onAction = null) {
+  hidePaneNotice(pane);
+  const notice = paneNotice(kind);
+  if (!notice) return;
+  const el = document.createElement('div');
+  el.className = 'spane-notice';
+  el.dataset.kind = kind;
+  const text = document.createElement('span');
+  text.textContent = t(notice.key, notice.params);
+  el.appendChild(text);
+  if (notice.action && onAction) {
+    const button = document.createElement('button');
+    button.className = 'btn';
+    button.textContent = t(notice.action === 'retry' ? 'pane.retry' : 'pane.reconnect');
+    button.onclick = event => { event.stopPropagation(); onAction(); };
+    el.appendChild(button);
+  }
+  pane.body.appendChild(el);
+  pane.notice = el;
+  pane.noticeKind = kind;
+  uev('pane-notice', kind);
+}
+function hidePaneNotice(pane, kinds = null) {
+  if (!pane.notice || (kinds && !kinds.includes(pane.noticeKind))) return;
+  pane.notice.remove();
+  pane.notice = null;
+  pane.noticeKind = null;
+}
+
+/* The pane's button: a NEW attach request (and, after a start that did not
+   finish, the same start again), only while pane-wait-model's
+   retryAllowed says so. A reconnect detaches the attachment that shows
+   nothing first, so the retry gets a new generation. */
+async function retryPane(pane, kind, { allowStart = false } = {}) {
+  const card = provider.get(pane.sid);
+  const allowed = retryAllowed({
+    kind, card, current: panes.get(pane.session) === pane,
+    restarting: !!ctx.tmuxRestarting, closing: provider.closing(pane.sid),
+    exited: pane.exitedGen != null,
+  });
+  hidePaneNotice(pane);
+  if (!allowed) { uev('pane-notice', 'retry-refused'); return; }
+  uev('pane-notice', kind === 'noFrame' ? 'reconnect' : 'retry');
+  if (kind === 'noFrame') {
+    pane.attached = false;
+    await inv('detach_session', { name: pane.session }).catch(() => {});
+  }
+  const outcome = await ensureAttached(pane, { allowStart: kind === 'startTimeout' && allowStart });
+  if (outcome.attached && panes.get(pane.session) === pane && state.view === 'session') {
+    focusPane(pane.session);
+    pollNow();
+  }
+}
+
+/* An attachment whose first frame xterm has not consumed after the wait
+   gets the "shows nothing yet" notice and its reconnect. */
+function watchFirstFrame(pane, gen) {
+  setTimeout(() => {
+    if (panes.get(pane.session) !== pane || pane.attachedGen !== gen) return;
+    if (pane.firstConsumedGen === gen || pane.exitedGen === gen || pane.notice) return;
+    showPaneNotice(pane, 'noFrame', () => retryPane(pane, 'noFrame'));
+  }, TERMINAL_WAITS.firstFrameWaitMs);
+}
+
 /* Returns explicit created/restored state (backend is idempotent: an
    already-live session is success, not an error). Callers use it to decide
    fresh-shell cleanup — clearing history on a restored or merely-live session
@@ -893,10 +973,30 @@ async function attachPane(pane, { allowStart = true } = {}, request) {
       // started now would make its recovery impossible.
       if (ctx.recoveryHold?.has(card.session)) return outcome;
       const cmd = startCommand(card);
-      const started = await inv('start_session', {
-        name: card.session, dir: card.dir, cmd,
-        restoreShell: !!ctx.settings.sessionRestore, projectId: card.projectId,
-      });
+      const starting = setTimeout(() => {
+        if (panes.get(card.session) === pane && pane.attachRequest === request) showPaneNotice(pane, 'starting');
+      }, TERMINAL_WAITS.connectingNoticeMs);
+      let started;
+      try {
+        started = await inv('start_session', {
+          name: card.session, dir: card.dir, cmd,
+          restoreShell: !!ctx.settings.sessionRestore, projectId: card.projectId,
+        });
+      } catch (error) {
+        /* no answer in time: the card stays stopped and says so; a start
+           that may have typed the command marks it launched, so it is
+           never typed again (pure.js startCommand) */
+        const failure = startFailure(error);
+        if (!failure) throw error;
+        if (failure === 'unknown' && cmd) await provider.markLaunched(card.id).catch(() => {});
+        if (panes.get(card.session) === pane && pane.attachRequest === request) {
+          showPaneNotice(pane, 'startTimeout', () => retryPane(pane, 'startTimeout', { allowStart }));
+        }
+        return outcome;
+      } finally {
+        clearTimeout(starting);
+        hidePaneNotice(pane, ['starting']);
+      }
       outcome.created = !!started.created;
       outcome.restored = !!started.restored;
       outcome.commandSent = outcome.created && !!cmd;
@@ -909,7 +1009,29 @@ async function attachPane(pane, { allowStart = true } = {}, request) {
        then confirm the same grid after attach so an earlier pre-attach resize
        rejection cannot remain the resize coordinator's last word. */
     pane.fit.fit();
-    const gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
+    hidePaneNotice(pane);
+    /* the attach answers within its budget whatever tmux or process
+       creation does; past a second the pane says it is connecting, and a
+       timeout leaves it saying so with its retry (pane-wait-model.js).
+       Input typed meanwhile stays bound to THIS request: a request that
+       timed out names no generation, so that input is cancelled. */
+    const connecting = setTimeout(() => {
+      if (panes.get(card.session) === pane && pane.attachRequest === request) showPaneNotice(pane, 'connecting');
+    }, TERMINAL_WAITS.connectingNoticeMs);
+    let gen;
+    try {
+      gen = await inv('attach_session', { name: card.session, cols: pane.term.cols, rows: pane.term.rows });
+    } catch (error) {
+      const failure = attachFailure(error);
+      if (!failure) throw error;
+      if (failure !== 'superseded' && panes.get(card.session) === pane && pane.attachRequest === request) {
+        showPaneNotice(pane, failure, () => retryPane(pane, failure));
+      }
+      return outcome;
+    } finally {
+      clearTimeout(connecting);
+      hidePaneNotice(pane, ['connecting']);
+    }
     request.gen = gen;
     if (panes.get(card.session) === pane && pane.attachRequest === request) pane.inputGen = gen;
     pane.invalidateSize();
@@ -931,6 +1053,7 @@ async function attachPane(pane, { allowStart = true } = {}, request) {
       pane.attachedGen = gen;
       outcome.attached = true;
       markSessionSeen(card.id);
+      watchFirstFrame(pane, gen);
     }
     if (outcome.restored) toast(t('session.restored'));
   } catch (e) {
@@ -986,19 +1109,19 @@ async function newShellInSplit(targetSid, dir, cwd) {
   if (!p) return;
   const start = async where => provider.createStarted({
     projectId: p.id, columnId: newSessionColumn(p).id, title: nextShellTitle(p), cmd: '', dir: where,
-  });
+  }, { progress: true });
   try {
     const { card, started } = await start(cwd);
     addSplit(targetSid, dir, false, card.id, { started });
   } catch (error) {
-    if (!isNotDirectoryError(error)) { toast(t(envStartFailureKey(error) || 'terminal.createFailed')); return; }
+    if (!isNotDirectoryError(error)) { toast(t(envStartFailureKey(error) || startFailureToastKey(error) || 'terminal.createFailed')); return; }
     const choice = await choiceDialog(t('terminal.dirUnavailable', { dir: collapseHome(cwd, ctx.HOME) }),
       [{ id: 'home', label: t('terminal.newHomeShell'), primary: true }]);
     if (choice !== 'home') return;
     try {
       const { card, started } = await start(ctx.HOME);
       addSplit(targetSid, dir, false, card.id, { started });
-    } catch (error) { toast(t(envStartFailureKey(error) || 'terminal.createFailed')); }
+    } catch (error) { toast(t(envStartFailureKey(error) || startFailureToastKey(error) || 'terminal.createFailed')); }
   }
 }
 
@@ -1338,6 +1461,7 @@ export function initLayout() {
         if (p.firstConsumedGen !== gen && seq === 1) {
           p.firstConsumedGen = gen;
           uev('pty-first', null, gen, u8.length);
+          if (p.attachedGen === gen) hidePaneNotice(p, ['noFrame']);
         }
         // The first consumed frame may precede the attach reply. Both must
         // name the same generation before a turn can be marked viewed.

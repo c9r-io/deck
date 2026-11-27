@@ -22,6 +22,26 @@ fn limits() -> Value {
     serde_json::from_str(include_str!("../../ui/test/fixtures/limits.json")).unwrap()
 }
 
+/// The waits a pane shows (pane-wait-model.js): the attach budget, the
+/// first-frame wait and the start budget are the backend's.
+#[test]
+fn terminal_waits_match_frontend() {
+    let waits = &limits()["terminal_waits"];
+    assert_eq!(
+        number(&waits["attach_budget_ms"]),
+        crate::pty::ATTACH_BUDGET.as_millis() as u64
+    );
+    assert_eq!(
+        number(&waits["first_frame_wait_ms"]),
+        crate::pty::FIRST_READ_WAIT.as_millis() as u64
+    );
+    assert_eq!(
+        number(&waits["start_budget_ms"]),
+        crate::commands::START_BUDGET.as_millis() as u64
+    );
+    assert!(number(&waits["connecting_notice_ms"]) < number(&waits["attach_budget_ms"]));
+}
+
 #[test]
 fn translation_input_bound_matches_frontend() {
     assert_eq!(

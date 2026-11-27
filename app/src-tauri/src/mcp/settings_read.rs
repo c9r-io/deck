@@ -41,10 +41,10 @@ const ITEMS_FIXTURE: &str = include_str!("../../../ui/test/fixtures/settings-ite
 pub(super) struct Live {
     /// macOS notification permission (`notify::STATUS_WORDS`).
     pub(super) os_notifications: String,
-    /// `agent_hooks_status().agents`: per Agent source, closed booleans and
+    /// `agent_hooks_status_now().agents`: per Agent source, closed booleans and
     /// Pi's installation word.
     pub(super) agents: Value,
-    /// `turn_summary_status()`: `{hooks, on}`.
+    /// `turn_summary_status_now()`: `{hooks, on}`.
     pub(super) summaries: Value,
     /// `model_api_status()`: per provider `saved` and the last check.
     pub(super) model_api: Value,
@@ -96,10 +96,10 @@ fn live() -> Live {
         });
     Live {
         os_notifications: crate::notify::notify_status(),
-        agents: serde_json::to_value(crate::agent_status::agent_hooks_status())
+        agents: serde_json::to_value(crate::agent_status::agent_hooks_status_now())
             .map(|v| v["agents"].clone())
             .unwrap_or(Value::Null),
-        summaries: serde_json::to_value(crate::agent_status::turn_summary_status())
+        summaries: serde_json::to_value(crate::agent_status::turn_summary_status_now())
             .unwrap_or(Value::Null),
         model_api: crate::model_api::model_api_status(),
         slack_tokens: [

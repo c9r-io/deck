@@ -30,6 +30,31 @@
 //! They are resolved only when a session is really created, so attaching to
 //! a running one never touches the Keychain.
 //!
+//! # Off the IPC thread (2026-11-27; `docs/ipc-thread.md`)
+//! `start_session` and `kill_session` run through `session_op`: at most
+//! `MAX_SESSION_WORKERS` at once (else `terminal-busy`), answered within
+//! `START_BUDGET` / `KILL_BUDGET`. A `SessionOp` records how far one got,
+//! and the worker (`answer`) or its caller (`abandon`) decides first:
+//! - a start whose caller stopped waiting before the launch command is
+//!   typed answers `terminal-timeout` and the command is WITHHELD
+//!   (`SessionOp::commit`); once it is being typed a timeout is
+//!   `start-unknown`, and the frontend marks the card launched so the
+//!   command is never typed twice;
+//! - what a late (or deadline-cut) start did is reconciled under the
+//!   lifecycle operation lock with a fresh short deadline
+//!   (`reconcile_late_start`): `cardless` (a new card's start: no card
+//!   references the session unless the start answered) → an existing
+//!   session is an orphan and is killed with its checkpoint; otherwise (a
+//!   stopped card reopened) the shell is kept and the poll shows it. It
+//!   never starts a server, types or retries; one `[start] late` line;
+//! - a kill whose caller stopped waiting keeps the card (the close failed
+//!   visibly and may be repeated; the kill is idempotent); if it succeeds
+//!   late the card is a stopped one, and its recovery material is KEPT
+//!   because the card still exists (`finish_kill`) — the next close clears
+//!   it. `[close] late kill` says which.
+//!
+//! `write_clipboard` and `tmux_available` run off the IPC thread too.
+//!
 //! # Wire naming (all commands, not only this file's)
 //! A NEW struct returned to JS is `#[serde(rename_all = "camelCase")]`
 //! (`QueueAddArgs`, `ContextProbeView`, every `mcp/` and `connector/` view).
@@ -155,12 +180,33 @@ pub(crate) fn default_dir() -> String {
         .unwrap_or_else(|| "~".into())
 }
 
+/// Whether the bundled tmux runs (`tmux -V`), off the IPC thread under a
+/// 3 s deadline (the census). A `true` is remembered for the rest of the
+/// run (the bundled binary does not change under a running app); a sidecar
+/// that does not answer in time is reported as not available, which the
+/// webview shows as such, and asked again next time.
 #[tauri::command]
-pub(crate) fn tmux_available() -> bool {
+pub(crate) async fn tmux_available() -> bool {
+    static AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if AVAILABLE.load(std::sync::atomic::Ordering::Acquire) {
+        return true;
+    }
+    let ok = crate::session_runtime::off_ipc_thread(
+        "tmux_available",
+        std::time::Duration::from_secs(3),
+        || Ok(tmux_runs()),
+    )
+    .await
+    .unwrap_or(false);
+    if ok {
+        AVAILABLE.store(true, std::sync::atomic::Ordering::Release);
+    }
+    ok
+}
+
+fn tmux_runs() -> bool {
     tmux_program().is_ok_and(|tmux_sidecar| {
-        Command::new(tmux_sidecar)
-            .arg("-V")
-            .output()
+        crate::session_runtime::command_output(Command::new(tmux_sidecar).arg("-V"))
             .map(|o| o.status.success())
             .unwrap_or(false)
     })
@@ -285,22 +331,372 @@ fn start_failure_line(name: &str, stage: &str, error: &DeckError) -> String {
     )
 }
 
+/// The caller's budget for a start (limits.json
+/// `terminal_waits.start_budget_ms`). app.log 2026-11-27: `[start] created
+/// … total=` p50 30 ms, p99 137 ms, max 153 ms over 197 starts; 10 s leaves
+/// room for a first Keychain read of a project's variables and an
+/// endpoint-security exec tax, and still ends the Board transaction a new
+/// card's start runs in well before a person gives up.
+pub(crate) const START_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// A close's budget: the kill is one tmux call (and, for an MCP pane, one
+/// bounded runner stop).
+pub(crate) const KILL_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+/// A start's answer when the launch command may already have been typed:
+/// the caller marks the card launched and never types it again.
+pub(crate) const START_UNKNOWN: &str = "start-unknown";
+/// Starts and kills started and not yet returned; past this a new one is
+/// refused `terminal-busy` (a worker a stalled process creation holds
+/// keeps counting).
+pub(crate) const MAX_SESSION_WORKERS: usize = 4;
+static SESSION_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Smoke evidence only: start/kill workers that have not returned.
+pub(crate) fn session_workers() -> usize {
+    SESSION_WORKERS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Where one start or kill is. Every transition happens under its lock,
+/// and the worker and its caller each make exactly one decisive one: the
+/// worker `answer`s, or the caller `abandon`s, whichever comes first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpPhase {
+    Running,
+    /// the launch command is being typed: from here a timeout is
+    /// `start-unknown`, never "nothing happened"
+    Committed,
+    /// the worker's result went to its caller
+    Answered,
+    /// the caller stopped waiting; the worker reconciles what it did
+    Abandoned {
+        committed: bool,
+    },
+}
+
+pub(crate) struct SessionOp(std::sync::Mutex<OpPhase>);
+
+impl SessionOp {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self(std::sync::Mutex::new(OpPhase::Running)))
+    }
+    /// The worker is about to type the launch command: false (withhold it)
+    /// once the caller has stopped waiting.
+    pub(crate) fn commit(&self) -> bool {
+        let mut phase = self.0.lock_or_recover();
+        match *phase {
+            OpPhase::Running => {
+                *phase = OpPhase::Committed;
+                true
+            }
+            OpPhase::Abandoned { .. } => false,
+            OpPhase::Committed | OpPhase::Answered => true,
+        }
+    }
+    /// The worker has its result: the phase it found (`Abandoned` = nobody
+    /// reads the result).
+    pub(crate) fn answer(&self) -> OpPhase {
+        let mut phase = self.0.lock_or_recover();
+        let found = *phase;
+        if matches!(found, OpPhase::Running | OpPhase::Committed) {
+            *phase = OpPhase::Answered;
+        }
+        found
+    }
+    /// The caller's budget ran out: the phase it found.
+    pub(crate) fn abandon(&self) -> OpPhase {
+        let mut phase = self.0.lock_or_recover();
+        let found = *phase;
+        match found {
+            OpPhase::Running => *phase = OpPhase::Abandoned { committed: false },
+            OpPhase::Committed => *phase = OpPhase::Abandoned { committed: true },
+            _ => {}
+        }
+        found
+    }
+}
+
+/// Run one start or kill off the IPC thread: refused past the worker bound,
+/// answered within `budget` whatever the work does. A timeout is decided by
+/// the op's phase: `Running` → `terminal-timeout` (nothing irreversible was
+/// done that the caller does not know about; the worker reconciles),
+/// `Committed` → `start-unknown`, `Answered` → the worker's own result
+/// (it beat the budget).
+pub(crate) async fn session_op<T: Send + 'static>(
+    op: &'static str,
+    tag: String,
+    budget: std::time::Duration,
+    workers: &'static std::sync::atomic::AtomicUsize,
+    cell: std::sync::Arc<SessionOp>,
+    work: impl FnOnce() -> Result<T, DeckError> + Send + 'static,
+) -> Result<T, DeckError> {
+    use std::sync::atomic::Ordering;
+    let running = workers.load(Ordering::Acquire);
+    if running >= MAX_SESSION_WORKERS {
+        applog(&format!(
+            "[session] {op} {tag} refused: {running} session workers still running"
+        ));
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            crate::session_runtime::TERMINAL_BUSY,
+        ));
+    }
+    workers.fetch_add(1, Ordering::AcqRel);
+    let started = std::time::Instant::now();
+    let mut task = tauri::async_runtime::spawn_blocking(move || {
+        // counted down however the work ends, a panic included
+        let _counted = crate::sync::CountDown(workers);
+        work()
+    });
+    match tokio::time::timeout(budget, &mut task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(DeckError::new(ErrorKind::Tmux, "terminal-worker-failed")),
+        Err(_) => match cell.abandon() {
+            OpPhase::Answered => task
+                .await
+                .unwrap_or_else(|_| Err(DeckError::new(ErrorKind::Tmux, "terminal-worker-failed"))),
+            found => {
+                let committed = found == OpPhase::Committed;
+                applog(&format!(
+                    "[session] {op} {tag} no answer within {}ms{} (session workers={})",
+                    started.elapsed().as_millis(),
+                    if committed {
+                        ", command may have been typed"
+                    } else {
+                        ""
+                    },
+                    workers.load(Ordering::Acquire)
+                ));
+                Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    if committed {
+                        START_UNKNOWN
+                    } else {
+                        crate::session_runtime::TERMINAL_TIMEOUT
+                    },
+                ))
+            }
+        },
+    }
+}
+
+/// Start (or find) a card's session off the IPC thread (`session_op`).
+/// `cardless`: no card references this session unless the start succeeds
+/// (`provider.createStarted`, which persists the card only after it) — a
+/// session such a start makes after its caller stopped waiting is an
+/// orphan and is killed (`reconcile_late_start`). Without it (a stopped
+/// card reopened) a late shell is kept: its card exists and the poll shows
+/// it running. Either way the launch command is never typed after the
+/// caller stopped waiting (`SessionOp::commit`).
 #[tauri::command]
-pub(crate) fn start_session(
+pub(crate) async fn start_session(
     name: String,
     dir: String,
     cmd: String,
     restore_shell: bool,
     project_id: Option<String>,
+    cardless: Option<bool>,
 ) -> Result<StartSessionResult, DeckError> {
-    // The project's environment (`project_env.rs`) is read only when a
-    // session is actually created: attaching to a running one never waits
-    // on, or fails with, the Keychain.
-    let env = || match project_id.as_deref().filter(|id| !id.is_empty()) {
-        Some(id) => crate::project_env::for_project(id),
-        None => Ok(Vec::new()),
+    validate_session_name(&name)?;
+    let cardless = cardless.unwrap_or(false);
+    let cell = SessionOp::new();
+    let end = std::time::Instant::now() + START_BUDGET;
+    let tag = crate::applog::session_tag(&name);
+    session_op(
+        "start_session",
+        tag,
+        START_BUDGET,
+        &SESSION_WORKERS,
+        cell.clone(),
+        move || {
+            crate::smoke_faults::stall_point(crate::smoke_faults::STALL_START);
+            // The project's environment (`project_env.rs`) is read only
+            // when a session is actually created: attaching to a running
+            // one never waits on, or fails with, the Keychain.
+            let env = || match project_id.as_deref().filter(|id| !id.is_empty()) {
+                Some(id) => crate::project_env::for_project(id),
+                None => Ok(Vec::new()),
+            };
+            let result = {
+                let _bounded = crate::session_runtime::Deadline::until(end);
+                start_session_gated(name.clone(), dir, cmd, restore_shell, &env, &|| {
+                    cell.commit()
+                })
+            };
+            finish_start(&name, cardless, &cell, result)
+        },
+    )
+    .await
+}
+
+/// The worker's last step: hand the result to a caller still waiting, or
+/// reconcile what a start nobody waits for any more did. A result cut by
+/// the worker's own deadline is unknown too (the server may have made the
+/// session before its client was stopped) and is reconciled the same way.
+pub(crate) fn finish_start(
+    name: &str,
+    cardless: bool,
+    cell: &SessionOp,
+    result: Result<StartSessionResult, DeckError>,
+) -> Result<StartSessionResult, DeckError> {
+    let (answer, reconcile) = finish_start_decision(cell, result);
+    if let Some(committed) = reconcile {
+        reconcile_late_start(name, cardless, committed);
+    }
+    answer
+}
+
+/// The answer, and whether (with `committed`) the start must be reconciled.
+fn finish_start_decision(
+    cell: &SessionOp,
+    result: Result<StartSessionResult, DeckError>,
+) -> (Result<StartSessionResult, DeckError>, Option<bool>) {
+    let cut = result
+        .as_ref()
+        .err()
+        .is_some_and(|e| e.restart_failure() == Some(crate::error::RestartFailure::Deadline));
+    match cell.answer() {
+        OpPhase::Abandoned { committed } => (result, Some(committed)),
+        found if cut => {
+            let committed = found == OpPhase::Committed;
+            (
+                Err(DeckError::new(
+                    ErrorKind::Tmux,
+                    if committed {
+                        START_UNKNOWN
+                    } else {
+                        crate::session_runtime::TERMINAL_TIMEOUT
+                    },
+                )),
+                Some(committed),
+            )
+        }
+        _ => (result, None),
+    }
+}
+
+#[cfg(test)]
+fn finish_start_answer(
+    cell: &SessionOp,
+    result: Result<StartSessionResult, DeckError>,
+) -> Result<StartSessionResult, DeckError> {
+    finish_start_decision(cell, result).0
+}
+
+/// What a start nobody waits for did, settled under the lifecycle
+/// operation lock (the creators' lock) with a fresh short deadline: a
+/// session that exists is killed when no card references it (`cardless`;
+/// its transcript checkpoint goes with it) and kept otherwise. It never
+/// starts a server, never types anything, never retries. One line says
+/// which.
+fn reconcile_late_start(name: &str, cardless: bool, committed: bool) {
+    let tag = crate::applog::session_tag(name);
+    let _bounded = crate::session_runtime::Deadline::until(
+        std::time::Instant::now() + std::time::Duration::from_secs(3),
+    );
+    let (Ok(_activity), Ok(_operation)) = (
+        crate::session_runtime::activity_guard(),
+        crate::tmux_lifecycle::operation_guard(),
+    ) else {
+        applog(&format!(
+            "[start] late {tag} not reconciled: a server operation is in progress"
+        ));
+        return;
     };
-    start_session_with_env(name, dir, cmd, restore_shell, &env)
+    let line = reconcile_line(
+        &tmux,
+        &|name| {
+            let _ = crate::shell_state::clear_snapshot(name);
+        },
+        name,
+        cardless,
+        committed,
+    );
+    applog(&format!("[start] late {tag} {line}"));
+    if cardless && line == RECONCILE_UNKNOWN {
+        recheck_later(name.to_string());
+    }
+}
+
+const RECONCILE_UNKNOWN: &str = "unknown (tmux did not answer)";
+
+/// A cardless start whose settlement could not tell (a tmux server that did
+/// not answer — stopped, say — may still run the cut client's `new-session`
+/// once it continues): settle it again every 5 s for up to 5 min, at most
+/// `MAX_RECHECKS` at once, until tmux answers. Same lock, same kill, same
+/// line; nothing else.
+fn recheck_later(name: String) {
+    use std::sync::atomic::Ordering;
+    const MAX_RECHECKS: usize = 8;
+    static RECHECKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if RECHECKS.fetch_add(1, Ordering::AcqRel) >= MAX_RECHECKS {
+        RECHECKS.fetch_sub(1, Ordering::AcqRel);
+        applog(&format!(
+            "[start] late {} left unknown: too many settlements pending",
+            crate::applog::session_tag(&name)
+        ));
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("deck-start-recheck".into())
+        .spawn(move || {
+            let tag = crate::applog::session_tag(&name);
+            let mut line = RECONCILE_UNKNOWN;
+            for _ in 0..60 {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let _bounded = crate::session_runtime::Deadline::until(
+                    std::time::Instant::now() + std::time::Duration::from_secs(3),
+                );
+                let (Ok(_activity), Ok(_operation)) = (
+                    crate::session_runtime::activity_guard(),
+                    crate::tmux_lifecycle::operation_guard(),
+                ) else {
+                    continue;
+                };
+                line = reconcile_line(
+                    &tmux,
+                    &|name| {
+                        let _ = crate::shell_state::clear_snapshot(name);
+                    },
+                    &name,
+                    true,
+                    false,
+                );
+                if line != RECONCILE_UNKNOWN {
+                    break;
+                }
+            }
+            applog(&format!("[start] late {tag} rechecked: {line}"));
+            RECHECKS.fetch_sub(1, Ordering::AcqRel);
+        });
+    if spawned.is_err() {
+        RECHECKS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// The settlement itself over the caller's tmux (tests supply a fake one).
+pub(crate) fn reconcile_line(
+    run: TmuxRun<'_>,
+    clear: &dyn Fn(&str),
+    name: &str,
+    cardless: bool,
+    committed: bool,
+) -> &'static str {
+    match run(&["has-session", "-t", &session_target(name)]) {
+        Ok(_) if cardless => {
+            match idempotent_kill_result(run(&["kill-session", "-t", &session_target(name)])) {
+                Ok(()) => {
+                    clear(name);
+                    "orphan killed"
+                }
+                Err(_) => "orphan kill FAILED",
+            }
+        }
+        Ok(_) if committed => "kept (its card shows it; the command may have been typed)",
+        Ok(_) => "kept (its card shows it; no command typed)",
+        Err(e) if e.restart_failure() == Some(crate::error::RestartFailure::Deadline) => {
+            RECONCILE_UNKNOWN
+        }
+        Err(_) => "nothing created",
+    }
 }
 
 /// `start_session` with the variables supplied by the caller's resolver
@@ -311,6 +707,19 @@ pub(crate) fn start_session_with_env(
     cmd: String,
     restore_shell: bool,
     env: &dyn Fn() -> Result<crate::project_env::Vars, DeckError>,
+) -> Result<StartSessionResult, DeckError> {
+    start_session_gated(name, dir, cmd, restore_shell, env, &|| true)
+}
+
+/// The start itself. `before_command` is asked right before the launch
+/// command is typed; false withholds it (the pane stays a bare shell).
+fn start_session_gated(
+    name: String,
+    dir: String,
+    cmd: String,
+    restore_shell: bool,
+    env: &dyn Fn() -> Result<crate::project_env::Vars, DeckError>,
+    before_command: &dyn Fn() -> bool,
 ) -> Result<StartSessionResult, DeckError> {
     let t0 = std::time::Instant::now();
     validate_session_name(&name)?;
@@ -334,7 +743,7 @@ pub(crate) fn start_session_with_env(
     let env = env().inspect_err(|error| {
         applog(&start_failure_line(&name, "environment", error));
     })?;
-    create_session(
+    create_session_gated(
         &tmux,
         &tmux_with_stdin,
         &name,
@@ -345,6 +754,7 @@ pub(crate) fn start_session_with_env(
         false,
         t0,
         gate_ms,
+        before_command,
     )
 }
 
@@ -375,6 +785,8 @@ pub(crate) fn create_reentry_shell(
 
 /// Create the session after the caller's gate. `exact_dir` keeps the pane in
 /// the requested directory even when a checkpoint remembers another one.
+/// `create_session_gated` with no gate: the launch command, if any, is
+/// always typed (the restart transaction's command-less shell).
 #[allow(clippy::too_many_arguments)]
 fn create_session(
     run: TmuxRun<'_>,
@@ -387,6 +799,36 @@ fn create_session(
     exact_dir: bool,
     t0: std::time::Instant,
     gate_ms: u128,
+) -> Result<StartSessionResult, DeckError> {
+    let always = || true;
+    create_session_gated(
+        run,
+        stdin,
+        name,
+        dir,
+        cmd,
+        env,
+        restore_shell,
+        exact_dir,
+        t0,
+        gate_ms,
+        &always,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_session_gated(
+    run: TmuxRun<'_>,
+    stdin: TmuxStdin<'_>,
+    name: &str,
+    dir: &str,
+    cmd: &str,
+    env: &[(String, String)],
+    restore_shell: bool,
+    exact_dir: bool,
+    t0: std::time::Instant,
+    gate_ms: u128,
+    before_command: &dyn Fn() -> bool,
 ) -> Result<StartSessionResult, DeckError> {
     // A checkpoint is consulted only for a command-less, user-opened shell.
     // Its cwd may have advanced far beyond the card's original launch dir.
@@ -487,7 +929,16 @@ fn create_session(
         return Err(error);
     }
     let created_ms = t0.elapsed().as_millis();
-    if !cmd.trim().is_empty() {
+    let withheld = !cmd.trim().is_empty() && !before_command();
+    if withheld {
+        // the caller stopped waiting before the command was typed: the
+        // pane stays a bare shell and the command is never typed for it
+        applog(&format!(
+            "[start] command withheld for {}: its caller stopped waiting",
+            crate::applog::session_tag(name)
+        ));
+    }
+    if !cmd.trim().is_empty() && !withheld {
         if let Err(error) = run(&["send-keys", "-t", &pane_target(name), cmd, "Enter"]) {
             // The pane exists but never got its launch command. A failed
             // start persists no card, so a surviving session would be an
@@ -532,39 +983,165 @@ fn pbcopy_command() -> Command {
     command
 }
 
+/// Off the IPC thread with `CLIPBOARD_BUDGET` (the census): a pasteboard
+/// that does not answer used to hold the window. Success still means
+/// pbcopy consumed every byte and exited zero; no answer in time is a
+/// failure the frontend reports as one (terminal-clipboard.js), and that
+/// pbcopy is killed and reaped at the budget, never left to write an old
+/// copy over a newer one later.
 #[tauri::command]
-pub(crate) fn write_clipboard(text: String) -> Result<(), DeckError> {
-    use std::io::Write as _;
-    let mut child = pbcopy_command()
-        .spawn()
-        .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?;
-    child
-        .stdin
-        .take()
-        .ok_or(DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?
-        .write_all(text.as_bytes())
-        .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?;
-    let status = child
-        .wait()
-        .map_err(|_| DeckError::new(ErrorKind::Other, "clipboard-write-failed"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(DeckError::new(ErrorKind::Other, "clipboard-write-failed"))
-    }
+pub(crate) async fn write_clipboard(text: String) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread("write_clipboard", CLIPBOARD_BUDGET, move || {
+        let end = std::time::Instant::now() + CLIPBOARD_BUDGET;
+        crate::smoke_faults::stall_point(crate::smoke_faults::STALL_CLIPBOARD);
+        write_clipboard_until(pbcopy_command(), text.as_bytes(), end)
+    })
+    .await
+    .map_err(|e| {
+        if e.message() == crate::session_runtime::TERMINAL_TIMEOUT {
+            DeckError::new(ErrorKind::Other, "clipboard-write-failed")
+        } else {
+            e
+        }
+    })
 }
 
+pub(crate) const CLIPBOARD_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Spawn `command`, give it `bytes` on stdin and wait for it, all before
+/// `end`: past it the child is killed and reaped and nothing more is written.
+fn write_clipboard_until(
+    mut command: Command,
+    bytes: &[u8],
+    end: std::time::Instant,
+) -> Result<(), DeckError> {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd;
+    let failed = || DeckError::new(ErrorKind::Other, "clipboard-write-failed");
+    if std::time::Instant::now() >= end {
+        return Err(failed());
+    }
+    let mut child = command.spawn().map_err(|_| failed())?;
+    let result = (|| {
+        let mut stdin = child.stdin.take().ok_or_else(failed)?;
+        let fd = stdin.as_raw_fd();
+        // SAFETY: fcntl on the child's stdin pipe we own.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                return Err(failed());
+            }
+        }
+        let mut at = 0;
+        while at < bytes.len() {
+            if std::time::Instant::now() >= end {
+                return Err(failed());
+            }
+            match stdin.write(&bytes[at..]) {
+                Ok(0) => return Err(failed()),
+                Ok(n) => at += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(2))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return Err(failed()),
+            }
+        }
+        drop(stdin);
+        loop {
+            if let Some(status) = child.try_wait().map_err(|_| failed())? {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(failed())
+                };
+            }
+            if std::time::Instant::now() >= end {
+                return Err(failed());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
+}
+
+/// Close a card's session off the IPC thread (`session_op`, `KILL_BUDGET`).
+/// No answer in time is `terminal-timeout`: the card is kept and may be
+/// closed again (the kill is idempotent). A kill that succeeds after its
+/// caller stopped waiting leaves a stopped card, which existing rules
+/// handle (absence is not deletion); its recovery material is then KEPT,
+/// because the card still exists — the next close clears it.
 #[tauri::command]
-pub(crate) fn kill_session(name: String, mcp_admission: Option<String>) -> Result<(), DeckError> {
-    crate::mcp::validate_close_admission(mcp_admission.as_deref(), std::slice::from_ref(&name))?;
-    let _activity = crate::session_runtime::activity_guard()?;
+pub(crate) async fn kill_session(
+    name: String,
+    mcp_admission: Option<String>,
+) -> Result<(), DeckError> {
     validate_session_name(&name)?;
+    let cell = SessionOp::new();
+    let end = std::time::Instant::now() + KILL_BUDGET;
+    let tag = crate::applog::session_tag(&name);
+    session_op(
+        "kill_session",
+        tag.clone(),
+        KILL_BUDGET,
+        &SESSION_WORKERS,
+        cell.clone(),
+        move || {
+            crate::smoke_faults::stall_point(crate::smoke_faults::STALL_KILL);
+            let result = {
+                let _bounded = crate::session_runtime::Deadline::until(end);
+                kill_now(&name, mcp_admission.as_deref())
+            };
+            finish_kill(&name, &cell, result)
+        },
+    )
+    .await
+}
+
+fn kill_now(name: &str, mcp_admission: Option<&str>) -> Result<(), DeckError> {
+    crate::mcp::validate_close_admission(mcp_admission, &[name.to_string()])?;
+    let _activity = crate::session_runtime::activity_guard()?;
     // An MCP-managed pane: its runner stops the job groups first (bounded).
-    crate::mcp::stop_managed_jobs(&name);
-    idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(&name)]))?;
-    // Closing a card is also a privacy deletion: its transcript, backup and
-    // quarantined recovery copies must not outlive the card.
-    crate::shell_state::clear_snapshot(&name)
+    crate::mcp::stop_managed_jobs(name);
+    idempotent_kill_result(tmux(&["kill-session", "-t", &session_target(name)]))
+}
+
+/// A caller still waiting gets the kill's result, and on success the card's
+/// transcript, backup and quarantined recovery copies are removed (closing
+/// a card is also a privacy deletion). A late kill keeps them: its caller
+/// was told the close failed, so the card is still there.
+pub(crate) fn finish_kill(
+    name: &str,
+    cell: &SessionOp,
+    result: Result<(), DeckError>,
+) -> Result<(), DeckError> {
+    finish_kill_with(name, cell, result, &crate::shell_state::clear_snapshot)
+}
+
+fn finish_kill_with(
+    name: &str,
+    cell: &SessionOp,
+    result: Result<(), DeckError>,
+    clear: &dyn Fn(&str) -> Result<(), DeckError>,
+) -> Result<(), DeckError> {
+    match cell.answer() {
+        OpPhase::Abandoned { .. } => {
+            applog(&format!(
+                "[close] late kill {} {}: the card is kept with its recovery material",
+                crate::applog::session_tag(name),
+                if result.is_ok() { "done" } else { "failed" }
+            ));
+            result
+        }
+        _ => {
+            result?;
+            clear(name)
+        }
+    }
 }
 
 pub(crate) fn idempotent_kill_result(result: Result<String, DeckError>) -> Result<(), DeckError> {
@@ -1175,6 +1752,191 @@ fn usable_cwd(path: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    /// A timeout is decided by how far the op got: nothing typed →
+    /// `terminal-timeout`; the command being typed → `start-unknown`; a
+    /// worker that answered first → its own result. The worker bound
+    /// refuses at once.
+    #[test]
+    fn a_session_op_timeout_says_how_far_the_start_got() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+        static WORKERS: AtomicUsize = AtomicUsize::new(0);
+        let run = |cell: std::sync::Arc<SessionOp>, commit: bool, hold: Duration| {
+            tauri::async_runtime::block_on(session_op(
+                "test-start",
+                "sess-test".into(),
+                Duration::from_millis(80),
+                &WORKERS,
+                cell.clone(),
+                move || {
+                    if commit {
+                        assert!(cell.commit());
+                    }
+                    std::thread::sleep(hold);
+                    match cell.answer() {
+                        OpPhase::Abandoned { .. } => Err(DeckError::new(ErrorKind::Other, "late")),
+                        _ => Ok(7),
+                    }
+                },
+            ))
+        };
+        let begin = std::time::Instant::now();
+        assert_eq!(
+            run(SessionOp::new(), false, Duration::from_millis(400))
+                .unwrap_err()
+                .message(),
+            crate::session_runtime::TERMINAL_TIMEOUT
+        );
+        assert!(begin.elapsed() < Duration::from_millis(350));
+        assert_eq!(
+            run(SessionOp::new(), true, Duration::from_millis(400))
+                .unwrap_err()
+                .message(),
+            START_UNKNOWN
+        );
+        assert_eq!(run(SessionOp::new(), false, Duration::ZERO).unwrap(), 7);
+        // an abandoned op withholds the command
+        let cell = SessionOp::new();
+        assert_eq!(cell.abandon(), OpPhase::Running);
+        assert!(!cell.commit());
+        assert_eq!(cell.answer(), OpPhase::Abandoned { committed: false });
+        // an answered op cannot be abandoned any more
+        let cell = SessionOp::new();
+        assert_eq!(cell.answer(), OpPhase::Running);
+        assert_eq!(cell.abandon(), OpPhase::Answered);
+        // the bound
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while WORKERS.load(std::sync::atomic::Ordering::SeqCst) > 0
+            && std::time::Instant::now() < until
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        WORKERS.store(MAX_SESSION_WORKERS, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            run(SessionOp::new(), false, Duration::ZERO)
+                .unwrap_err()
+                .message(),
+            crate::session_runtime::TERMINAL_BUSY
+        );
+        WORKERS.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A start its caller gave up on: a session no card references is
+    /// killed with its checkpoint; a reopened card's late shell is kept;
+    /// nothing is killed when nothing was made or tmux cannot tell.
+    #[test]
+    fn a_late_start_is_reconciled_by_whether_a_card_references_it() {
+        use std::cell::RefCell;
+        let calls: RefCell<Vec<String>> = RefCell::default();
+        let cleared: RefCell<Vec<String>> = RefCell::default();
+        let exists = std::cell::Cell::new(true);
+        let run = |args: &[&str]| -> Result<String, DeckError> {
+            calls.borrow_mut().push(args.join(" "));
+            match args[0] {
+                "has-session" if exists.get() => Ok(String::new()),
+                "has-session" => Err(DeckError::classified(
+                    "tmux has-session failed: can't find session: deck-x",
+                )),
+                _ => Ok(String::new()),
+            }
+        };
+        let clear = |name: &str| cleared.borrow_mut().push(name.into());
+        assert_eq!(
+            reconcile_line(&run, &clear, "deck-x", true, false),
+            "orphan killed"
+        );
+        assert_eq!(
+            *calls.borrow(),
+            ["has-session -t =deck-x", "kill-session -t =deck-x"]
+        );
+        assert_eq!(*cleared.borrow(), ["deck-x"]);
+        calls.borrow_mut().clear();
+        assert_eq!(
+            reconcile_line(&run, &clear, "deck-x", false, true),
+            "kept (its card shows it; the command may have been typed)"
+        );
+        assert_eq!(
+            reconcile_line(&run, &clear, "deck-x", false, false),
+            "kept (its card shows it; no command typed)"
+        );
+        assert!(
+            calls.borrow().iter().all(|c| c.starts_with("has-session")),
+            "a reopened card's shell is kept"
+        );
+        exists.set(false);
+        assert_eq!(
+            reconcile_line(&run, &clear, "deck-x", true, false),
+            "nothing created"
+        );
+        let silent = |_: &[&str]| -> Result<String, DeckError> {
+            Err(DeckError::restart(crate::error::RestartFailure::Deadline))
+        };
+        assert_eq!(
+            reconcile_line(&silent, &clear, "deck-x", true, false),
+            "unknown (tmux did not answer)"
+        );
+        assert_eq!(cleared.borrow().len(), 1);
+    }
+
+    /// A kill whose caller gave up keeps the card's recovery material; one
+    /// answered in time clears it, and a failed one clears nothing.
+    #[test]
+    fn a_late_kill_keeps_the_recovery_material() {
+        use std::cell::RefCell;
+        let cleared: RefCell<Vec<String>> = RefCell::default();
+        let clear = |name: &str| {
+            cleared.borrow_mut().push(name.into());
+            Ok(())
+        };
+        let late = SessionOp::new();
+        late.abandon();
+        assert!(finish_kill_with("deck-k", &late, Ok(()), &clear).is_ok());
+        assert!(
+            cleared.borrow().is_empty(),
+            "the card is kept, so is its material"
+        );
+        assert!(finish_kill_with("deck-k", &SessionOp::new(), Ok(()), &clear).is_ok());
+        assert_eq!(*cleared.borrow(), ["deck-k"]);
+        assert!(finish_kill_with(
+            "deck-k",
+            &SessionOp::new(),
+            Err(DeckError::new(
+                ErrorKind::Tmux,
+                "tmux kill-session failed: x"
+            )),
+            &clear
+        )
+        .is_err());
+        assert_eq!(cleared.borrow().len(), 1);
+    }
+
+    /// The deadline-cut result of a start its caller still waits for is
+    /// unknown, never a definite failure: reconciled, and answered
+    /// `terminal-timeout` (or `start-unknown` once the command was typed).
+    #[test]
+    fn a_deadline_cut_start_is_answered_as_unknown() {
+        let cut = || Err(DeckError::restart(crate::error::RestartFailure::Deadline));
+        // the decision alone (the reconcile it asks for is
+        // `reconcile_line`, tested above)
+        let committed = SessionOp::new();
+        assert!(committed.commit());
+        let answer = finish_start_answer(&committed, cut());
+        assert_eq!(answer.unwrap_err().message(), START_UNKNOWN);
+        let answer = finish_start_answer(&SessionOp::new(), cut());
+        assert_eq!(
+            answer.unwrap_err().message(),
+            crate::session_runtime::TERMINAL_TIMEOUT
+        );
+        let ok = finish_start_answer(
+            &SessionOp::new(),
+            Ok(StartSessionResult {
+                created: true,
+                restored: false,
+            }),
+        );
+        assert!(ok.unwrap().created);
+    }
+
     /// A successful listing without a server line: liveness only, no exit
     /// evidence can be derived from it.
     fn listed(rows: Vec<PaneRow>) -> Result<crate::tmux::PaneSnapshot, DeckError> {
@@ -1184,6 +1946,42 @@ mod tests {
     /// A runtime check would clobber the developer's clipboard, so this pins
     /// the configured spawn instead: without a UTF-8 locale pbcopy turns any
     /// non-ASCII selection into an empty pasteboard item and exits 0.
+    /// A clipboard writer that never finishes is killed and reaped at the
+    /// budget and the copy reported failed; one that consumes its input and
+    /// exits zero is a success. (`/bin/cat`/`/bin/sleep` stand in for
+    /// pbcopy: this harness writes to no pasteboard.)
+    #[test]
+    fn a_clipboard_write_ends_at_its_budget() {
+        use std::process::Stdio;
+        let stuck = || {
+            let mut c = Command::new("/bin/sleep");
+            c.arg("30")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            c
+        };
+        let begin = std::time::Instant::now();
+        let end = begin + std::time::Duration::from_millis(150);
+        assert_eq!(
+            write_clipboard_until(stuck(), &vec![b'x'; 256 * 1024], end)
+                .unwrap_err()
+                .message(),
+            "clipboard-write-failed"
+        );
+        assert!(begin.elapsed() < std::time::Duration::from_secs(1));
+        let mut cat = Command::new("/bin/cat");
+        cat.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        assert!(write_clipboard_until(
+            cat,
+            "中文 ⏺".as_bytes(),
+            std::time::Instant::now() + std::time::Duration::from_secs(2)
+        )
+        .is_ok());
+    }
+
     #[test]
     fn pbcopy_is_spawned_under_a_utf8_locale() {
         let command = pbcopy_command();
@@ -2064,7 +2862,7 @@ mod tests {
         );
         assert!(capture_tails(&[], 2).is_empty());
         if crate::tmux::tmux_bin().is_empty() {
-            assert!(!tmux_available());
+            assert!(!tmux_runs());
             assert_eq!(
                 set_terminal_mode_style_now("#000000".into(), "#ffffff".into())
                     .unwrap_err()

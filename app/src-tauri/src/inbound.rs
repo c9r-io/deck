@@ -1491,7 +1491,18 @@ pub(crate) fn inbound_runs() -> Vec<Run> {
 /// Open the source's prefilled "create an app" page in the browser. The URL
 /// is compiled into deck (never user input) and carries no credential.
 #[tauri::command]
-pub(crate) fn inbound_setup(source: String) -> Result<(), DeckError> {
+pub(crate) async fn inbound_setup(source: String) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "inbound_setup",
+        std::time::Duration::from_secs(5),
+        move || inbound_setup_now(source),
+    )
+    .await
+}
+
+/// `inbound_setup` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn inbound_setup_now(source: String) -> Result<(), DeckError> {
     let service = crate::extensions::service(&source)
         .ok_or(DeckError::new(ErrorKind::Invalid, "unknown source"))?;
     let url = (service.setup_url)();
@@ -1986,12 +1997,12 @@ mod tests {
     #[test]
     fn a_setup_page_exists_only_for_a_registered_service() {
         for source in ["clock", "notion", ""] {
-            let error = inbound_setup(source.into()).unwrap_err();
+            let error = inbound_setup_now(source.into()).unwrap_err();
             assert_eq!(error.message(), "unknown source", "{source}");
         }
         let _table = testing::with_services(&[]);
         assert_eq!(
-            inbound_setup("slack".into()).unwrap_err().message(),
+            inbound_setup_now("slack".into()).unwrap_err().message(),
             "unknown source"
         );
     }
@@ -2996,7 +3007,7 @@ mod tests {
 
     #[test]
     fn setup_and_secret_commands_refuse_unknown_or_malformed_input_first() {
-        let err = inbound_setup("notion".into()).unwrap_err();
+        let err = inbound_setup_now("notion".into()).unwrap_err();
         assert_eq!(
             (err.kind(), err.message()),
             (ErrorKind::Invalid, "unknown source")

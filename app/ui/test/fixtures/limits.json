@@ -1,4 +1,10 @@
 {
+  "terminal_waits": {
+    "attach_budget_ms": 5000,
+    "connecting_notice_ms": 1000,
+    "first_frame_wait_ms": 3000,
+    "start_budget_ms": 10000
+  },
   "reminder_note_bytes": 280,
   "scheduler": {
     "chain_quiet_secs_default": 180,

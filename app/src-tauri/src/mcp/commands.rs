@@ -155,7 +155,18 @@ pub(crate) fn mcp_worker_capacity(count: u32) -> Result<(), DeckError> {
 }
 
 #[tauri::command]
-pub(crate) fn mcp_output_retention(duration_ms: u64) -> Result<(), DeckError> {
+pub(crate) async fn mcp_output_retention(duration_ms: u64) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "mcp_output_retention",
+        std::time::Duration::from_secs(5),
+        move || mcp_output_retention_now(duration_ms),
+    )
+    .await
+}
+
+/// `mcp_output_retention` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn mcp_output_retention_now(duration_ms: u64) -> Result<(), DeckError> {
     if !(MIN_OUTPUT_RETENTION_MS..=MAX_OUTPUT_RETENTION_MS).contains(&duration_ms) {
         return Err(DeckError::new(
             ErrorKind::Invalid,
@@ -259,7 +270,20 @@ pub(super) fn canonical_project_root_with_access(
 }
 
 #[tauri::command]
-pub(crate) fn mcp_scope_preview(root: String) -> ScopePreview {
+pub(crate) async fn mcp_scope_preview(
+    root: String,
+) -> Result<ScopePreview, crate::error::DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "mcp_scope_preview",
+        std::time::Duration::from_secs(5),
+        move || Ok(mcp_scope_preview_now(root)),
+    )
+    .await
+}
+
+/// `mcp_scope_preview` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn mcp_scope_preview_now(root: String) -> ScopePreview {
     match canonical_project_root(&root) {
         Ok(root) => ScopePreview {
             ok: true,
@@ -771,7 +795,18 @@ pub(crate) fn mcp_worker_hand_back(card_id: String) -> Result<bool, DeckError> {
 /// operations, jobs, grants, and audit links intentionally retain the opaque
 /// client id so deleting a client cannot erase the security ledger.
 #[tauri::command]
-pub(crate) fn mcp_client_delete(client_id: String) -> Result<(), DeckError> {
+pub(crate) async fn mcp_client_delete(client_id: String) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "mcp_client_delete",
+        std::time::Duration::from_secs(5),
+        move || mcp_client_delete_now(client_id),
+    )
+    .await
+}
+
+/// `mcp_client_delete` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn mcp_client_delete_now(client_id: String) -> Result<(), DeckError> {
     if !valid_id(&client_id) {
         return Err(DeckError::new(ErrorKind::Invalid, "invalid MCP client id"));
     }
@@ -1132,7 +1167,18 @@ pub(crate) struct CloseAdmissionView {
 /// its first durable queue-cancellation side effect. Once admitted, later
 /// revocation does not pretend that the already-admitted close never started.
 #[tauri::command]
-pub(crate) fn mcp_close_admit(operation_id: String) -> Result<CloseAdmissionView, DeckError> {
+pub(crate) async fn mcp_close_admit(operation_id: String) -> Result<CloseAdmissionView, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "mcp_close_admit",
+        std::time::Duration::from_secs(5),
+        move || mcp_close_admit_now(operation_id),
+    )
+    .await
+}
+
+/// `mcp_close_admit` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn mcp_close_admit_now(operation_id: String) -> Result<CloseAdmissionView, DeckError> {
     let runtime = runtime()?;
     close_admit(runtime, &operation_id)
 }
@@ -1338,60 +1384,116 @@ pub(crate) struct StartResult {
     pub(super) created: bool,
 }
 
+/// Off the IPC thread (`commands::session_op`, the start budget): a
+/// managed runner session is always `cardless` — its card is persisted only
+/// after this answers — so one this makes after its caller stopped waiting
+/// is killed (`commands::finish_start`), and the Board reports the
+/// operation `ambiguous` (mcp.js), never replayed.
 #[tauri::command]
-pub(crate) fn mcp_start_session(
+pub(crate) async fn mcp_start_session(
     operation_id: String,
     name: String,
     dir: String,
 ) -> Result<StartResult, DeckError> {
-    let runtime = runtime()?;
-    let _delivery = runtime.delivery.lock_or_recover();
     crate::tmux::validate_session_name(&name)?;
-    let plan = runtime.read(|doc| {
-        let operation = doc
-            .operations
-            .iter()
-            .find(|operation| {
-                operation.operation_id == operation_id
-                    && operation.kind == "session-create"
-                    && operation.state == "executing"
-            })
-            .ok_or_else(|| {
-                DeckError::new(
-                    ErrorKind::ContextChanged,
-                    "MCP create operation is no longer executable",
-                )
-            })?;
-        client(doc, &operation.client_id)?;
-        Ok::<(Value, String), DeckError>((
-            operation.result.clone().unwrap_or(Value::Null),
-            operation.client_id.clone(),
-        ))
-    })??;
-    let (plan, client_id) = plan;
-    // A client revocation or disable that fenced while this start waited for
-    // the delivery lock wins (checked outside the state lock).
-    if let Some(error) = emergency_fence_error(runtime, &client_id, "") {
-        return Err(error);
-    }
-    if plan.get("cwd").and_then(Value::as_str) != Some(&dir) {
-        return Err(DeckError::new(
-            ErrorKind::ContextChanged,
-            "MCP create context changed",
-        ));
-    }
-    let socket = plan
-        .get("runnerSocket")
-        .and_then(Value::as_str)
-        .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP create plan is invalid"))?;
-    let generation = plan
-        .get("generation")
-        .and_then(Value::as_str)
-        .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP create plan is invalid"))?;
-    let output_retention_ms = runtime.read(|doc| doc.config.output_retention_ms)?;
-    if crate::tmux::tmux(&["has-session", "-t", &crate::tmux::session_target(&name)]).is_ok() {
-        if runner_socket_matches(runtime, &name, socket, generation) {
-            return Ok(StartResult { created: true });
+    let cell = crate::commands::SessionOp::new();
+    let end = std::time::Instant::now() + crate::commands::START_BUDGET;
+    let tag = crate::applog::session_tag(&name);
+    crate::commands::session_op(
+        "mcp_start_session",
+        tag,
+        crate::commands::START_BUDGET,
+        &MCP_START_WORKERS,
+        cell.clone(),
+        move || {
+            crate::smoke_faults::stall_point(crate::smoke_faults::STALL_START);
+            let result = {
+                let _bounded = crate::session_runtime::Deadline::until(end);
+                // the runner's launch is the "command" of this start: once
+                // its caller stopped waiting it is not started
+                start_managed(&operation_id, &name, dir, &|| cell.commit())
+            };
+            crate::commands::finish_start(
+                &name,
+                true,
+                &cell,
+                result.map(|created| crate::commands::StartSessionResult {
+                    created,
+                    restored: false,
+                }),
+            )
+            .map(|r| StartResult { created: r.created })
+        },
+    )
+    .await
+}
+
+/// Managed starts in flight (their own bound, beside ordinary starts').
+static MCP_START_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The managed start itself. The delivery lock is held only to read the
+/// operation's plan and check the fences, and again after the runner is up
+/// to re-check them: never across tmux or the runner's readiness wait, so
+/// no IPC-thread holder of that lock can wait on a stalled process start.
+/// A fence raised in between wins: the new session is killed.
+fn start_managed(
+    operation_id: &str,
+    name: &str,
+    dir: String,
+    before_runner: &dyn Fn() -> bool,
+) -> Result<bool, DeckError> {
+    let runtime = runtime()?;
+    let (socket, generation, output_retention_ms, client_id) = {
+        let _delivery = runtime.delivery.lock_or_recover();
+        let plan = runtime.read(|doc| {
+            let operation = doc
+                .operations
+                .iter()
+                .find(|operation| {
+                    operation.operation_id == operation_id
+                        && operation.kind == "session-create"
+                        && operation.state == "executing"
+                })
+                .ok_or_else(|| {
+                    DeckError::new(
+                        ErrorKind::ContextChanged,
+                        "MCP create operation is no longer executable",
+                    )
+                })?;
+            client(doc, &operation.client_id)?;
+            Ok::<(Value, String), DeckError>((
+                operation.result.clone().unwrap_or(Value::Null),
+                operation.client_id.clone(),
+            ))
+        })??;
+        let (plan, client_id) = plan;
+        // A client revocation or disable that fenced while this start waited
+        // for the delivery lock wins (checked outside the state lock).
+        if let Some(error) = emergency_fence_error(runtime, &client_id, "") {
+            return Err(error);
+        }
+        if plan.get("cwd").and_then(Value::as_str) != Some(&dir) {
+            return Err(DeckError::new(
+                ErrorKind::ContextChanged,
+                "MCP create context changed",
+            ));
+        }
+        let socket = plan
+            .get("runnerSocket")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP create plan is invalid"))?
+            .to_string();
+        let generation = plan
+            .get("generation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DeckError::new(ErrorKind::Invalid, "MCP create plan is invalid"))?
+            .to_string();
+        let output_retention_ms = runtime.read(|doc| doc.config.output_retention_ms)?;
+        (socket, generation, output_retention_ms, client_id)
+    };
+    if crate::tmux::tmux(&["has-session", "-t", &crate::tmux::session_target(name)]).is_ok() {
+        if runner_socket_matches(runtime, name, &socket, &generation) {
+            return Ok(true);
         }
         return Err(DeckError::new(
             ErrorKind::ContextChanged,
@@ -1400,40 +1502,57 @@ pub(crate) fn mcp_start_session(
     }
     let _activity = crate::session_runtime::activity_guard()?;
     let _creation = crate::tmux_lifecycle::session_creation_guard()?;
+    if !before_runner() {
+        return Err(DeckError::new(
+            ErrorKind::Tmux,
+            crate::session_runtime::TERMINAL_TIMEOUT,
+        ));
+    }
     let runner = runner_program()?;
     let mut args: Vec<String> = vec![
         "new-session".into(),
         "-d".into(),
         "-s".into(),
-        name.clone(),
+        name.to_string(),
         "-c".into(),
         dir,
         runner.display().to_string(),
     ];
     args.extend(runner_launch_args(
-        socket,
-        generation,
+        &socket,
+        &generation,
         &runtime.service_instance,
         std::process::id(),
         output_retention_ms,
     ));
     crate::tmux::tmux_owned(&args)?;
     let ready = (0..40).any(|_| {
-        if UnixStream::connect(socket).is_ok() {
+        if UnixStream::connect(&socket).is_ok() {
             true
         } else {
             std::thread::sleep(Duration::from_millis(50));
             false
         }
     });
+    let kill = || {
+        let _ = crate::tmux::tmux(&["kill-session", "-t", &crate::tmux::session_target(name)]);
+    };
     if !ready {
-        let _ = crate::tmux::tmux(&["kill-session", "-t", &crate::tmux::session_target(&name)]);
+        kill();
         return Err(DeckError::new(
             ErrorKind::Other,
             "MCP runner did not become ready",
         ));
     }
-    Ok(StartResult { created: true })
+    let fenced = {
+        let _delivery = runtime.delivery.lock_or_recover();
+        emergency_fence_error(runtime, &client_id, "")
+    };
+    if let Some(error) = fenced {
+        kill();
+        return Err(error);
+    }
+    Ok(true)
 }
 
 /// The runner's own argv after its path: exactly the flags
@@ -1461,7 +1580,23 @@ pub(super) fn runner_launch_args(
 }
 
 #[tauri::command]
-pub(crate) fn mcp_complete(
+pub(crate) async fn mcp_complete(
+    operation_id: String,
+    state: String,
+    code: Option<String>,
+    tmux_session: Option<String>,
+) -> Result<(), DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "mcp_complete",
+        std::time::Duration::from_secs(5),
+        move || mcp_complete_now(operation_id, state, code, tmux_session),
+    )
+    .await
+}
+
+/// `mcp_complete` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn mcp_complete_now(
     operation_id: String,
     state: String,
     code: Option<String>,

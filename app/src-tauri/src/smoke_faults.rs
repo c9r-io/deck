@@ -23,7 +23,50 @@ const KINDS: &[&str] = &[
     "tmux-after-socket",
     "tmux-before-start",
     "tmux-after-metadata",
+    STALL_ATTACH_SPAWN,
+    STALL_START,
+    STALL_KILL,
+    STALL_CLIPBOARD,
 ];
+
+/// Stall points (2026-11-27): the next armed hit of the attach worker's
+/// spawn, a session start, a session kill or a clipboard write waits until
+/// the smoke sets the same kind's count to 0 (or 120 s pass), standing in
+/// for a process creation the kernel holds.
+pub(crate) const STALL_ATTACH_SPAWN: &str = "stall-attach-spawn";
+pub(crate) const STALL_START: &str = "stall-start";
+pub(crate) const STALL_KILL: &str = "stall-kill";
+pub(crate) const STALL_CLIPBOARD: &str = "stall-clipboard";
+pub(crate) const ATTACH_SPAWN: &str = STALL_ATTACH_SPAWN;
+
+/// Release epochs per stall kind: a stall waits until its kind's epoch
+/// moves on.
+static RELEASES: LazyLock<(Mutex<HashMap<&'static str, u64>>, std::sync::Condvar)> =
+    LazyLock::new(|| (Mutex::new(HashMap::new()), std::sync::Condvar::new()));
+
+/// Wait here if a stall of `kind` is armed (debug smoke only; a no-op in
+/// every other launch).
+pub(crate) fn stall_point(kind: &str) {
+    if !take(kind) {
+        return;
+    }
+    let (epochs, released) = &*RELEASES;
+    let mut held = epochs.lock_or_recover();
+    let start = *held.get(kind).unwrap_or(&0);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while *held.get(kind).unwrap_or(&0) == start {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        held = crate::sync::wait_timeout_or_recover(released, held, left);
+    }
+    drop(held);
+    crate::applog::applog(&format!(
+        "[smoke-fault] released kind={}",
+        canonical(kind).unwrap_or("?")
+    ));
+}
 static COUNTS: LazyLock<Mutex<HashMap<&'static str, u8>>> = LazyLock::new(|| {
     let mut counts = HashMap::new();
     if let Some(kind) = crate::launch_args::debug_arg("--smoke-fault").and_then(|v| canonical(&v)) {
@@ -96,6 +139,12 @@ pub(crate) fn smoke_fault_set(kind: String, count: u8) -> Result<SmokeFaultState
         ));
     }
     COUNTS.lock_or_recover().insert(kind, count);
+    if count == 0 {
+        // disarming a stall kind also releases every hit still held by it
+        let (epochs, released) = &*RELEASES;
+        *epochs.lock_or_recover().entry(kind).or_default() += 1;
+        released.notify_all();
+    }
     Ok(SmokeFaultState {
         kind: kind.to_string(),
         remaining: count,
@@ -545,4 +594,121 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// What the `ipc-stall` smoke judges after a stall is released: for
+/// `session`, its pane (tty) clients on the smoke server and whether Deck
+/// holds an attachment / an attach in flight for it; and in all, the
+/// sessions on the server, attach and start/kill workers not yet returned,
+/// and reapers that have not reaped their client.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SmokeAttachState {
+    pane_clients: usize,
+    attached: bool,
+    pending: bool,
+    attach_workers: usize,
+    session_workers: usize,
+    reaping: usize,
+    sessions: usize,
+}
+
+#[tauri::command]
+pub(crate) fn smoke_attach_state(
+    app: tauri::AppHandle,
+    session: String,
+) -> Result<SmokeAttachState, DeckError> {
+    use tauri::Manager;
+    if !enabled() {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke attach state is unavailable",
+        ));
+    }
+    crate::tmux::validate_session_name(&session)?;
+    let _bounded = crate::session_runtime::Deadline::until(
+        std::time::Instant::now() + std::time::Duration::from_secs(2),
+    );
+    let target = crate::tmux::session_target(&session);
+    let pane_clients = crate::tmux::tmux(&["list-clients", "-t", &target, "-F", "#{client_flags}"])
+        .map(|out| {
+            out.lines()
+                .filter(|flags| !flags.contains("control-mode"))
+                .count()
+        })
+        .unwrap_or(0);
+    let sessions = crate::tmux::tmux(&["list-sessions", "-F", "s"])
+        .map(|out| out.lines().count())
+        .unwrap_or(0);
+    let (attached, pending, attach_workers, reaping) =
+        crate::pty::smoke_counts(&app.state::<crate::pty::PtyState>(), &session);
+    Ok(SmokeAttachState {
+        pane_clients,
+        attached,
+        pending,
+        attach_workers,
+        session_workers: crate::commands::session_workers(),
+        reaping,
+        sessions,
+    })
+}
+
+/// The smoke server's pid, read before it was stopped (a stopped server
+/// answers nothing).
+static STOPPED_SERVER: Mutex<Option<i32>> = Mutex::new(None);
+
+/// Stop (`SIGSTOP`) or continue (`SIGCONT`) the smoke's OWN tmux server,
+/// standing in for a tmux that does not answer. The pid is read from the
+/// server itself on its smoke socket (`deck-smoke…`, never `deck` or
+/// `deck-dev`) and remembered, so the continue signals exactly that pid.
+#[tauri::command]
+pub(crate) fn smoke_tmux_server_signal(stop: bool) -> Result<i32, DeckError> {
+    if !enabled() || !crate::tmux::socket().starts_with("deck-smoke") {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke server signal is unavailable",
+        ));
+    }
+    let mut stopped = STOPPED_SERVER.lock_or_recover();
+    let pid = if stop {
+        let _bounded = crate::session_runtime::Deadline::until(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
+        let out = crate::tmux::tmux(&["display-message", "-p", "#{pid} #{socket_path}"])?;
+        let mut words = out.split_whitespace();
+        let pid: i32 = words
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or(DeckError::new(
+                ErrorKind::Other,
+                "smoke server pid unreadable",
+            ))?;
+        let socket = words.next().unwrap_or_default();
+        if !socket.ends_with(&format!("/{}", crate::tmux::socket())) || pid <= 1 {
+            return Err(DeckError::new(
+                ErrorKind::Other,
+                "smoke server is not the smoke socket's",
+            ));
+        }
+        *stopped = Some(pid);
+        pid
+    } else {
+        stopped.take().ok_or(DeckError::new(
+            ErrorKind::Other,
+            "no smoke server was stopped",
+        ))?
+    };
+    // SAFETY: a signal to the smoke server's own verified pid.
+    let rc = unsafe { libc::kill(pid, if stop { libc::SIGSTOP } else { libc::SIGCONT }) };
+    if rc != 0 {
+        return Err(DeckError::new(
+            ErrorKind::Other,
+            "smoke server signal failed",
+        ));
+    }
+    crate::applog::applog(&format!(
+        "[smoke-fault] tmux server {}",
+        if stop { "stopped" } else { "continued" }
+    ));
+    Ok(pid)
 }

@@ -1436,6 +1436,13 @@ fn start_missing_server_at_boot(build: &CurrentBuildIdentity) -> Result<ServerSn
     Ok(fresh)
 }
 
+/// The lifecycle operation lock alone, without probing or starting a
+/// server: what a late start's reconciliation (`commands.rs`) holds so no
+/// creator or restart runs while it settles one session.
+pub(crate) fn operation_guard() -> Result<MutexGuard<'static, ()>, DeckError> {
+    try_operation()
+}
+
 /// Guard every server-creating path. Existing incompatible sessions remain
 /// attachable after “later”, but no new session is added to the old helper.
 pub(crate) fn session_creation_guard() -> Result<MutexGuard<'static, ()>, DeckError> {
@@ -1492,14 +1499,36 @@ pub(crate) fn app_update_installing() -> bool {
 }
 
 #[tauri::command]
-pub(crate) fn tmux_server_status() -> Result<ServerStatus, DeckError> {
+pub(crate) async fn tmux_server_status() -> Result<ServerStatus, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "tmux_server_status",
+        std::time::Duration::from_secs(5),
+        tmux_server_status_now,
+    )
+    .await
+}
+
+/// `tmux_server_status` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn tmux_server_status_now() -> Result<ServerStatus, DeckError> {
     let mut status = status_from_probe(current_build(), probe_server());
     status.restart_blockers = restart_constraints()?;
     Ok(status)
 }
 
 #[tauri::command]
-pub(crate) fn defer_tmux_restart() -> Result<ServerStatus, DeckError> {
+pub(crate) async fn defer_tmux_restart() -> Result<ServerStatus, DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "defer_tmux_restart",
+        std::time::Duration::from_secs(5),
+        defer_tmux_restart_now,
+    )
+    .await
+}
+
+/// `defer_tmux_restart` itself, on the pool thread `off_ipc_thread` gives it (the
+/// IPC-thread census, `docs/ipc-thread.md`).
+pub(crate) fn defer_tmux_restart_now() -> Result<ServerStatus, DeckError> {
     let _guard = try_operation()?;
     if APP_UPDATE_INSTALLING.load(Ordering::Acquire) {
         return Err(DeckError::new(ErrorKind::Other, "app-update-installing"));
@@ -1509,7 +1538,7 @@ pub(crate) fn defer_tmux_restart() -> Result<ServerStatus, DeckError> {
     disk.deferred_build = Some(build_key(&build));
     write_disk(&disk)?;
     applog("[tmux-lifecycle] restart deferred");
-    tmux_server_status()
+    tmux_server_status_now()
 }
 
 #[tauri::command]
@@ -1806,7 +1835,7 @@ pub(crate) async fn restart_tmux_server(
     // no launch.
     if let Some(result) = crate::agent_reentry::known(&request_id) {
         return Ok(RestartReply {
-            server: tmux_server_status()?,
+            server: tmux_server_status_now()?,
             replaced: result.server_replaced,
             reentry: Some(result),
         });
@@ -3226,7 +3255,7 @@ mod tests {
                 ),
                 (
                     "defer_tmux_restart",
-                    defer_tmux_restart().map(drop).unwrap_err(),
+                    defer_tmux_restart_now().map(drop).unwrap_err(),
                 ),
                 (
                     "acknowledge_tmux_lifecycle_notice",
@@ -3245,7 +3274,7 @@ mod tests {
         assert_eq!(refused.message(), "app-update-installing");
         assert_eq!(refused.kind(), ErrorKind::Other);
         assert_eq!(
-            defer_tmux_restart().map(drop).unwrap_err().message(),
+            defer_tmux_restart_now().map(drop).unwrap_err().message(),
             "app-update-installing"
         );
         cancel_app_update_install();
