@@ -55,7 +55,12 @@
 //!   agy (an agy word of the generation, or the literal foreground name),
 //!   waits for `agy_interaction`; agy shows a folder-trust question that
 //!   Enter answers before its first prompt and reports no question at all.
-//!   agy is not in `interactive_agent` (remote admission). Other
+//!   agy is not in `interactive_agent` (remote admission). agy asks for
+//!   permission without a hook word, so a row for an agy whose newest word
+//!   is `working` holds at `Hold::AgyWorking` until its turn ends, whatever
+//!   override it carries, and an agy without a word of this generation
+//!   takes a first-send override on a run's head row only (`agent_agy`
+//!   "No typing while agy works"). Other
 //!   process-bound rows (`expected_process` naming any other program) are
 //!   unchanged.
 //! - First-send readiness override (`first_send.rs`): the head row of a
@@ -416,6 +421,12 @@ pub(crate) enum Hold {
     /// Enter would grant the trust (plan stage `agy-trust`). No first-send
     /// override lifts it; the user answering agy in the card does.
     AgyUntrusted,
+    /// a row for an agy whose newest word of this generation is `working`
+    /// (plan stage `agy-working`): agy runs no hook when it asks for
+    /// permission, so a quiet agy that works may be showing a question the
+    /// paste would be dropped into and the Enter would answer. It goes once
+    /// agy ends its turn (`turn-done`). No override lifts it.
+    AgyWorking,
 }
 
 /// The recognized interactive agent a row is configured for, if any.
@@ -621,9 +632,19 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         if !o.agy_trusted {
             return Some(Hold::AgyUntrusted);
         }
-        if !overridden {
+        // the override accepts the risk of a STARTUP dialog: only for the
+        // run's head row, typed into an agy that just started. A later line
+        // into an agy whose words Deck lost (a restart, a re-entry) could
+        // meet a permission question no hook reported: held for its turn.
+        if !overridden || i.mode != "at" {
             return Some(Hold::FirstInteraction);
         }
+    }
+    // agy reports no question: while its turn runs, a quiet pane may be a
+    // permission question (`agent_agy`), so nothing is typed until the turn
+    // ends — never a quiet time, never an override
+    if (row_agy(i) || o.agy) && o.agy_interaction && o.agent == Some(agent_status::WORKING) {
+        return Some(Hold::AgyWorking);
     }
     None
 }

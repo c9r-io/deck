@@ -1173,6 +1173,7 @@ const dictionary = {
   'queue.stage.piInputUnverified': 'Held · Deck can’t reliably see when Pi is waiting for input, so nothing is sent to Pi automatically; use Send now',
   'queue.stage.agyTrust': 'Held · agy is asking whether to trust this folder. Open the card and answer agy; once you trust it, this step is sent on its own',
   'queue.stage.piHandover': 'Waiting for Pi · the step goes to Pi through Deck’s extension once it is connected and Pi’s current run has ended',
+  'queue.stage.agyWorking': 'Waiting for agy · agy is working, and it does not tell Deck when it asks you something, so this step goes only once agy ends its turn. If agy waits for your answer in the card, answer it there',
   'queue.stage.human': 'Waiting · you took this card over; it goes out after you hand the card back, or use Send now',
   'queue.history.approved': "approved step {step}",
   'queue.history.approvedMessage': "approved step {step} with Slack message content",

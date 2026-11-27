@@ -359,7 +359,19 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         1,
         Hold,
     ),
-    ("scheduler/select.rs", "hold_reason_with", ".agent", 1, Hold),
+    ("scheduler/select.rs", "hold_reason_with", ".agent", 2, Hold),
+    // agy asks for permission without a word (`agent_agy` "No typing while
+    // agy works", approved 2026-11-28): an agy whose word is `working` HOLDS
+    // its rows at `Hold::AgyWorking`; the hold lifts when the word is no
+    // longer `working`, and `turn-done` itself is never read (contract test
+    // `an_agy_line_waits_while_agy_works_and_after_a_lost_word`)
+    (
+        "scheduler/select.rs",
+        "hold_reason_with",
+        "WORKING",
+        1,
+        Hold,
+    ),
     (
         "scheduler/select.rs",
         "agent_holds",
@@ -393,6 +405,17 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
         "scheduler/delivery.rs",
         "pane_asks_now",
         "NEEDS_INPUT",
+        1,
+        Hold,
+    ),
+    // the same re-read for an agy row: agy's `working` at that instant
+    // REFUSES the paste and the Enter (a turn agy started on its own may be
+    // showing a permission question); it never sends (contract test
+    // `an_agy_line_waits_while_agy_works_and_after_a_lost_word`)
+    (
+        "scheduler/delivery.rs",
+        "agy_working_now",
+        "WORKING",
         1,
         Hold,
     ),
@@ -1004,10 +1027,29 @@ fn an_interaction_boundary_is_never_side_effect_authority() {
          function that does"
     );
     for function in ["hold_reason_with", "hold_reason", "agent_holds"] {
-        for word in TURN_DONE_TOKENS.iter().chain(&["WORKING", "\"working\""]) {
+        for word in TURN_DONE_TOKENS.iter().chain(&["\"working\""]) {
             assert!(!body(function).contains(word), "{function} reads {word}");
         }
     }
+    // `working` is read in one place only, and there it adds a hold: agy's
+    // permission question reads as `working` (`Hold::AgyWorking`)
+    for function in ["hold_reason", "agent_holds"] {
+        assert!(
+            !body(function).contains("WORKING"),
+            "{function} reads WORKING"
+        );
+    }
+    assert_eq!(
+        decision.matches("WORKING").count(),
+        1,
+        "one reviewed read of WORKING"
+    );
+    let at = decision.find("agent_status::WORKING").unwrap();
+    let hold = &decision[at..];
+    assert!(
+        hold[..hold.find('}').unwrap()].contains("return Some(Hold::AgyWorking)"),
+        "WORKING may only add the agy hold"
+    );
 }
 
 #[test]

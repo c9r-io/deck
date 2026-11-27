@@ -46,6 +46,7 @@ const stageKeys = {
   'first-send': 'queue.stage.firstSend', external: 'queue.stage.external', 'codex-signal': 'queue.stage.codexSignal',
   'pi-input-unverified': 'queue.stage.piInputUnverified',
   'agy-trust': 'queue.stage.agyTrust',
+  'agy-working': 'queue.stage.agyWorking',
   'pi-handover': 'queue.stage.piHandover',
   human: 'queue.stage.human',
   'authority-unverified': 'queue.stage.authorityUnverified',

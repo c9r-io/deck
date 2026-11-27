@@ -61,6 +61,23 @@
 //!   unparsable or missing reads as untrusted, and a trusted directory is
 //!   no readiness evidence — it only returns the row to the gates that
 //!   held it before. Deck never writes that file.
+//! - **No typing while agy works** (approved 2026-11-28). agy 1.5.18 was
+//!   seen to keep `working` while it showed "Run this command?": a pasted
+//!   line was dropped and its Enter ran the command
+//!   (`docs/evidence/interject-20261127/agent-probes.md`). Quiet output
+//!   proves nothing there, so an automatic row for an agy whose newest word
+//!   of this generation is `working` holds at `Hold::AgyWorking`
+//!   (`scheduler/select.rs`, stage `agy-working`) until the turn's `Stop`;
+//!   the pre-fire transaction and the Enter after the paste read agy's word
+//!   again (`delivery.rs` `agy_working_now`): a turn agy started on its own
+//!   meanwhile gets no Enter (the line is then `uncertain`, never sent
+//!   again). An agy whose words Deck lost (a restart, a re-entry) takes a
+//!   first-send override on the run's head row only (the startup-dialog
+//!   risk it was given for); a later line waits for agy's next turn or the
+//!   user. The gap that stays: Esc on a question runs no `Stop`, so such a
+//!   card stays `working` and its lines wait for the user; agy's
+//!   statusline (`tool_confirmation_pending`) is not read — it is not bound
+//!   to a pane generation, and only Deck's own launch could add it.
 //! - **Recognition only.** An accepted agy word marks the pane generation
 //!   `agy_interaction` (`agent_status::GenerationEvidence`), the evidence the
 //!   scheduler's first-interaction gate asks for an agy row

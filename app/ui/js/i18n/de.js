@@ -1166,6 +1166,7 @@ const dictionary = {
   "queue.stage.piInputUnverified": "Zurückgehalten · Deck kann nicht verlässlich sehen, wann Pi auf eine Eingabe wartet, daher wird nichts automatisch an Pi gesendet; verwenden Sie „Jetzt senden“",
   "queue.stage.agyTrust": "Zurückgehalten · agy fragt, ob diesem Ordner vertraut werden soll. Öffnen Sie die Karte und antworten Sie in agy; sobald Sie ihm vertrauen, wird dieser Schritt von selbst gesendet",
   "queue.stage.piHandover": "Warten auf Pi · der Schritt geht über Decks Erweiterung an Pi, sobald sie verbunden ist und der aktuelle Lauf endet",
+  "queue.stage.agyWorking": "Warten auf agy · agy arbeitet und teilt Deck nicht mit, wenn es Sie etwas fragt; dieser Schritt geht daher erst, wenn agy seinen Durchgang beendet. Wartet agy in der Karte auf Ihre Antwort, antworten Sie dort",
   "queue.stage.human": "Wartet · Sie haben diese Karte übernommen; gesendet wird, nachdem Sie sie zurückgeben, oder verwenden Sie „Jetzt senden“",
   "queue.history.approved": "freigegebener Schritt {step}",
   "queue.history.approvedMessage": "freigegebener Schritt {step} mit Inhalten einer Slack-Nachricht",

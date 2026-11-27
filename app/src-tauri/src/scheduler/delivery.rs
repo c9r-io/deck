@@ -64,8 +64,15 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     // user during the paste gets no Enter (it would answer the question);
     // the line then stays for the user, like any refused Enter
     let asks = || pane_asks_now(item);
+    // agy asks without a word: its Enter waits on one more look at agy's
+    // own word too, so a turn agy started on its own between the paste and
+    // the Enter (background work ending) gets no Enter — it may be showing
+    // a permission question by then (`select.rs` `Hold::AgyWorking`)
+    let agy_busy = || pane_asks_now(item) || agy_working_now(item);
     let mut request = literal_request(item, pane, delivery);
-    if interject_row(item) {
+    if row_agy(item) {
+        request.enter_refused_when = Some(&agy_busy);
+    } else if interject_row(item) {
         request.enter_refused_when = Some(&asks);
     }
     let result = crate::prompt_delivery::deliver(request)?;
@@ -97,6 +104,31 @@ fn pane_asks_now(item: &QueueItem) -> bool {
             pane.pane_pid,
         ) == Some(crate::agent_status::NEEDS_INPUT)
     })
+}
+
+/// Whether the agy the pane of `item` is bound to says, at this instant, that
+/// its turn runs (`agent_status::pane_state` is `working`). `false` without a
+/// binding or a word: it only refuses, never releases.
+fn agy_working_now(item: &QueueItem) -> bool {
+    #[cfg(test)]
+    if let Some(forced) = AGY_WORKING_FOR_TESTS.with(std::cell::Cell::get) {
+        return forced;
+    }
+    item.binding.as_ref().is_some_and(|pane| {
+        crate::agent_status::pane_state(
+            pane.server_pid,
+            &pane.pane_id,
+            &pane.session_id,
+            pane.pane_pid,
+        ) == Some(crate::agent_status::WORKING)
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's answer in place of the Signal store (`agy_working_now`).
+    pub(crate) static AGY_WORKING_FOR_TESTS: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -903,6 +935,12 @@ fn send_one_guarded(
         // receives no typed line (`select.rs` "Interjected lines"). Refusal
         // only: a word read here never sends anything.
         if automatic && interject_row(&sel) && !pi_handover(&sel) && pane_asks_now(&sel) {
+            return Ok(None);
+        }
+        // An agy row: agy's own word read again at this instant — a turn
+        // that started since the tick's observation may be showing a
+        // permission question (`select.rs` `Hold::AgyWorking`). Refusal only.
+        if automatic && row_agy(&sel) && (agy_working_now(&sel) || pane_asks_now(&sel)) {
             return Ok(None);
         }
         let overridden =

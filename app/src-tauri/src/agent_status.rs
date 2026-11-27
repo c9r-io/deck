@@ -3823,15 +3823,22 @@ mod tests {
             !seen.claude_interaction,
             "an agy word is no Claude evidence"
         );
-        assert!(!crate::scheduler::agent_holds(
-            &agy_row(session, Some("agy")),
-            Some(&seen)
-        ));
+        // the interaction is established, but agy works: a permission
+        // question would read the same, so the row still waits
+        assert_eq!(
+            crate::scheduler::hold_reason(&agy_row(session, Some("agy")), Some(&seen)),
+            Some(crate::scheduler::Hold::AgyWorking)
+        );
         assert_eq!(
             agy_report("turn-done", Some(helper.pid), &table, &rows),
             Ok(())
         );
         assert_eq!(projection(&rows, session), Some("turn-done"));
+        // the turn ended: nothing holds it
+        assert!(!crate::scheduler::agent_holds(
+            &agy_row(session, Some("agy")),
+            Some(&observed(&rows, &table, session))
+        ));
         // a v1 working after a turn ended starts the next one (agy resumes on
         // its own once background work ends)
         assert_eq!(

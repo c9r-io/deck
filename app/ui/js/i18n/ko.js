@@ -1166,6 +1166,7 @@ const dictionary = {
   "queue.stage.piInputUnverified": "보류됨 · Deck이 Pi가 입력을 기다리는 시점을 신뢰성 있게 볼 수 없으므로 Pi로는 아무것도 자동 전송되지 않습니다. ‘지금 보내기’를 사용하세요",
   "queue.stage.agyTrust": "보류됨 · agy가 이 폴더를 신뢰할지 묻고 있습니다. 카드를 열어 agy에서 답하세요. 신뢰하면 이 단계는 자동으로 전송됩니다",
   "queue.stage.piHandover": "Pi 대기 중 · 확장이 연결되고 현재 실행이 끝나면 이 단계는 Deck 확장을 통해 Pi에 전달됩니다",
+  "queue.stage.agyWorking": "agy 대기 중 · agy가 작업 중이며, 질문할 때 Deck에 알리지 않으므로 이 단계는 agy가 차례를 마친 뒤에만 전송됩니다. agy가 카드에서 답을 기다리고 있다면 거기에서 답하세요",
   "queue.stage.human": "대기 중 · 이 카드를 넘겨받았습니다. 돌려준 뒤 전송되며, ‘지금 보내기’도 쓸 수 있습니다",
   "queue.history.approved": "승인된 {step}단계",
   "queue.history.approvedMessage": "Slack 메시지 내용이 포함된 승인된 {step}단계",

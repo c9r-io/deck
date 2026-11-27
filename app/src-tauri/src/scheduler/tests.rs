@@ -11549,3 +11549,121 @@ fn a_local_rule_s_approval_is_its_own_trigger_and_covers_its_match() {
         Err("trigger")
     );
 }
+
+/// D: an agy worker line is never typed while agy says its turn runs — agy
+/// runs no hook for a permission question, so a quiet working agy may be
+/// showing one (`Hold::AgyWorking`); it goes once the turn ended. An agy
+/// whose words Deck lost takes the worker override only on the run's head
+/// row (a startup dialog), never on a later line; the pre-fire transaction
+/// reads agy's word again at that instant.
+#[test]
+fn an_agy_line_waits_while_agy_works_and_after_a_lost_word() {
+    let agy = |agent: Option<&'static str>, interaction: bool| Observed {
+        activity: NOW - 120,
+        agent,
+        agy: true,
+        agy_trusted: true,
+        agy_interaction: interaction,
+        ..Observed::default()
+    };
+    let rule = format!("{}agy", crate::mcp::WORKER_TYPE_RULE_PREFIX);
+    let override_ = ReadinessOverride {
+        rule: rule.clone(),
+        trigger: first_send::FirstSendOrigin::Agent,
+        clock_target: None,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    };
+    let mut line = worker_line("l2", 2, NOW - 300, None);
+    line.expected_process = Some("agy".into());
+    line.readiness_override = Some(override_.clone());
+    // working: held, whatever override the line carries; it is not a wait
+    // the user is called for (agy may simply be busy)
+    let working = agy(Some(crate::agent_status::WORKING), true);
+    assert_eq!(hold_reason(&line, Some(&working)), Some(Hold::AgyWorking));
+    let activity = HashMap::from([("s".to_string(), working)]);
+    let q = qs(vec![line.clone()]);
+    assert!(select_due(&q, NOW, 720, &activity).is_empty());
+    assert_eq!(stage_of(&q, "l2", &activity), "agy-working");
+    assert!(!DELIVERY_WAIT_STAGES.contains(&"agy-working"));
+    // the turn ended: the ordinary rules again
+    let done = agy(Some(crate::agent_status::TURN_DONE), true);
+    assert_eq!(hold_reason(&line, Some(&done)), None);
+    // Deck lost agy's words (a restart): a later line waits for agy's next
+    // turn or the user, the override notwithstanding ...
+    let lost = agy(None, false);
+    assert_eq!(
+        hold_reason(&line, Some(&lost)),
+        Some(Hold::FirstInteraction)
+    );
+    // ... while the head row of a fresh start keeps its startup-dialog override
+    let mut head = qi("h1", "at");
+    head.at = Some(0);
+    head.external = true;
+    head.expected_process = Some("agy".into());
+    head.authority = line.authority.clone();
+    head.readiness_override = Some(override_);
+    assert_eq!(hold_reason(&head, Some(&lost)), None);
+    assert_eq!(
+        hold_reason(&head, Some(&working)),
+        Some(Hold::AgyWorking),
+        "an override never lifts the working hold"
+    );
+    // a Claude line is untouched by any of it
+    let claude = worker_line("c2", 2, NOW - 300, None);
+    assert_eq!(
+        hold_reason(
+            &claude,
+            Some(&seen_agent(NOW - 120, crate::agent_status::WORKING)["s"])
+        ),
+        None
+    );
+
+    // the pre-fire re-read: agy started a turn since the tick saw turn-done
+    let mut row = worker_line("p2", 2, NOW - 300, None);
+    row.expected_process = Some("agy".into());
+    let qm = Mutex::new(qs(vec![row]));
+    let quiet = HashMap::from([("s".to_string(), done)]);
+    let fired = std::sync::atomic::AtomicUsize::new(0);
+    let fire = |_: &QueueItem| {
+        fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    };
+    let no_kill = |_: &str| {};
+    let config = || {
+        Some(crate::inbound::Config {
+            slack_enabled: false,
+            local_enabled: false,
+            rules: Vec::new(),
+        })
+    };
+    let hooks = SendHooks {
+        fire: &fire,
+        persist: &ok_persist,
+        kill: &no_kill,
+        board: &test_board,
+        authority: &config,
+    };
+    first_send::DELEGATIONS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some([crate::mcp::worker_delegation_key("client_a")].into()))
+    });
+    AGY_WORKING_FOR_TESTS.with(|cell| cell.set(Some(true)));
+    let res = send_one(&qm, &AtomicBool::new(false), "s", 720, &quiet, &hooks);
+    assert_eq!(res, SendResult::Nothing);
+    assert_eq!(
+        qm.lock_or_recover().items[0].attempts,
+        0,
+        "no attempt counted"
+    );
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+    AGY_WORKING_FOR_TESTS.with(|cell| cell.set(Some(false)));
+    PANE_ASKS_FOR_TESTS.with(|cell| cell.set(Some(false)));
+    let res = send_one(&qm, &AtomicBool::new(false), "s", 720, &quiet, &hooks);
+    assert!(matches!(res, SendResult::Sent { .. }), "{res:?}");
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    AGY_WORKING_FOR_TESTS.with(|cell| cell.set(None));
+    PANE_ASKS_FOR_TESTS.with(|cell| cell.set(None));
+    first_send::DELEGATIONS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+}

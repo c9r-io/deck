@@ -34,6 +34,8 @@
 //!   quiet, context, channel-stopped, channel-unverified, pi-input-unverified,
 //!   pi-handover (a Pi worker's line waits for its observer between two runs),
 //!   agy-trust (an agy row waits for the user to trust its folder in agy),
+//!   agy-working (an agy row waits for agy's turn to end: agy reports no
+//!   question, so a working agy may be asking one),
 //!   human, unknown) with its observation time and whether the row carries content
 //!   authority, so the webview never derives readiness from hook state.
 //! - `delivery_waits` is the same projection read for attention: per session,
@@ -540,6 +542,7 @@ pub(crate) fn plan_item(
             Hold::PiHandover => "pi-handover",
             Hold::Human => "human",
             Hold::AgyUntrusted => "agy-trust",
+            Hold::AgyWorking => "agy-working",
         }
     } else if i.mode == "chain" && !interjected && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"

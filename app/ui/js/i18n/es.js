@@ -1166,6 +1166,7 @@ const dictionary = {
   "queue.stage.piInputUnverified": "Retenido · Deck no puede ver de forma fiable cuándo Pi espera entrada, así que no se envía nada a Pi automáticamente; usa Enviar ahora",
   "queue.stage.agyTrust": "Retenido · agy pregunta si confiar en esta carpeta. Abre la tarjeta y responde en agy; cuando confíes en ella, este paso se envía solo",
   "queue.stage.piHandover": "Esperando a Pi · el paso se entrega a Pi mediante la extensión de Deck cuando esté conectada y termine la ejecución actual",
+  "queue.stage.agyWorking": "Esperando a agy · agy está trabajando y no avisa a Deck cuando te pregunta algo, así que este paso solo se envía cuando agy termina su turno. Si agy espera tu respuesta en la tarjeta, responde allí",
   "queue.stage.human": "En espera · tomaste esta tarjeta; se envía cuando la devuelvas, o usa Enviar ahora",
   "queue.history.approved": "paso {step} aprobado",
   "queue.history.approvedMessage": "paso {step} aprobado con contenido de mensajes de Slack",
