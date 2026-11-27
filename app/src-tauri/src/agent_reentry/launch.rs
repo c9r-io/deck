@@ -412,6 +412,7 @@ pub(crate) fn send_once(
             submit: true,
             require_bracketed: true,
             require_paste_mode: true,
+            enter_refused_when: None,
         },
         &EnvTransport { env, target },
         held,

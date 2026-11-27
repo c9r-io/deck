@@ -1,0 +1,584 @@
+{
+ "root": "/private/tmp/deck-pi-ubgbny8k",
+ "facts": {
+  "artifacts": {
+   "npm": {
+    "package_version": "1.6.0",
+    "cli_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "node_version": "v24.19.0",
+    "node_sha256": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1"
+   },
+   "standalone": {
+    "version": "1.6.0",
+    "pi_sha256": "5a4656b60b74b3a50de71d5388969d0c6e91a4eed75c35744cf8ea008f115b06"
+   },
+   "observer_sha256": {
+    "observer.ts": "b8ee10eec897f2142d5f449ccd52e8d7e5a95a3329b47b00c3b500f4bec5ebe3",
+    "signal.ts": "d8dc67b96b07f942d57d8e58c291d14b6838adbac7fc8a7e770946d9ad0588bc",
+    "reply.ts": "82d3f1a7c073dd2c3f9bf6e5082b8630cac880aaeffe90f31193c48806c7a2a9"
+   },
+   "tmux_sha256": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+  },
+  "build": {
+   "head": "01ff6dbf9cb59a662643e4f4814c8c640925b65b",
+   "dirty": true,
+   "dirty_paths": [
+    "CLAUDE.md",
+    "app/SMOKE.md",
+    "app/run.sh",
+    "app/src-tauri/mcp-adapter/src/main.rs",
+    "app/src-tauri/mcp-adapter/tests/stdio.rs",
+    "app/src-tauri/mcp-fixtures/tools.json",
+    "app/src-tauri/resources/pi/observer.ts",
+    "app/src-tauri/src/agent_pi.rs",
+    "app/src-tauri/src/agent_pi/handover.rs",
+    "app/src-tauri/src/agent_pi/tests.rs",
+    "app/src-tauri/src/agent_pi/transport.rs",
+    "app/src-tauri/src/agent_pi/transport/tests.rs",
+    "app/src-tauri/src/agent_reentry/launch.rs",
+    "app/src-tauri/src/agent_status.rs",
+    "app/src-tauri/src/agent_status/hooks.rs",
+    "app/src-tauri/src/agent_status/hooks/tests.rs",
+    "app/src-tauri/src/connector/native.rs",
+    "app/src-tauri/src/diagnostics.rs",
+    "app/src-tauri/src/main.rs",
+    "app/src-tauri/src/mcp/control.rs",
+    "app/src-tauri/src/mcp/mod.rs",
+    "app/src-tauri/src/mcp/session.rs",
+    "app/src-tauri/src/mcp/tests.rs",
+    "app/src-tauri/src/mcp/workers.rs",
+    "app/src-tauri/src/prompt_delivery.rs",
+    "app/src-tauri/src/prompt_delivery/tests.rs",
+    "app/src-tauri/src/scheduler/authority.rs",
+    "app/src-tauri/src/scheduler/delivery.rs",
+    "app/src-tauri/src/scheduler/first_send.rs",
+    "app/src-tauri/src/scheduler/mod.rs",
+    "app/src-tauri/src/scheduler/ops.rs",
+    "app/src-tauri/src/scheduler/review.rs",
+    "app/src-tauri/src/scheduler/select.rs",
+    "app/src-tauri/src/scheduler/tests.rs",
+    "app/src-tauri/src/scheduler/thread.rs",
+    "app/src-tauri/src/storage.rs",
+    "app/src-tauri/src/voice.rs",
+    "app/src-tauri/tests/edr_quiet.rs",
+    "app/src-tauri/tests/signal_census.rs",
+    "app/ui/test/fixtures/smoke-manifest.json",
+    "app/ui/test/pi-observer.test.mjs",
+    "app/ui/test/pi-worker-smoke.mjs",
+    "app/ui/test/smoke-manifest.test.mjs",
+    "app/ui/test/wk-smoke.mjs",
+    "app/ui/test/workers-smoke.mjs",
+    "docs/evidence/interject-20261127/",
+    "docs/mcp.md",
+    "docs/scheduler-context-safety.md",
+    "research_notes/",
+    "scripts/check-edr-binary",
+    "scripts/mcp-agent-e2e.py",
+    "scripts/mcp-cards-e2e.py",
+    "scripts/mcp-interject-e2e.py",
+    "scripts/pi-live-verify.py",
+    "scripts/pi/exec-peer.c",
+    "scripts/pi/fixture.ts",
+    "scripts/pi_native.py",
+    "scripts/test_release_tools.py"
+   ],
+   "diff_sha256": "f83101dc404f6fd407b016b3b3a75313b30251aca1900d6baef1df23fce99e9a",
+   "source_sha256": "2f47d3f1760101c3b4677d9598a51d0163f83d3a9998a1135eafde043e579c23",
+   "source_files": 441,
+   "test_binary": "deck_app-8f169971261f42d9",
+   "test_binary_sha256": "7b8065e18fbd2e17bc68b0c94bc72dc6279b70a7ac87cbe58134cbeb74a9a54b",
+   "test_binary_run_sha256": "7b8065e18fbd2e17bc68b0c94bc72dc6279b70a7ac87cbe58134cbeb74a9a54b",
+   "command": [
+    "pi_native.py",
+    "--test-binary",
+    "app/src-tauri/target/debug/deps/deck_app-8f169971261f42d9",
+    "--standalone",
+    "/tmp/dps.5blk/pi-standalone/pi",
+    "--only",
+    "exec_peer,steer"
+   ]
+  },
+  "settings_before_sha256": "161a1a7e7e6372ab8f161f9c8d5a1c929fd9d3d8951cf4eefaf473b25672f3da",
+  "process": {
+   "npm": {
+    "tmux_command": "node",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   },
+   "standalone": {
+    "tmux_command": "pi",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   }
+  },
+  "exec_peer": {
+   "images_differ": true
+  }
+ },
+ "checks": [
+  {
+   "ac": "A08",
+   "check": "this backend is a stable install only under the relocated home",
+   "ok": true,
+   "detail": {
+    "settings": {
+     "pi": false,
+     "pi_installation": "absent",
+     "pi_replies": false
+    }
+   }
+  },
+  {
+   "ac": "A08",
+   "check": "the Settings command wrote Deck's one entry into Pi's own settings",
+   "ok": true,
+   "detail": {
+    "reply": {
+     "ok": true,
+     "error": null,
+     "status": {
+      "pi": true,
+      "pi_installation": "current",
+      "pi_replies": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A05",
+   "check": "every byte the user wrote is where it was; only the entry was added",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A04",
+   "check": "asking again writes nothing",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A08",
+   "check": "configured is not connected: no observer exists before a Pi loads the entry",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A14",
+   "check": "a shell is no Pi: nothing is said about it",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "zsh",
+     "finish_fg": "zsh",
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A09",
+   "check": "npm: the observer's process is the pane's foreground leader, a child of the pane's shell, on its terminal",
+   "ok": true,
+   "detail": {
+    "tmux_command": "node",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   }
+  },
+  {
+   "ac": "A08",
+   "check": "npm: Pi loaded the entry and its attest was accepted by the production listener",
+   "ok": true,
+   "detail": {
+    "lease_run": 0
+   }
+  },
+  {
+   "ac": "A14",
+   "check": "npm: a loaded, idle Pi is not a turn that ended",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "node",
+     "finish_fg": "node",
+     "name": "deck-a",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "Q01",
+   "check": "npm: the scheduler recognizes the target as Pi, by the tick's evidence and before firing",
+   "ok": true,
+   "detail": {
+    "scheduler": {
+     "pi": true,
+     "pi_signal": "connected",
+     "pre_fire_pi": true
+    }
+   }
+  },
+  {
+   "ac": "A09",
+   "check": "standalone: the observer's process is the pane's foreground leader, a child of the pane's shell, on its terminal",
+   "ok": true,
+   "detail": {
+    "tmux_command": "pi",
+    "ps_comm": "pi",
+    "parent_is_pane_shell": true,
+    "leads_its_group": true,
+    "is_terminal_foreground": true,
+    "same_terminal_as_shell": true
+   }
+  },
+  {
+   "ac": "A08",
+   "check": "standalone: Pi loaded the entry and its attest was accepted by the production listener",
+   "ok": true,
+   "detail": {
+    "lease_run": 0
+   }
+  },
+  {
+   "ac": "A14",
+   "check": "standalone: a loaded, idle Pi is not a turn that ended",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "pi",
+     "finish_fg": "pi",
+     "name": "deck-b",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "Q01",
+   "check": "standalone: the scheduler recognizes the target as Pi, by the tick's evidence and before firing",
+   "ok": true,
+   "detail": {
+    "scheduler": {
+     "pi": true,
+     "pi_signal": "connected",
+     "pre_fire_pi": true
+    }
+   }
+  },
+  {
+   "ac": "A10",
+   "check": "two Pis in two panes of one working directory hold two leases",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A12",
+   "check": "work status on",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A12",
+   "check": "a real program in the pane's foreground binds and reports a run; a fork and a child's exec between two frames cost one more try and end nothing",
+   "ok": true,
+   "detail": {
+    "fg": "exec-observer"
+   }
+  },
+  {
+   "ac": "A12",
+   "check": "the same pid and start time, another image: the frame it sends with all the old one held is refused",
+   "ok": true,
+   "detail": {
+    "same_pid_and_start": true,
+    "image_before": "exec-observer",
+    "image_after": "exec-other"
+   }
+  },
+  {
+   "ac": "A12",
+   "check": "nothing of the old observer is shown for the program that runs now: no word, no coverage, no Pi hold",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "exec-other",
+     "finish_fg": "exec-other",
+     "name": "deck-a",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A12",
+   "check": "a second real program, in the other pane, bound the same way",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "A12",
+   "check": "a silent exec is noticed without any frame: the lease ends and the card says nothing of a Pi",
+   "ok": true,
+   "detail": {
+    "card": {
+     "agent": null,
+     "alive": true,
+     "codex_signal": null,
+     "episode": null,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "exec-other",
+     "finish_fg": "exec-other",
+     "name": "deck-b",
+     "scheduler": {
+      "pi": false,
+      "pi_signal": null,
+      "pre_fire_pi": false
+     }
+    }
+   }
+  },
+  {
+   "ac": "A12",
+   "check": "a file replaced on disk under the running program is not an exec: the same lease, its frame is written",
+   "ok": true,
+   "detail": {
+    "new_inode": true,
+    "same_process": true,
+    "card": {
+     "agent": "turn-done",
+     "alive": true,
+     "codex_signal": null,
+     "episode": 4,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "exec-observer",
+     "finish_fg": "exec-observer",
+     "name": "deck-a",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "A12",
+   "check": "a program that ends is the end of its lease: the kernel says so, and nothing is made up",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "R01",
+   "check": "a child of the bound program writes the run's ending on the connection it inherited, another on a connection of its own: the kernel names the child both times, and nothing is written",
+   "ok": true,
+   "detail": {
+    "refusals": 2,
+    "changes": [],
+    "card": {
+     "agent": "working",
+     "alive": true,
+     "codex_signal": null,
+     "episode": 5,
+     "episode_viewed": false,
+     "exited_normally": false,
+     "fg": "exec-observer",
+     "finish_fg": "exec-observer",
+     "name": "deck-b",
+     "pi_signal": "connected",
+     "scheduler": {
+      "pi": true,
+      "pi_signal": "connected",
+      "pre_fire_pi": true
+     }
+    }
+   }
+  },
+  {
+   "ac": "R01",
+   "check": "the parent's own ending is written once, as the very next episode, under the same lease",
+   "ok": true,
+   "detail": {
+    "new_episodes": 1
+   }
+  },
+  {
+   "ac": "S00",
+   "check": "work status on",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "ac": "S01",
+   "check": "npm: while Pi runs a tool an ordinary worker line is not offered at all",
+   "ok": true,
+   "detail": {
+    "outcome": "NotAsked",
+    "open": true
+   }
+  },
+  {
+   "ac": "S02",
+   "check": "npm: an interjected line is handed to Pi while the run is open",
+   "ok": true,
+   "detail": {
+    "outcome": "Delivered",
+    "open": true
+   }
+  },
+  {
+   "ac": "S03",
+   "check": "npm: Pi gave it to the model after the tool, in the same run: a later provider request carries it, before the run's one settlement",
+   "ok": true,
+   "detail": {
+    "carried": 1,
+    "requests": 2,
+    "settlements": 1
+   }
+  },
+  {
+   "ac": "S04",
+   "check": "npm: Deck saw one run: working, then turn-done; nothing was made up for the line",
+   "ok": true,
+   "detail": {
+    "states": [
+     "working",
+     "turn-done"
+    ]
+   }
+  },
+  {
+   "ac": "S05",
+   "check": "npm: between runs an interjected line is an ordinary message that starts one run",
+   "ok": true,
+   "detail": {
+    "outcome": "Delivered",
+    "states": [
+     "working",
+     "turn-done"
+    ]
+   }
+  },
+  {
+   "ac": "S01",
+   "check": "standalone: while Pi runs a tool an ordinary worker line is not offered at all",
+   "ok": true,
+   "detail": {
+    "outcome": "NotAsked",
+    "open": true
+   }
+  },
+  {
+   "ac": "S02",
+   "check": "standalone: an interjected line is handed to Pi while the run is open",
+   "ok": true,
+   "detail": {
+    "outcome": "Delivered",
+    "open": true
+   }
+  },
+  {
+   "ac": "S03",
+   "check": "standalone: Pi gave it to the model after the tool, in the same run: a later provider request carries it, before the run's one settlement",
+   "ok": true,
+   "detail": {
+    "carried": 1,
+    "requests": 2,
+    "settlements": 1
+   }
+  },
+  {
+   "ac": "S04",
+   "check": "standalone: Deck saw one run: working, then turn-done; nothing was made up for the line",
+   "ok": true,
+   "detail": {
+    "states": [
+     "working",
+     "turn-done"
+    ]
+   }
+  },
+  {
+   "ac": "S05",
+   "check": "standalone: between runs an interjected line is an ordinary message that starts one run",
+   "ok": true,
+   "detail": {
+    "outcome": "Delivered",
+    "states": [
+     "working",
+     "turn-done"
+    ]
+   }
+  },
+  {
+   "ac": "A18",
+   "check": "backend 1: in its whole life no card ever showed a word but working and turn-done",
+   "ok": true,
+   "detail": {
+    "words": [
+     "turn-done",
+     "working"
+    ]
+   }
+  }
+ ],
+ "passed": 37,
+ "failed": [],
+ "stopped": null,
+ "cleanup": {
+  "exit": 0,
+  "processes_from_root": 0,
+  "socket_left": false
+ }
+}

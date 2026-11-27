@@ -8,8 +8,8 @@ const NONCE: &str = "0123456789abcdef0123456789abcdef";
 /// An attest: the observer's claims and the nonce they answer.
 fn hello(change: impl FnOnce(&mut serde_json::Value)) -> String {
     let mut line = serde_json::json!({
-        "protocol": "pi-observer", "v": 4, "source": "pi", "nonce": NONCE, "socket": "deck",
-        "server_pid": 4242, "pane": "%7", "observerVersion": 4, "piVersion": "1.1.0",
+        "protocol": "pi-observer", "v": 5, "source": "pi", "nonce": NONCE, "socket": "deck",
+        "server_pid": 4242, "pane": "%7", "observerVersion": 5, "piVersion": "1.1.0",
         "mode": "tui", "capabilities": { "signal": true, "reply": false }
     });
     change(&mut line);
@@ -19,7 +19,7 @@ fn hello(change: impl FnOnce(&mut serde_json::Value)) -> String {
 /// A frame of lease 3, with a nonce.
 fn frame(body: serde_json::Value) -> String {
     let mut line = serde_json::json!({
-        "protocol": "pi-observer", "v": 4, "source": "pi", "lease": 3, "nonce": NONCE
+        "protocol": "pi-observer", "v": 5, "source": "pi", "lease": 3, "nonce": NONCE
     });
     line.as_object_mut()
         .unwrap()
@@ -70,7 +70,7 @@ fn pi_is_registered_without_a_hook_family_or_a_reentry_capability() {
 /// is can only be said once the sender is proven.
 #[test]
 fn a_line_is_a_hello_an_attest_or_a_frame_of_a_lease() {
-    let common = serde_json::json!({ "protocol": "pi-observer", "v": 4, "source": "pi" });
+    let common = serde_json::json!({ "protocol": "pi-observer", "v": 5, "source": "pi" });
     let with = |more: serde_json::Value| {
         let mut line = common.clone();
         line.as_object_mut()
@@ -162,9 +162,9 @@ fn a_line_is_a_hello_an_attest_or_a_frame_of_a_lease() {
     ));
     // another version of the wire is no line of this one, whatever it holds
     for line in [
-        common.to_string().replace("\"v\":4", "\"v\":1"),
+        common.to_string().replace("\"v\":5", "\"v\":1"),
         hello(|l| l["v"] = 1.into()),
-        frame(serde_json::json!({"seq": 1})).replace("\"v\":4", "\"v\":5"),
+        frame(serde_json::json!({"seq": 1})).replace("\"v\":5", "\"v\":6"),
     ] {
         assert_eq!(parse_message(&line), Err("bad-version"), "{line}");
     }
@@ -216,13 +216,14 @@ fn the_attest_is_one_closed_shape() {
     let refused = |change: &dyn Fn(&mut serde_json::Value), code: &str| {
         assert_eq!(parse_hello(&hello(change)), Err(code), "{code}");
     };
-    refused(&|l| l["v"] = 5.into(), "bad-version");
+    refused(&|l| l["v"] = 6.into(), "bad-version");
+    refused(&|l| l["v"] = 4.into(), "bad-version");
     refused(&|l| l["v"] = 3.into(), "bad-version");
     refused(&|l| l["v"] = 1.into(), "bad-version");
     refused(&|l| l["v"] = serde_json::json!(3.5), "bad-frame");
     refused(&|l| l["v"] = serde_json::json!("3"), "bad-frame");
-    refused(&|l| l["observerVersion"] = 3.into(), "bad-version");
-    refused(&|l| l["observerVersion"] = 5.into(), "bad-version");
+    refused(&|l| l["observerVersion"] = 4.into(), "bad-version");
+    refused(&|l| l["observerVersion"] = 6.into(), "bad-version");
     refused(&|l| l["source"] = "claude-code".into(), "bad-frame");
     refused(&|l| l["protocol"] = "agent-lifecycle".into(), "bad-frame");
     refused(&|l| l["mode"] = "rpc".into(), "bad-mode");
@@ -529,7 +530,7 @@ fn numbers_are_whole_positive_and_exact() {
     // JSON has no NaN or Infinity: such a line is not JSON at all
     for text in ["NaN", "Infinity", "-Infinity", "1e400"] {
         let line = format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":4,\"source\":\"pi\",\"lease\":3,\"nonce\":\"{NONCE}\",\"seq\":{text}}}"
+            "{{\"protocol\":\"pi-observer\",\"v\":5,\"source\":\"pi\",\"lease\":3,\"nonce\":\"{NONCE}\",\"seq\":{text}}}"
         );
         assert_eq!(parse_message(&line), Err("bad-frame"), "{text}");
     }
@@ -586,7 +587,7 @@ fn a_frame_carries_no_field_of_another_shape_and_no_content() {
         frame(serde_json::json!({"seq": 1})).replacen("\"seq\":1", "\"seq\":1,\"seq\":2", 1);
     assert_eq!(parse_frame(&twice), Err("bad-frame"));
     assert_eq!(
-        parse_frame(&frame(serde_json::json!({"seq": 1})).replace("\"v\":4", "\"v\":5")),
+        parse_frame(&frame(serde_json::json!({"seq": 1})).replace("\"v\":5", "\"v\":6")),
         Err("bad-version")
     );
 }
@@ -603,33 +604,33 @@ fn answers_are_six_closed_lines() {
     };
     assert_eq!(
         nonce_line(&nonce),
-        format!("{{\"protocol\":\"pi-observer\",\"v\":4,\"nonce\":\"{NONCE}\"}}\n")
+        format!("{{\"protocol\":\"pi-observer\",\"v\":5,\"nonce\":\"{NONCE}\"}}\n")
     );
     assert_eq!(
         accepted_line(41, &nonce, only_signal),
         format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":4,\"accepted\":41,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"reply\":false}}}}\n"
+            "{{\"protocol\":\"pi-observer\",\"v\":5,\"accepted\":41,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"reply\":false}}}}\n"
         )
     );
     assert_eq!(
         ack_line(7, &nonce, only_signal),
         format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":4,\"ack\":7,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"reply\":false}}}}\n"
+            "{{\"protocol\":\"pi-observer\",\"v\":5,\"ack\":7,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":true,\"reply\":false}}}}\n"
         )
     );
     assert_eq!(
         revoked_line(9, &nonce, Capabilities::NONE),
         format!(
-            "{{\"protocol\":\"pi-observer\",\"v\":4,\"revoked\":9,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":false,\"reply\":false}}}}\n"
+            "{{\"protocol\":\"pi-observer\",\"v\":5,\"revoked\":9,\"nonce\":\"{NONCE}\",\"capabilities\":{{\"signal\":false,\"reply\":false}}}}\n"
         )
     );
     assert_eq!(
         again_line(&nonce),
-        format!("{{\"protocol\":\"pi-observer\",\"v\":4,\"again\":true,\"nonce\":\"{NONCE}\"}}\n")
+        format!("{{\"protocol\":\"pi-observer\",\"v\":5,\"again\":true,\"nonce\":\"{NONCE}\"}}\n")
     );
     assert_eq!(
         refused_line("duplicate-observer"),
-        "{\"protocol\":\"pi-observer\",\"v\":4,\"refused\":\"duplicate-observer\"}\n"
+        "{\"protocol\":\"pi-observer\",\"v\":5,\"refused\":\"duplicate-observer\"}\n"
     );
     // each is one JSON object with exactly its keys, and only a refusal is
     // without a nonce
@@ -687,7 +688,7 @@ fn deck_s_own_line_is_no_observer_s_and_its_answer_is_a_place() {
     let own = place_line();
     assert_eq!(
         own,
-        "{\"protocol\":\"pi-observer\",\"v\":4,\"source\":\"deck\"}"
+        "{\"protocol\":\"pi-observer\",\"v\":5,\"source\":\"deck\"}"
     );
     assert!(is_family(&own), "the listener hands it to this family");
     assert!(asks_place(&own));
@@ -698,14 +699,14 @@ fn deck_s_own_line_is_no_observer_s_and_its_answer_is_a_place() {
         format!("{own} "),
         format!(" {own}"),
         own.replace("deck", "pi"),
-        own.replace("\"v\":4", "\"v\":1"),
+        own.replace("\"v\":5", "\"v\":1"),
         own.replace('}', ",\"lease\":1}"),
     ] {
         assert!(!asks_place(&other), "{other}");
     }
     assert_eq!(
         placed_line(41),
-        "{\"protocol\":\"pi-observer\",\"v\":4,\"place\":41}\n"
+        "{\"protocol\":\"pi-observer\",\"v\":5,\"place\":41}\n"
     );
     assert_eq!(placed(&placed_line(41)), Some(41));
     assert_eq!(placed(&placed_line(u64::MAX)), Some(u64::MAX));
@@ -716,8 +717,8 @@ fn deck_s_own_line_is_no_observer_s_and_its_answer_is_a_place() {
         refused_line("busy"),
         "{\"protocol\":\"agent-lifecycle\",\"v\":4,\"place\":41}\n".to_string(),
         "{\"protocol\":\"pi-observer\",\"v\":2,\"place\":41}\n".to_string(),
-        "{\"protocol\":\"pi-observer\",\"v\":4,\"place\":-1}\n".to_string(),
-        "{\"protocol\":\"pi-observer\",\"v\":4,\"place\":\"41\"}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":5,\"place\":-1}\n".to_string(),
+        "{\"protocol\":\"pi-observer\",\"v\":5,\"place\":\"41\"}\n".to_string(),
         String::new(),
     ] {
         assert_eq!(placed(&other), None, "{other}");
@@ -1101,6 +1102,30 @@ mod native {
                 let episode = command.get("episode").and_then(Value::as_u64).unwrap_or(0);
                 let result = crate::notify::notify_dismiss(text("session").into(), episode);
                 json!({ "ok": result.is_ok() })
+            }
+            // a worker card's line put in the production mailbox for one
+            // pane, the way the scheduler's fire step does (`handover`):
+            // `steer` an interjected one. Blocks until its outcome (at most
+            // the ask and receipt budgets, 22 s).
+            "handover" => {
+                let number = |key: &str| {
+                    command
+                        .get(key)
+                        .and_then(Value::as_u64)
+                        .and_then(|n| u32::try_from(n).ok())
+                        .unwrap_or(0)
+                };
+                let steer = command.get("steer").and_then(Value::as_bool) == Some(true);
+                let outcome = crate::agent_pi::handover::hand_over(
+                    crate::agent_pi::handover::Pane {
+                        server_pid: number("server_pid"),
+                        pane_id: text("pane_id"),
+                        pane_pid: number("pane_pid"),
+                    },
+                    text("text"),
+                    steer,
+                );
+                json!({ "outcome": format!("{outcome:?}") })
             }
             _ => json!({ "error": "unknown-op" }),
         }

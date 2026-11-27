@@ -136,8 +136,10 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // `needs-input` (its Stop is spelled `turn-done --reply`).
     ("agent_status/hooks.rs", "", "\"turn-done\"", 4, Producer),
     // five spec tables: Claude plain, turn summaries, worker replies, and
-    // Codex plain and forwarding its final message
-    ("agent_status/hooks.rs", "", "\"needs-input\"", 5, Producer),
+    // Codex plain and forwarding its final message; `needs-input` from
+    // Claude Code's Notification and PermissionRequest (three tables each)
+    // and Codex's PermissionRequest (two)
+    ("agent_status/hooks.rs", "", "\"needs-input\"", 8, Producer),
     ("agent_status/hooks.rs", "", "\"working\"", 5, Producer),
     // FR-SI-04: the interaction tracker admits words per source interaction
     // (refuses late/ended/mismatched ones); it grants nothing
@@ -265,14 +267,14 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // (`EPISODE_MOVED`), never release one: every hold still decides
     (
         "mcp/workers.rs",
-        "observe_sessions",
+        "seen_in",
         "agent_status::projections",
         1,
         Presentation,
     ),
     (
         "mcp/workers.rs",
-        "observe_sessions",
+        "seen_in",
         "agent_status::reporting",
         1,
         Presentation,
@@ -282,7 +284,7 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // word for the orchestrator, never a send, a hold lifted or a close
     (
         "mcp/workers.rs",
-        "observe_sessions",
+        "seen_in",
         "generation_evidence(",
         1,
         Presentation,
@@ -367,6 +369,33 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ),
     ("scheduler/select.rs", "", "agent_holds(", 1, Hold),
     ("scheduler/select.rs", "eligible", "agent_holds(", 1, Hold),
+    // an interjected line passes an earlier row of its list only when that
+    // row is held by nothing but its quiet time (a Pi worker line: by the
+    // pause between two runs, while the observer is bound): any other hold
+    // of the earlier row keeps the line behind it, and neither is released
+    // (contract tests
+    // `an_interjected_line_never_passes_a_row_that_waits_for_more_than_quiet`,
+    // `a_pi_interjected_line_passes_a_line_that_waits_for_the_pause_between_runs`)
+    (
+        "scheduler/select.rs",
+        "waits_only_for_quiet",
+        "hold_reason(",
+        1,
+        Hold,
+    ),
+    // the pre-fire transaction and the Enter of an interjected line read the
+    // agent's own word for the bound pane again, from memory: `needs-input`
+    // REFUSES the paste (nothing is sent, no attempt) and the Enter (a
+    // partial delivery), and nothing read there ever sends (contract tests
+    // `the_pre_fire_reads_the_agent_s_word_again_for_an_interjected_line`,
+    // `a_refusal_before_the_enter_sends_no_enter_and_is_a_partial_delivery`)
+    (
+        "scheduler/delivery.rs",
+        "pane_asks_now",
+        "NEEDS_INPUT",
+        1,
+        Hold,
+    ),
     // Startup stabilization may stop on a newly observed Agent hold. It
     // never converts a Signal observation into send authority.
     (

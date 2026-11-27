@@ -1468,7 +1468,7 @@ class Run:
                        check=True, capture_output=True)
         server_pid = int(self.tm("display-message", "-p", "#{pid}"))
         marks = self.root / "tmp"
-        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 4, "source": "pi", **body}, separators=(",", ":"))
+        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 5, "source": "pi", **body}, separators=(",", ":"))
         for pane in (self.a, self.b):
             pane.launch(tools=True)
             lease = self.bound(pane)["lease"]
@@ -1489,7 +1489,7 @@ class Run:
             now = tap.lease(pane.session)
             log = self.logs / f"tool-{pane.runtime}.log"
             attest = line(nonce="@NONCE@", socket=tap.ready["socket"], server_pid=server_pid,
-                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=4,
+                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=5,
                           piVersion="1.1.0", mode="tui", capabilities={"signal": True, "reply": False})
             # the frame that would end the run Pi is in: its lease, the number and the run that come next
             forged = line(lease=now["lease"], nonce="0" * 32, seq=now["next_seq"] + 1, run=now["run"] + 1, state="turn-done")
@@ -1531,7 +1531,7 @@ class Run:
         self.facts["exec_peer"] = {"images_differ": len({sha256(observer), sha256(other), sha256(staged)}) == 3}
         marks = self.root / "tmp"
         server_pid = int(self.tm("display-message", "-p", "#{pid}"))
-        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 4, "source": "pi", **body}, separators=(",", ":"))
+        line = lambda **body: json.dumps({"protocol": "pi-observer", "v": 5, "source": "pi", **body}, separators=(",", ":"))
         # a frame as a step of the peer, which puts in the lease and the nonce it holds
         frame = lambda **body: line(lease="@LEASE@", nonce="@NONCE@", **body).replace('"@LEASE@"', "@LEASE@")
         work, ping, done = frame(seq=1, run=1, state="working"), frame(seq=2), frame(seq=3, run=1, state="turn-done")
@@ -1545,7 +1545,7 @@ class Run:
         def start(pane: Pane, name: str, last: list[str]) -> Path:
             log = self.logs / f"exec-{name}.log"
             attest = line(nonce="@NONCE@", socket=tap.ready["socket"], server_pid=server_pid,
-                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=4,
+                          pane=self.tm("display-message", "-p", "-t", pane.target, "#{pane_id}"), observerVersion=5,
                           piVersion="1.1.0", mode="tui", capabilities={"signal": True, "reply": False})
             command = shlex.join([str(observer), tap.ready["status_sock"], str(log), "@hello", attest, work, "@fork", ping,
                                   f"@mark:{marks}/before-{name}", f"@wait:{marks}/go-{name}", *last])
@@ -1669,9 +1669,71 @@ class Run:
                     pane.pid = None
         self.switches(False, False)
 
+    def steer(self) -> None:
+        """An interjected worker line (`agent_pi/handover.rs`, "Interjected lines", approved 2026-11-27), through the
+        production mailbox, transport and observer: while Pi runs one of its own tools, an ordinary worker line is
+        not offered at all, and an interjected one is handed to Pi as Pi's own steering message; Pi gives it to the
+        model after that tool, in the same run, which settles once and which Deck reports once. Between two runs an
+        interjected line is an ordinary message that starts a run of its own."""
+        tap = self.tap
+        # the scenario before may have left Pi's work status off (exec_peer does)
+        for pane in (self.a, self.b):
+            pane.quit()
+        self.check("S00", "work status on", self.switches(True, False) == status(True, False, "current"))
+        for pane in (self.a, self.b):
+            pane.launch(tools=True)
+            self.bound(pane)
+            ident = self.tm("display-message", "-p", "-t", pane.target, "#{pid} #{pane_id} #{pane_pid}").split()
+            where = {"server_pid": int(ident[0]), "pane_id": ident[1], "pane_pid": int(ident[2])}
+            source, mark = self.source_mark(), tap.mark()
+            run_before = (tap.lease(pane.session) or {}).get("run", 0)
+            pane.type("/fx-tool sleep 30")
+            self.until(f"{pane.session}: the tool's run", lambda: tap.state(pane.session) == "working", 15)
+            time.sleep(1.0)
+            ordinary = tap.ask("handover", text="an ordinary line", steer=False, **where)
+            open_after_ordinary = tap.state(pane.session) == "working"
+            asked_at = len(pane.events(source))
+            steered = tap.ask("handover", text=f"INTERJECT {pane.runtime}: steer the run", steer=True, **where)
+            open_at_receipt = tap.state(pane.session) == "working"
+            received_at = len(pane.events(source))
+            self.until(f"{pane.session}: the run to settle", lambda: pane.names(source).count("agent_settled") >= 1, 60)
+            self.until(f"{pane.session}: the ending on the card", lambda: tap.state(pane.session) == "turn-done", 10)
+            time.sleep(0.5)
+            events = pane.events(source)
+            names = [event["event"] for event in events]
+            settled = names.index("agent_settled")
+            requests = [(i, event) for i, event in enumerate(events) if event["event"] == "fixture_provider_request"]
+            carried = [i for i, event in requests if event.get("interject")]
+            states = [change[0] if change else None for change in tap.changes(pane.session, mark)]
+            self.check("S01", f"{pane.runtime}: while Pi runs a tool an ordinary worker line is not offered at all",
+                       ordinary.get("outcome") == "NotAsked" and open_after_ordinary,
+                       outcome=ordinary.get("outcome"), open=open_after_ordinary)
+            self.check("S02", f"{pane.runtime}: an interjected line is handed to Pi while the run is open",
+                       steered.get("outcome") == "Delivered" and open_at_receipt and "agent_settled" not in names[:received_at],
+                       outcome=steered.get("outcome"), open=open_at_receipt)
+            self.check("S03", f"{pane.runtime}: Pi gave it to the model after the tool, in the same run: a later provider "
+                       "request carries it, before the run's one settlement",
+                       bool(carried) and carried[0] >= asked_at and carried[0] < settled and names.count("agent_settled") == 1,
+                       carried=len(carried), requests=len(requests), settlements=names.count("agent_settled"))
+            self.check("S04", f"{pane.runtime}: Deck saw one run: working, then turn-done; nothing was made up for the line",
+                       states == ["working", "turn-done"] and (tap.lease(pane.session) or {}).get("run", 0) - run_before == 1,
+                       states=states)
+            # between two runs: an interjected line is an ordinary message
+            source, mark = self.source_mark(), tap.mark()
+            between = tap.ask("handover", text=f"INTERJECT {pane.runtime}: between runs", steer=True, **where)
+            self.until(f"{pane.session}: the line's own run to settle", lambda: pane.names(source).count("agent_settled") >= 1, 30)
+            self.until(f"{pane.session}: its ending on the card", lambda: tap.state(pane.session) == "turn-done", 10)
+            states = [change[0] if change else None for change in tap.changes(pane.session, mark)]
+            self.check("S05", f"{pane.runtime}: between runs an interjected line is an ordinary message that starts one run",
+                       between.get("outcome") == "Delivered" and states == ["working", "turn-done"]
+                       and pane.names(source).count("agent_settled") == 1, outcome=between.get("outcome"), states=states)
+            pane.quit()
+            pane.launch()
+            self.bound(pane)
+
     SCENARIOS = ("settings_loop", "start_both", "boundaries", "viewed", "dialogs", "together", "inactive_pane", "reload",
                  "frozen", "restart", "disable", "not_loaded", "out_of_order", "endings", "replies",
-                 "capabilities", "on_the_way", "tool_children", "exec_peer")
+                 "capabilities", "on_the_way", "tool_children", "exec_peer", "steer")
 
     def all(self) -> None:
         only = set(self.args.only.split(",")) if self.args.only else None

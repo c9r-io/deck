@@ -3545,6 +3545,13 @@ export async function verifyAgyTrust() {
   await runWorkersSmoke({ agyTrusting: true });
 }
 
+// Interjected worker lines (workers-smoke.mjs, scenario `interject`): an
+// orchestrator card's line goes while its worker works, ahead of a queued one.
+export async function verifyWorkerInterject() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ interjecting: true });
+}
+
 // A Claude worker type under a second config folder (a second account):
 // the `types` run with `CLAUDE_CONFIG_DIR=<folder> claude …`
 // (workers-smoke.mjs, scenario `account`).
@@ -3572,6 +3579,14 @@ export async function verifyUxFailures() {
 export async function verifyPiWorker() {
   const { runPiWorkerSmoke } = await import('./pi-worker-smoke.mjs');
   await runPiWorkerSmoke();
+}
+
+// Interjected lines into a Pi worker card on a real model, from an
+// orchestrator card (pi-worker-smoke.mjs, scripts/pi-live-verify.py --mode
+// pi-interject).
+export async function verifyPiInterject() {
+  const { runPiInterjectSmoke } = await import('./pi-worker-smoke.mjs');
+  await runPiInterjectSmoke();
 }
 
 export async function verifyOrchestrators() {

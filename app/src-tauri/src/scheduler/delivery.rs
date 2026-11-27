@@ -59,7 +59,16 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     if pi_handover(item) {
         return hand_to_pi(item, pane);
     }
-    let result = crate::prompt_delivery::deliver(literal_request(item, pane, delivery))?;
+    // an interjected line is pasted while its agent works: its Enter waits
+    // on one more look at the agent's own word, so an agent that asked the
+    // user during the paste gets no Enter (it would answer the question);
+    // the line then stays for the user, like any refused Enter
+    let asks = || pane_asks_now(item);
+    let mut request = literal_request(item, pane, delivery);
+    if interject_row(item) {
+        request.enter_refused_when = Some(&asks);
+    }
+    let result = crate::prompt_delivery::deliver(request)?;
     if result == crate::prompt_delivery::LiteralOutcome::EnterRefused {
         applog("[queue] Enter refused after paste — prompt left in the input");
         return Err(DeckError::new(
@@ -70,6 +79,33 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     Ok(())
 }
 
+/// Whether the agent of the pane `item` is bound to has asked the user
+/// something, as the Signal store holds it at this instant
+/// (`agent_status::pane_state`, memory only). `false` without a binding or a
+/// word: absence proves nothing and releases nothing, it only does not
+/// refuse.
+fn pane_asks_now(item: &QueueItem) -> bool {
+    #[cfg(test)]
+    if let Some(forced) = PANE_ASKS_FOR_TESTS.with(std::cell::Cell::get) {
+        return forced;
+    }
+    item.binding.as_ref().is_some_and(|pane| {
+        crate::agent_status::pane_state(
+            pane.server_pid,
+            &pane.pane_id,
+            &pane.session_id,
+            pane.pane_pid,
+        ) == Some(crate::agent_status::NEEDS_INPUT)
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's answer in place of the Signal store (`pane_asks_now`).
+    pub(crate) static PANE_ASKS_FOR_TESTS: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// A worker card's line for a Pi: never typed. It waits in the mailbox for
 /// the pane's proven observer, which gives it to Pi between two runs
 /// (`agent_pi::handover`). A line nobody asked for, or one Pi was too busy
@@ -78,6 +114,8 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
 /// (`PartialDelivery`), never offered again.
 fn hand_to_pi(item: &QueueItem, pane: &PaneIdentity) -> Result<(), DeckError> {
     use crate::agent_pi::handover::{hand_over, Outcome, Pane};
+    // an interjected line may go while Pi works: the observer gives it to
+    // Pi as a steering message (`agent_pi::handover`)
     match hand_over(
         Pane {
             server_pid: pane.server_pid,
@@ -85,6 +123,7 @@ fn hand_to_pi(item: &QueueItem, pane: &PaneIdentity) -> Result<(), DeckError> {
             pane_pid: pane.pane_pid,
         },
         &item.text,
+        interject_row(item),
     ) {
         Outcome::Delivered => Ok(()),
         Outcome::Declined(_) => Err(DeckError::new(
@@ -123,6 +162,7 @@ pub(crate) fn literal_request<'a>(
         submit: true,
         require_bracketed: false,
         require_paste_mode: item.expected_process.is_some(),
+        enter_refused_when: None,
     }
 }
 
@@ -443,6 +483,7 @@ pub(crate) fn finalize_delivery(
         automatic: channel_attempt
             .as_ref()
             .is_some_and(|attempt| attempt.automatic),
+        interject: item.interject.is_some(),
     });
     if let Some(operation_id) = &item.operation_id {
         if let Some(operation) = q.operations.iter_mut().find(|op| &op.id == operation_id) {
@@ -525,6 +566,7 @@ pub(crate) fn finalize_delivery(
                     authority: None,
                     readiness_override: None,
                     channel_first_send: None,
+                    interject: None,
                 });
             }
         }
@@ -855,6 +897,14 @@ fn send_one_guarded(
         if automatic && delegated_row(&sel) && crate::mcp::worker_card_held(&sel.card_id) {
             return Ok(None);
         }
+        // An interjected line goes while its agent works, so the agent's own
+        // word is read again here, from memory at this instant, not from
+        // the tick: an agent that asked the user since that observation
+        // receives no typed line (`select.rs` "Interjected lines"). Refusal
+        // only: a word read here never sends anything.
+        if automatic && interject_row(&sel) && !pi_handover(&sel) && pane_asks_now(&sel) {
+            return Ok(None);
+        }
         let overridden =
             automatic && relies_on_readiness_override(&sel, request.activity.get(&sel.session));
         // each decision reads the one source that backs it, once
@@ -876,10 +926,14 @@ fn send_one_guarded(
                     .as_ref()
                     .is_some_and(|o| o.trigger == first_send::FirstSendOrigin::Agent));
         let delegations = wants_delegations.then(first_send::delegations);
+        // an interjected line also rests on its orchestrator card still
+        // driving the card: read under the same fences (`authority.rs`)
+        let interjects = (automatic && sel.interject.is_some()).then(first_send::interjects);
         let sources = first_send::Sources {
             settings: config.as_ref().and_then(Option::as_ref),
             board: board.as_ref().and_then(Option::as_ref),
             delegations: delegations.as_ref().and_then(Option::as_ref),
+            interjects: interjects.as_ref().and_then(Option::as_ref),
         };
         if approval.is_some() {
             match fence(&sel, sources) {

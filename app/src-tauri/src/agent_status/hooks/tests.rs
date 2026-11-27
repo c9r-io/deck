@@ -629,6 +629,80 @@ fn an_install_from_before_post_tool_use_is_installed_and_migrates_to_it() {
     assert!(!hooks_installed(&alone, CLAUDE_HOOKS));
 }
 
+/// An install made before PermissionRequest joined Claude Code's tables
+/// (2026-11-27) still reads as installed and migrates to it: the request
+/// is said as `needs-input`, for every tool and question (no matcher),
+/// beside the `permission_prompt` Notification. Codex's PermissionRequest
+/// joined nothing: a Codex install without it is partial, as before.
+#[test]
+fn an_install_from_before_permission_request_is_installed_and_migrates_to_it() {
+    for specs in [
+        CLAUDE_HOOKS,
+        CLAUDE_HOOKS_WITH_REPLY,
+        CLAUDE_HOOKS_WITH_WORKER_REPLY,
+    ] {
+        let older: Vec<HookSpec> = specs
+            .iter()
+            .copied()
+            .filter(|(event, _, _)| *event != "PermissionRequest")
+            .collect();
+        assert_eq!(older.len(), specs.len() - 1);
+        let old = hooks_with_install(
+            serde_json::json!({}),
+            &older,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert!(old["hooks"].get("PermissionRequest").is_none());
+        assert!(hooks_installed(&old, specs), "still installed");
+        assert!(!hooks_are_current(
+            &old,
+            specs,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
+        let migrated =
+            hooks_with_install(old, specs, "claude-code", HookStyle::Exec, HELPER).unwrap();
+        assert!(hooks_are_current(
+            &migrated,
+            specs,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
+        let hook = &migrated["hooks"]["PermissionRequest"][0];
+        assert!(hook.get("matcher").is_none(), "every tool and question");
+        assert_eq!(
+            hook["hooks"][0]["args"],
+            serde_json::json!(["claude-code", "needs-input"])
+        );
+        assert_eq!(
+            migrated["hooks"]["Notification"][0]["matcher"], "permission_prompt",
+            "the Notification stays"
+        );
+    }
+    let codex: Vec<HookSpec> = CODEX_HOOKS
+        .iter()
+        .copied()
+        .filter(|(event, _, _)| *event != "PermissionRequest")
+        .collect();
+    let partial = hooks_with_install(
+        serde_json::json!({}),
+        &codex,
+        "codex",
+        HookStyle::Exec,
+        HELPER,
+    )
+    .unwrap();
+    assert!(
+        !hooks_installed(&partial, CODEX_HOOKS),
+        "Codex's own first event"
+    );
+}
+
 /// A hook the user keeps in the SAME group as deck's is theirs. It does
 /// not make deck's hook stale (so the boot migration leaves the file
 /// alone), and install and uninstall take deck's hook out from beside it:

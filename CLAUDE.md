@@ -258,7 +258,14 @@ evolution; it makes scope expansion deliberate.
   the client wrote goes automatically only into the cards its own triggers
   or `deck_worker_start` started (`ContentClass::Delegated`), under every
   readiness hold plus the human hold (the user's keystroke holds it until
-  handed back); it starts only the worker types the user listed (Codex only
+  handed back) — with ONE waiver (approved 2026-11-27): a line the
+  kernel-proven orchestrator card that started the card interjects
+  (`deck_worker_interject`, never from no card, never into an unowned or
+  another orchestrator's card) waits for no quiet time and may pass rows of
+  its list that wait for nothing but theirs; every other hold and the
+  session gap still apply, it stays bound to that orchestrator card until
+  sent, and agy takes none (`scheduler/select.rs` "Interjected lines",
+  `mcp/workers.rs` `queue_line`); it starts only the worker types the user listed (Codex only
   with `--no-daemon`; agy, approved 2026-11-23, only while Deck's agy hooks
   entry is on, its lines typed like Claude's under agy's own
   first-interaction gate, `agent_agy.rs`, `scheduler/select.rs` `row_agy`;
@@ -277,7 +284,9 @@ evolution; it makes scope expansion deliberate.
   two runs while Pi says it is idle, never as a command or template, one
   line per pane, never offered twice (a line without a receipt is left for
   the user). It is the one text Deck sends an Agent other than by the
-  pane; it is still an interactive session, never a headless or SDK
+  pane; an interjected line may also be handed over while Pi works, as
+  Pi's own steering message (`deliverAs: "steer"`, approved 2026-11-27),
+  never as a follow-up, command or template; it is still an interactive session, never a headless or SDK
   transport, and no other row for a Pi is ever sent automatically. It may close only a card it started,
   from the card it started it from (above). The agent in a worker card may hand
   Deck a report for its orchestrator (`deck_worker_report`, approved

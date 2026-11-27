@@ -1,0 +1,1 @@
+smoke-verdict worker-interject: PASS (6/6 expected checkpoints, 6 lines)

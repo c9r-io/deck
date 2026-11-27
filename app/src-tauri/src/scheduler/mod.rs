@@ -323,6 +323,33 @@ pub(crate) struct QueueItem {
     /// channel run. Revocation clears `authorized`, never this marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     channel_first_send: Option<ChannelFirstSendConstraint>,
+    /// An interjected worker line (`deck_worker_interject`, `select.rs`
+    /// "Interjected lines"): set only by `ops::worker_queue_add` for a line
+    /// the kernel-proven orchestrator card wrote for a worker card it
+    /// started. It waives the chain's quiet time and nothing else, and only
+    /// while the row is still that delegated line and that orchestrator card
+    /// still drives the card (`Interject::stands`). queue.json takes sticky
+    /// v13 while any row carries it (`storage::uses_worker_interject`): an
+    /// older Deck refuses the file instead of sending it as an ordinary line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    interject: Option<Interject>,
+}
+
+/// What an interjected line rests on beyond the client's delegation: the
+/// orchestrator card that wrote it, as the kernel proved it at acceptance
+/// (`mcp/origin.rs`). Ids only, never text.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Interject {
+    pub(crate) orchestrator: String,
+}
+
+impl Interject {
+    /// The key this line's binding takes in the set of standing
+    /// orchestrator-worker bindings (`mcp::interject_bindings`).
+    pub(crate) fn key(&self, client: &str, card: &str) -> String {
+        crate::mcp::interject_key(client, card, &self.orchestrator)
+    }
 }
 
 pub(crate) fn default_state() -> ItemState {
@@ -518,6 +545,10 @@ pub(crate) struct DeliveryRecord {
     channel_first_send: Option<ChannelFirstSendConstraint>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     automatic: bool,
+    /// The delivered row was an interjected worker line (`QueueItem.interject`):
+    /// the scheduler did not wait for the chain's quiet time. Audit only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    interject: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -1,0 +1,116 @@
+{
+ "startedAt": 1795772121,
+ "tag": "32lulzu2",
+ "steps": [
+  {
+   "name": "initialize",
+   "ok": true,
+   "at": 1795772121.1
+  },
+  {
+   "name": "tools-list",
+   "ok": true,
+   "at": 1795772121.1,
+   "count": 39
+  },
+  {
+   "name": "caller-is-a-card",
+   "ok": true,
+   "at": 1795772121.1,
+   "card": true,
+   "may": true
+  },
+  {
+   "name": "worker-started",
+   "ok": true,
+   "at": 1795772122.1,
+   "state": "committed"
+  },
+  {
+   "name": "first-line-delivered",
+   "ok": true,
+   "at": 1795772143.6
+  },
+  {
+   "name": "agent-working",
+   "ok": true,
+   "at": 1795772143.6,
+   "episode": 1
+  },
+  {
+   "name": "lines-accepted",
+   "ok": true,
+   "at": 1795772208.7,
+   "queued": "committed",
+   "interjected": "committed",
+   "mode": "interject",
+   "phase": "output"
+  },
+  {
+   "name": "interjected-during-output",
+   "ok": false,
+   "at": 1795772213.4,
+   "seconds": 4.7,
+   "phase": "tool",
+   "agent": "working",
+   "queued_waiting": "gap",
+   "first_look": "{\"interjected\": {\"mode\": \"interject\", \"operationId\": \"op_4cf4ff1710095ec896c386bde4390f54\", \"state\": \"queued\", \"waiting\": \"context\"}, \"queued\": {\"mode\": \"queued\", \"operationId\": \"op_49bb6e005cbdb09d1dc461cb9371f0c6\", \"state\": \"queued\", \"waiting\": \"pi-handover\"}}"
+  },
+  {
+   "name": "queued-waited-for-quiet",
+   "ok": true,
+   "at": 1795772213.4,
+   "waiting": "pi-handover"
+  },
+  {
+   "name": "replay-is-the-same-operation",
+   "ok": true,
+   "at": 1795772213.4
+  },
+  {
+   "name": "same-id-as-a-queued-line-conflicts",
+   "ok": true,
+   "at": 1795772213.5,
+   "code": "REQUEST_ID_CONFLICT"
+  },
+  {
+   "name": "a-stale-episode-is-refused",
+   "ok": true,
+   "at": 1795772213.5,
+   "code": "EPISODE_MOVED"
+  },
+  {
+   "name": "control-characters-are-refused",
+   "ok": true,
+   "at": 1795772213.5,
+   "code": "INVALID_ARGUMENTS"
+  },
+  {
+   "name": "interjected-during-tool",
+   "ok": true,
+   "at": 1795772283.5,
+   "seconds": 4.8,
+   "phase": "tool",
+   "sent_in": "tool",
+   "agent": "working"
+  },
+  {
+   "name": "the-agent-changed-its-plan",
+   "ok": true,
+   "at": 1795772317.9,
+   "ended": true,
+   "files": "{\"extra-32lulzu2.txt\": true, \"queued-32lulzu2.txt\": false, \"result-32lulzu2.txt\": false, \"result-interject-32lulzu2.txt\": true}"
+  },
+  {
+   "name": "the-queued-line-went-later",
+   "ok": true,
+   "at": 1795772366.6,
+   "seconds": 151.1
+  }
+ ],
+ "card": "Wb1c3062f6454cd22a81b746524f49281",
+ "adapterStderrBytes": 0,
+ "failures": [
+  "interjected-during-output"
+ ]
+}

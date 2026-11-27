@@ -23,7 +23,9 @@
 //!   retains the fact; v8 settings.json holding a clock rule whose schedule
 //!   repeats every N > 1 units from an anchor date (a v7 reader would run
 //!   it every unit and its webview would save it back that way); v11
-//!   settings.json holding a clock rule with a one-time schedule. A settings v2 barrier
+//!   settings.json holding a clock rule with a one-time schedule; v13
+//!   queue.json holding an interjected worker line (a v12 reader would send
+//!   it as an ordinary line, whatever became of its orchestrator card). A settings v2 barrier
 //!   precedes the first reviewed queue save, so an old automation finish
 //!   rule never takes a refused queue for an empty one;
 //! - loading is TYPED: a file must parse as JSON, carry a readable envelope
@@ -115,9 +117,26 @@ use std::sync::Mutex;
 // admits (a row's or a delivery's authority or override with the agent
 // trigger word); v10 protects a worker card's delegated queue rows (queue
 // only); v11 protects a clock rule's one-time schedule (settings only); v12
-// protects an Agent's note in a card's scratchpad (deck.json only).
+// protects an Agent's note in a card's scratchpad (deck.json only); v13
+// protects an interjected worker line (queue only).
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 12;
+pub const SCHEMA_VERSION: u64 = 13;
+
+// v13: an interjected worker line (`scheduler::QueueItem.interject`,
+// `deck_worker_interject`). A v12 reader ignores the marker: it would send
+// the row as an ordinary line, and would send it to a worker card whatever
+// became of the orchestrator card that wrote it. Refuse the file untouched
+// instead. Rows, in-flight snapshots and their copies are all scanned.
+fn uses_worker_interject(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("interject").is_some_and(serde_json::Value::is_object)
+                || o.values().any(uses_worker_interject)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_worker_interject),
+        _ => false,
+    }
+}
 
 // v12: a scratchpad entry an MCP client wrote from its card (`kind:
 // "agent"`, `mcp/notes.rs`). A v11 reader's Board validation refuses the
@@ -861,7 +880,9 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if name == "deck.json" && uses_agent_note(&data) {
+    let feature_version = if name == "queue.json" && uses_worker_interject(&data) {
+        13
+    } else if name == "deck.json" && uses_agent_note(&data) {
         12
     } else if name == "settings.json" && uses_schedule_once(&data) {
         11
@@ -2451,6 +2472,50 @@ mod agent_trigger_version_tests {
         save_typed::<serde_json::Value>(&p, &row("delegated").to_string()).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert!(raw["schema_version"].as_u64().unwrap() < 10);
+    }
+
+    /// v13 on queue.json for an interjected worker line (a row's, or an
+    /// in-flight snapshot's, `interject` marker), sticky; a v12 reader
+    /// refuses it; an ordinary delegated row stays at v10, and a delivery
+    /// record's audit flag alone upgrades nothing.
+    #[test]
+    fn interjected_lines_upgrade_the_queue_to_sticky_v13() {
+        let dir = TestDir::new("interject-version");
+        let delegated = serde_json::json!({"rule":"worker-type:claude","grant":"","step":0,"class":"delegated","trigger":"agent","delegation":{"client":"client_a"}});
+        let p = dir.join("queue.json");
+        let save = |value: serde_json::Value| {
+            save_typed::<serde_json::Value>(&p, &value.to_string()).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&p).unwrap()).unwrap()
+                ["schema_version"]
+                .clone()
+        };
+        assert_eq!(
+            save(serde_json::json!({"items":[{"id":"q1","authority":delegated}]})),
+            10
+        );
+        assert_eq!(
+            save(serde_json::json!({"items":[],"deliveries":[{"id":"d1","interject":true}]})),
+            10,
+            "an audit flag is no row"
+        );
+        let snapshot = serde_json::json!({"items":[],"pending":[{"id":"d2","snapshot":{"id":"q2","authority":delegated,"interject":{"orchestrator":"OA"}}}]});
+        assert_eq!(save(snapshot), 13, "an in-flight snapshot counts");
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(
+            envelope_payload_for(&raw, 12).is_err(),
+            "a v12 reader refuses it"
+        );
+        assert_eq!(save(serde_json::json!({"items":[]})), 13, "sticky");
+        // only the queue carries such rows
+        let other = dir.join("settings.json");
+        save_typed::<serde_json::Value>(
+            &other,
+            &serde_json::json!({"x":{"interject":{"orchestrator":"OA"}}}).to_string(),
+        )
+        .unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&other).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 13);
     }
 
     /// v11 on settings.json only, and only for a clock rule's one-time

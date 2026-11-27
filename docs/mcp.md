@@ -171,6 +171,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_card_note` | Leave, revise or withdraw one note for the user in the scratchpad of the card the call comes from (proved from the kernel; `NOT_IN_A_CARD` otherwise): `request_id`, `key` (the client's own; the same key revises the note while it is open), `title` (one line, at most 120 characters), `text` (at most 8 KiB), `acted` (the Agent already went ahead with its recommendation), or `withdraw: true` with the key alone. `NOTE_HANDLED` once the user handled that key, `CAPACITY_EXCEEDED` past 32 open notes on the card, `RATE_LIMITED` past 12 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `note-handled`, `note-capacity`, `note-conflict` or `card-missing`. Any locally authorized client; no separate choice. |
 | `deck_card_notes` | The caller's own notes in the card the call comes from: `key`, `title`, `acted`, `state` (`open` or `handled`), `updatedAt`. Never the user's notes or another client's. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence`. Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over. |
+| `deck_worker_interject` | Send one line to a worker card the calling orchestrator card started, without waiting for the card to fall quiet (the same arguments as `deck_worker_send`; see "Interjecting" under Worker cards). `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `INTERJECT_UNSUPPORTED` for an agy worker, `INVALID_ARGUMENTS` for text with a control character other than newline and tab. Every other hold, the minute between two lines, the sequence, rate and unsent bound are `deck_worker_send`'s. Part of **Drive worker cards**. |
 | `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `after_episode`, `send_sequence`, `request_id`): `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `EPISODE_MOVED` when it moved on. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above when the card changed before the close ran. Part of **Drive worker cards**; 30 a minute together with lines. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
@@ -402,6 +403,54 @@ otherwise types it only when the ordinary readiness holds allow, never
 while the agent is asking you something (after 10 s of quiet in the pane,
 and at least a minute after the card's previous line).
 
+**Interjecting.** `deck_worker_interject` (same arguments as
+`deck_worker_send`) sends a line WITHOUT waiting for the card to fall
+quiet: the orchestrator changes a worker's goal or next step while it is
+still working. Only the orchestrator card that started the card may: Deck
+reads the calling card from the operating system and compares it with
+the card that started the worker (a call from no Deck card, from another
+orchestrator's card, into an unowned card or one a closed orchestrator left
+behind, is `WORKER_NOT_FOUND`; the client never names a parent). It is part
+of **Drive worker cards**; nothing else is asked of you. Deck waits for no
+quiet time, and the line may go before an earlier line of the card that is
+waiting only for its quiet time — for a Pi, only for the pause between two
+of its runs — (that line keeps its text and its place otherwise, and goes
+later); two interjected lines go in the order they were sent, one paste and
+one Enter each. Everything else still holds the line:
+the agent asking you something (`needs-input`), your takeover, a paused,
+reviewed or uncertain row ahead of it, the first-interaction gate (with the
+same worker first-send choice), Codex's trust, an approval that cannot be
+read, and at least a minute after the card's previous line — so an
+interjection right after another line still waits out that minute. It does
+not interrupt anything; the agent takes it its own way: Claude Code queues
+it and reads it as soon as its running tool calls finish, in the same turn
+(or after the turn, when it is only writing), Codex steers its running turn
+with it, Pi takes it as its own steering message after its current tool
+calls (handed over by Deck's extension, never typed). agy is refused
+(`INTERJECT_UNSUPPORTED`): it does not tell Deck when it asks for
+permission, and a line typed then answers that question. Text must be
+plain (newlines and tabs only). Just before the paste and again before its
+Enter, Deck reads the agent's own word once more: when the agent asked you
+something meanwhile the line is not sent, or its Enter is withheld and it
+waits for you as an uncertain delivery. If the orchestrator card leaves the
+Board before the line went, the line loses its automatic delivery and waits
+in the card's list for Send now. In `deck_worker_list` each card says
+`mayInterject` (this card started it and its agent takes interjections),
+and each line in `sends` says its `state` (`queued`, `delivered` = Deck
+submitted it to the agent's input, never that the agent read or acted on
+it, `canceled`, `uncertain` = it may have reached the agent and is never
+sent again), its `mode` (`queued` or `interject`) and, while queued, the
+stage it waits at (`waiting`: the ⏱ panel's own word — `quiet`, `gap`,
+`previous`, `agent`, `human`, `first-send`, `pi-handover`, `context` when
+only the next pass is left, …). `deck_capabilities` says
+`mayInterjectWorkers` for a call from a Deck card. What still cannot be
+promised: Deck submits the line, the agent decides when to read it and
+whether to follow it; and Deck cannot prove from outside that the agent's
+input box, not a question of its own, is on screen at the instant of the
+Enter — it sees the question as soon as the agent says so (Claude Code's
+`PermissionRequest` hook, Codex's own), which leaves a window of a few
+milliseconds to tens of milliseconds.
+
 A live worker with no observed state reads `agent: unavailable`,
 episode 0, and `why`: `no-turn-seen` (below), `codex-unproven` (this
 Codex has not reported its own status yet; lines into it wait for that),
@@ -458,7 +507,11 @@ Claude Code and Codex (`codex --no-daemon` only; its shared-daemon Signal
 cannot be trusted, so a daemon Codex's lines would hold) can be workers; a
 Codex worker's final message is readable while the user lets Deck forward
 it (Settings → Agents, **Forward Codex's final message**), otherwise ask it
-to write results to files. Pi's input requests cannot be seen, so Pi cannot be a worker. Worker replies need Deck's Claude Code status hooks (Settings →
+to write results to files. Pi can be a worker while Pi's work status is on:
+its lines are handed to Pi by Deck's extension, never typed (above). agy can
+be a worker while Deck's agy hooks entry is on; it reports no question, so
+its lines wait for agy's own words and its folder's trust, and it takes no
+interjected line. Worker replies need Deck's Claude Code status hooks (Settings →
 Agents); with turn summaries off the Stop hook then carries `--reply
 workers`, which forwards the message for worker replies alone and never
 makes a summary or a model call.

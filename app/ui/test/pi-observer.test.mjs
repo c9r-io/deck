@@ -73,7 +73,7 @@ net.createConnection = function createConnection(...args) {
 };
 test.after(() => { net.createConnection = connect; });
 
-const common = { protocol: 'pi-observer', v: 4, source: 'pi' };
+const common = { protocol: 'pi-observer', v: 5, source: 'pi' };
 /** A line without its nonce: what it says. */
 const plain = ({ nonce: _nonce, ...line }) => line;
 
@@ -108,7 +108,7 @@ function deck(name, mode = 'auto') {
     : loaded);
   state.say = (connection, reply) => {
     connection.said = reply;
-    connection.socket.end(typeof reply === 'string' ? reply : `${JSON.stringify({ protocol: 'pi-observer', v: 4, ...reply })}\n`);
+    connection.socket.end(typeof reply === 'string' ? reply : `${JSON.stringify({ protocol: 'pi-observer', v: 5, ...reply })}\n`);
   };
   /** What Deck answers this connection's line with. */
   state.answer = (connection) => {
@@ -346,7 +346,7 @@ test('binding is a hello and an attest, and frames are numbered run boundaries t
   assert.deepEqual(hello, common);
   assert.deepEqual(attest, {
     ...common, nonce: server.connections[0].said.nonce, socket: 'deck-dev', server_pid: 4242, pane: '%7',
-    observerVersion: 4, piVersion: '1.1.0', mode: 'tui', capabilities: { signal: true, reply: false },
+    observerVersion: 5, piVersion: '1.1.0', mode: 'tui', capabilities: { signal: true, reply: false },
   });
   // a settlement without a run reports nothing
   host.emit('agent_settled');
@@ -583,7 +583,7 @@ test('an answer the observer did not ask for ends the lease, and Deck is told', 
   for (const [name, reply] of [
     ['a wrong number', server => ({ ack: 7, nonce: server.give('nobody'), capabilities: bits })],
     ['another protocol', server => ({ protocol: 'agent-lifecycle', ack: 1, nonce: server.give('nobody'), capabilities: bits })],
-    ['another version', server => ({ v: 5, ack: 1, nonce: server.give('nobody'), capabilities: bits })],
+    ['another version', server => ({ v: 6, ack: 1, nonce: server.give('nobody'), capabilities: bits })],
     ['an acceptance in place of an acknowledgement', server => ({ accepted: 1, nonce: server.give('nobody'), capabilities: bits })],
     ['no nonce', () => ({ ack: 1, capabilities: bits })],
     ['a nonce that is none', () => ({ ack: 1, nonce: 'N'.repeat(32), capabilities: bits })],
@@ -1121,6 +1121,7 @@ test('a worker line is declined while a run is open or Pi is not idle, and nothi
 
 test('an ack whose line is not exactly an id and a text ends the lease, and the text is never given', async () => {
   for (const deliver of [{ id: 'H!', text: 'x' }, { id: 'h_1', text: '' }, { id: 'h_1', text: 'x', more: 1 },
+    { id: 'h_1', text: 'x', steer: false }, { id: 'h_1', text: 'x', steer: true, more: 1 },
     { id: 'h_1', text: 'x'.repeat(16 * 1024 + 1) }, 'h_1']) {
     const { server, host, given } = await handing('handover-bad');
     deliverNext(server, deliver);
@@ -1133,10 +1134,55 @@ test('an ack whose line is not exactly an id and a text ends the lease, and the 
   }
 });
 
-test('the hand-over parser takes exactly an id and a bounded text', () => {
+test('the hand-over parser takes exactly an id and a bounded text, and an interjected line says so', () => {
   assert.equal(observer.handoverOf({ ack: 1 }), null);
-  assert.deepEqual(observer.handoverOf({ deliver: { id: 'h_a1', text: 'go' } }), { id: 'h_a1', text: 'go' });
-  for (const bad of [null, 'x', { id: 'h_a1' }, { id: 'A', text: 'go' }, { id: 'h_a1', text: 3 }, { id: 'x'.repeat(65), text: 'go' }]) {
+  assert.deepEqual(observer.handoverOf({ deliver: { id: 'h_a1', text: 'go' } }), { id: 'h_a1', text: 'go', steer: false });
+  assert.deepEqual(observer.handoverOf({ deliver: { id: 'h_a1', text: 'go', steer: true } }),
+    { id: 'h_a1', text: 'go', steer: true });
+  for (const bad of [null, 'x', { id: 'h_a1' }, { id: 'A', text: 'go' }, { id: 'h_a1', text: 3 }, { id: 'x'.repeat(65), text: 'go' },
+    { id: 'h_a1', text: 'go', steer: false }, { id: 'h_a1', text: 'go', steer: 'yes' }, { id: 'h_a1', text: 'go', steer: 1 },
+    { id: 'h_a1', text: 'go', steer: true, deliverAs: 'followUp' }]) {
     assert.equal(observer.handoverOf({ deliver: bad }), false, JSON.stringify(bad));
   }
+});
+
+test('an interjected line goes to a working Pi as its own steering message, and the run goes on as it was', async () => {
+  let idle = true;
+  const { server, host, given } = await handing('handover-steer', () => idle);
+  host.emit('agent_start');
+  idle = false;
+  await until('the working frame', () => server.frames().some(line => line.state === 'working'));
+  deliverNext(server, { id: 'h_steer', text: 'run the cheap check first', steer: true });
+  await until('the receipt', () => receipts(server).length === 1, 8000);
+  // Pi's own steering, the text exactly as written: never a command, a template or a follow-up
+  assert.deepEqual(given, [['run the cheap check first', { deliverAs: 'steer' }]]);
+  assert.equal(receipts(server)[0].delivered, 'h_steer');
+  // nothing about the run was reported for it: still run 1, ended by Pi's own settlement
+  assert.deepEqual(server.frames().filter(line => 'state' in line).map(line => [line.run, line.state]), [[1, 'working']]);
+  idle = true;
+  host.emit('agent_settled', { aborted: false });
+  await until('the ending', () => server.frames().some(line => line.state === 'turn-done'));
+  assert.deepEqual(server.frames().filter(line => 'state' in line).map(line => [line.run, line.state]),
+    [[1, 'working'], [1, 'turn-done']]);
+  assert.deepEqual(host.touched, []);
+  host.emit('session_shutdown', { reason: 'quit' });
+  await closed(server);
+});
+
+test('an interjected line to an idle Pi is an ordinary message, and to one settling it is declined', async () => {
+  let idle = true;
+  const { server, host, given } = await handing('handover-steer-idle', () => idle);
+  deliverNext(server, { id: 'h_idle', text: 'next', steer: true });
+  await until('the first receipt', () => receipts(server).length === 1, 8000);
+  assert.deepEqual(given, [['next']], 'no steering option when Pi is idle');
+  assert.equal(receipts(server)[0].delivered, 'h_idle');
+  // a run that Pi already counts as idle but has not settled: not given
+  host.emit('agent_start');
+  await until('the working frame', () => server.frames().some(line => line.state === 'working'));
+  deliverNext(server, { id: 'h_settling', text: 'later', steer: true });
+  await until('the second receipt', () => receipts(server).length === 2, 8000);
+  assert.deepEqual(receipts(server)[1], { ...common, lease: 1, seq: receipts(server)[1].seq, declined: 'h_settling', because: 'busy' });
+  assert.deepEqual(given, [['next']]);
+  host.emit('session_shutdown', { reason: 'quit' });
+  await closed(server);
 });

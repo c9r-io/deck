@@ -210,6 +210,10 @@ pub(crate) struct Sources<'a> {
     pub(crate) settings: Option<&'a Config>,
     pub(crate) board: Option<&'a PhoneTasks>,
     pub(crate) delegations: Option<&'a HashSet<String>>,
+    /// For an interjected worker line (`QueueItem.interject`): the standing
+    /// orchestrator-worker bindings (`interjects()`); `None` when not read or
+    /// unreadable, which proves nothing either way.
+    pub(crate) interjects: Option<&'a HashSet<String>>,
 }
 
 impl<'a> From<&'a Config> for Sources<'a> {
@@ -218,8 +222,28 @@ impl<'a> From<&'a Config> for Sources<'a> {
             settings: Some(config),
             board: None,
             delegations: None,
+            interjects: None,
         }
     }
+}
+
+/// The orchestrator-worker bindings that stand now
+/// (`mcp::interject_bindings`): `None` when the MCP ledger or the current
+/// Board cannot be read, which proves nothing either way. Read only while a
+/// row is an interjected line, under the same fences as `delegations()`.
+pub(crate) fn interjects() -> Option<HashSet<String>> {
+    #[cfg(test)]
+    if let Some(forced) = INTERJECTS_FOR_TESTS.with(|cell| cell.borrow().clone()) {
+        return forced;
+    }
+    crate::mcp::interject_bindings()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's answer in place of the MCP ledger and the Board.
+    pub(crate) static INTERJECTS_FOR_TESTS: std::cell::RefCell<Option<Option<HashSet<String>>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The MCP clients whose automation delegation stands now

@@ -966,6 +966,16 @@ class EdrBinaryBundleTests(unittest.TestCase):
                                                   files={"observer.ts": clean + f"\n{token}\n"}))
                 self.assertEqual(dirty.returncode, 1, token)
                 self.assertIn("contains forbidden Pi observer token", dirty.stderr, token)
+            # the two hand-over calls keep their exact form: a steering
+            # message turned into another kind of delivery is refused
+            steer = 'pi.send' + 'UserMessage(text, { deliverAs: "steer" });'
+            self.assertEqual(clean.count(steer), 1)
+            for index, other in enumerate(('pi.send' + 'UserMessage(text, { deliverAs: "followUp" });',
+                                           'pi.send' + 'UserMessage(text, { deliverAs: "steer", expandPromptTemplates: true });')):
+                changed = self.check(self.pi_bundle(root, f"steer-{index}", named=True,
+                                                    files={"observer.ts": clean.replace(steer, other)}))
+                self.assertEqual(changed.returncode, 1, other)
+                self.assertIn("contains forbidden Pi observer token: send" + "UserMessage", changed.stderr, other)
             # nothing but regular .ts files lives there
             stray = self.check(self.pi_bundle(root, "stray", named=True,
                                               files={"observer.ts": clean, "helper.sh": "true\n"}))

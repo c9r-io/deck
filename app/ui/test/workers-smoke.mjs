@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -780,6 +780,77 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await report('agy-delivered', !!sent);
     await report('done', !failed, 1, 9);
   };
+  /* `worker-interject` (approved 2026-11-27): one client with one Claude
+     worker type (the fixture's hooks, the new PermissionRequest among them,
+     and two harmless Bash commands allowed) and the first-send choice, and
+     ONE plain-shell orchestrator card "Orch I". After `interject-armed` the
+     operator runs scripts/mcp-interject-e2e.py IN that card's pane (Deck
+     proves the card from the kernel, never from the client). The page
+     watches the worker's queue as the person's ⏱ panel would: while the
+     agent works, the client's queued line waits at `quiet` and its
+     interjected line goes before it (`interject-order`: the interjected
+     delivery first, marked so, the queued one later); a line interjected
+     while the agent asks the user waits at `agent` and is not delivered
+     (`interject-held`). It closes the cards (`done` b=5). */
+  const interjectRun = async ({ project, work, fixture }) => {
+    await inv('mcp_enable');
+    /* the fixture's `scenario` file says `codex` for a Codex worker:
+       `codex --no-daemon` under the CODEX_HOME the runner made for the run
+       (Deck's Signal hooks only, which that home has not reviewed: hence
+       the hook-trust bypass; tool approvals stay on-request) */
+    const codex = (await inv('smoke_native_scenario').catch(() => '')) === 'codex';
+    const cmd = codex ? 'codex --no-daemon --dangerously-bypass-hook-trust'
+      : `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: true,
+        workerTypes: [{ name: codex ? 'codex' : 'claude', cmd, description: 'Write code' }], workerFirstSend: true } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady
+        && status.clients.some(value => value.id === client.id && value.allowWorkers) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed);
+    const orch = (await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id,
+      title: 'Orch I', dir: work, cmd: '' }, { requireCreated: true })).card;
+    await report('interject-armed', !!orch?.session);
+    const worker = await until(() => workerCards()[0] || null, 600_000, 1000);
+    await report('interject-card', !!worker && worker.cmd === cmd && worker.dir === work);
+    if (!worker) throw new Error('no worker card');
+    /* the client's two later lines, as the queue holds them: a queued one
+       and an interjected one, both delegated */
+    const rows = s => s.mine.filter(item => item.authority?.class === 'delegated' && item.mode === 'chain');
+    /* read every quarter second until the queued line is delivered: it was
+       seen waiting at `quiet`, and still queued when the first interjected
+       line was delivered; the deliveries start with the interjected lines
+       (two: one while the agent writes, one while its program runs) and the
+       queued one comes after them */
+    const seen = { quiet: false, queuedAtInterject: null };
+    const delivered = await until(async () => {
+      const s = await queue(worker.session);
+      const queued = rows(s).find(item => !item.interject && item.state === 'pending');
+      if (queued && s.plan(queued)?.stage === 'quiet') seen.quiet = true;
+      const lines = s.delivered.filter(d => d.authority?.class === 'delegated' && d.mode === 'chain');
+      if (seen.queuedAtInterject === null && lines.some(d => d.interject === true)) seen.queuedAtInterject = !!queued;
+      return lines.some(d => !d.interject) ? lines : null;
+    }, 1_200_000, 250);
+    const ahead = delivered ? delivered.findIndex(d => !d.interject) : -1;
+    const order = ahead === 2 && delivered.slice(0, 2).every(d => d.interject === true && d.at <= delivered[2].at);
+    await report('interject-order', seen.quiet && seen.queuedAtInterject === true && order,
+      Math.max(0, ahead), (seen.quiet ? 1 : 0) + (seen.queuedAtInterject ? 2 : 0) + (order ? 4 : 0));
+    /* a line interjected while the agent asks the user: held at `agent` */
+    const asked = await until(async () => {
+      const s = await queue(worker.session);
+      const row = rows(s).find(item => item.interject && s.plan(item)?.stage === 'agent');
+      return row ? { s, row } : null;
+    }, 900_000, 1000);
+    await pause(30_000);
+    const after = await queue(worker.session);
+    const stillHeld = !!asked && after.mine.some(item => item.id === asked.row.id && item.state === 'pending')
+      && !after.delivered.some(d => d.item === asked.row.id);
+    await report('interject-held', stillHeld, stillHeld ? 1 : 0, asked ? 1 : 0);
+    for (const value of [worker, orch]) await provider.close(value.id);
+    await report('done', !failed, 1, 5);
+  };
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
@@ -788,8 +859,9 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
       : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : agyTrusting ? 'agy-trust'
-        : accounting ? 'account' : capacity ? 'capacity' : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'account', 'capacity', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes'].includes(scenario)) throw new Error('scenario');
+        : accounting ? 'account' : capacity ? 'capacity' : interjecting ? 'interject'
+          : await inv('smoke_native_scenario').catch(() => '');
+    if (!['live', 'codex', 'types', 'account', 'capacity', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes', 'interject'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -817,6 +889,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     if (scenario === 'cards') { await cardsRun({ project, column, work, fixture }); return; }
     if (scenario === 'notes') { await notesRun({ project, column, work, fixture }); return; }
     if (scenario === 'agy-trust') { await agyTrustRun({ project, work }); return; }
+    if (scenario === 'interject') { await interjectRun({ project, work, fixture }); return; }
     if (scenario === 'projects') {
       await projectsRun({ work, cmd: 'claude --setting-sources project', fixture });
       return;

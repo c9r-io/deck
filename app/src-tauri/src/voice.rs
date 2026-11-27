@@ -419,6 +419,7 @@ fn deliver_with(
             submit: false,
             require_bracketed: true,
             require_paste_mode: false,
+            enter_refused_when: None,
         },
         transport,
     );

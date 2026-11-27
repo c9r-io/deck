@@ -729,11 +729,34 @@ pub(crate) fn fence(i: &QueueItem, sources: first_send::Sources<'_>) -> Fence {
     let Some(authority) = i.authority.as_ref().filter(|_| relies_on_authority(i)) else {
         return Fence::Clear;
     };
-    match standing(sources, authority) {
+    match standing(sources, authority).zip(binding_stands(sources, i)) {
         None => Fence::Unverified,
-        Some(true) => Fence::Clear,
-        Some(false) => Fence::Revoked,
+        Some((true, true)) => Fence::Clear,
+        Some(_) => Fence::Revoked,
     }
+}
+
+/// For an interjected worker line (`QueueItem.interject`): whether the
+/// orchestrator card that wrote it still drives its card (`None`: the
+/// bindings could not be read). Any other row has nothing to check. A
+/// line that lost its binding is stripped like a revoked approval and then
+/// waits for send-now: it is never sent on the client's delegation alone.
+fn binding_stands(sources: first_send::Sources<'_>, i: &QueueItem) -> Option<bool> {
+    let Some(interject) = i.interject.as_ref() else {
+        return Some(true);
+    };
+    let client = i.authority.as_ref()?.delegation.as_ref()?.client.as_str();
+    sources
+        .interjects
+        .map(|bindings| bindings.contains(&interject.key(client, &i.card_id)))
+}
+
+/// Whether any unsent row is an interjected line whose binding the tick
+/// and the pre-fire fence must read (`first_send::interjects`).
+pub(crate) fn any_interject(q: &QueueState) -> bool {
+    q.items
+        .iter()
+        .any(|i| revocable(i) && i.interject.is_some())
 }
 
 /// Whether `authority` still stands: `None` when the source that backs it
@@ -829,6 +852,7 @@ pub(crate) fn revoke_stale<'a>(
             .authority
             .as_ref()
             .is_some_and(|a| standing(sources, a) == Some(false))
+            || binding_stands(sources, item) == Some(false)
         {
             item.authority = None;
             item.revision = item.revision.wrapping_add(1);

@@ -190,8 +190,10 @@
 //! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
 //! (card statuses `attention`/`done`; a working agent never shows amber). The
 //! Settings toggle is the user-driven writer of `~/.claude/settings.json`
-//! (four entries: UserPromptSubmit→working, Notification matcher
-//! `permission_prompt` ONLY→needs-input, PostToolUse→`working --after-tool`
+//! (five entries: UserPromptSubmit→working, Notification matcher
+//! `permission_prompt` ONLY→needs-input, PermissionRequest→needs-input (the
+//! same question said as it is asked, not about 6 s later: `hooks.rs`),
+//! PostToolUse→`working --after-tool`
 //! (see "After a tool" below), Stop→turn-done, written in
 //! Claude Code's EXEC form — bare helper path in `command`, words in
 //! `args` — so Claude Code spawns the signed helper directly and no `sh -c`
@@ -1256,6 +1258,31 @@ pub(crate) fn projected(target: &PaneRow) -> Option<Observation> {
                 episode: entry.episode,
                 viewed: entry.viewed,
             })
+    })
+}
+
+/// The word stored for one exact pane — server pid, pane id, session id and
+/// pane process, the identity a queue row's binding carries — read from
+/// memory alone: no listing, no process read, no spawn. For the scheduler's
+/// last looks before an interjected worker line is pasted and before its
+/// Enter (`scheduler/delivery.rs`): a word read here may only refuse that
+/// step, never allow one, and its absence proves nothing.
+pub(crate) fn pane_state(
+    server_pid: u32,
+    pane_id: &str,
+    session_id: &str,
+    pane_pid: u32,
+) -> Option<&'static str> {
+    with_agents(|agents| {
+        agents
+            .get(&PaneKey {
+                server_pid,
+                pane_id: pane_id.to_owned(),
+            })
+            .filter(|entry| {
+                entry.session_id == session_id && entry.pane_pid == pane_pid && entry.speaks()
+            })
+            .map(|entry| entry.state)
     })
 }
 
@@ -3296,8 +3323,10 @@ mod tests {
             authority_unverified: false,
             board_unverified: false,
             channel_unverified: false,
+            interject_unverified: false,
             human_held: false,
             pi_ready: false,
+            pi_connected: false,
             activity: 0,
             agent: projections(rows).get(session).map(|o| o.state),
             codex: trust(rows, table).get(session).copied(),
@@ -3587,8 +3616,10 @@ mod tests {
             authority_unverified: false,
             board_unverified: false,
             channel_unverified: false,
+            interject_unverified: false,
             human_held: false,
             pi_ready: false,
+            pi_connected: false,
             activity: 0,
             agent: Some("turn-done"),
             codex,
@@ -5510,8 +5541,8 @@ mod tests {
             .unwrap();
         let given: serde_json::Value = serde_json::from_str(&given).expect("a reply line");
         let attest = serde_json::json!({
-            "protocol": "pi-observer", "v": 4, "source": "pi", "nonce": given["nonce"],
-            "socket": "deck", "server_pid": 42, "pane": "%3", "observerVersion": 4,
+            "protocol": "pi-observer", "v": 5, "source": "pi", "nonce": given["nonce"],
+            "socket": "deck", "server_pid": 42, "pane": "%3", "observerVersion": 5,
             "piVersion": "1.1.0", "mode": "tui",
             "capabilities": { "signal": true, "reply": false }
         })
@@ -5707,7 +5738,7 @@ mod tests {
 
     /// A Pi observer's first message: it asks for a nonce and claims nothing.
     fn pi_hello() -> String {
-        serde_json::json!({ "protocol": "pi-observer", "v": 4, "source": "pi" }).to_string()
+        serde_json::json!({ "protocol": "pi-observer", "v": 5, "source": "pi" }).to_string()
     }
 
     /// The answer of the Pi transport to a hello, and how long it took.

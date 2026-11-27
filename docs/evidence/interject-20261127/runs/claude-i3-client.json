@@ -1,0 +1,131 @@
+{
+ "startedAt": 1795770882,
+ "tag": "v1fe8bbce",
+ "steps": [
+  {
+   "name": "initialize",
+   "ok": true,
+   "at": 1795770882.6
+  },
+  {
+   "name": "tools-list",
+   "ok": true,
+   "at": 1795770882.6,
+   "count": 39
+  },
+  {
+   "name": "caller-is-a-card",
+   "ok": true,
+   "at": 1795770882.6,
+   "card": true,
+   "may": true
+  },
+  {
+   "name": "worker-started",
+   "ok": true,
+   "at": 1795770883.6,
+   "state": "committed"
+  },
+  {
+   "name": "first-line-delivered",
+   "ok": true,
+   "at": 1795770910.3
+  },
+  {
+   "name": "agent-working",
+   "ok": true,
+   "at": 1795770910.3,
+   "episode": 1
+  },
+  {
+   "name": "lines-accepted",
+   "ok": true,
+   "at": 1795770975.4,
+   "queued": "committed",
+   "interjected": "committed",
+   "mode": "interject",
+   "phase": "output"
+  },
+  {
+   "name": "interjected-during-output",
+   "ok": true,
+   "at": 1795770976.5,
+   "seconds": 1.1,
+   "phase": "output",
+   "agent": "working",
+   "queued_waiting": "gap",
+   "first_look": "{\"interjected\": {\"mode\": \"interject\", \"operationId\": \"op_e2383eee4ad6ba7b23455c0b6b4ef401\", \"state\": \"queued\", \"waiting\": \"context\"}, \"queued\": {\"mode\": \"queued\", \"operationId\": \"op_0a68b97095dda715ecd8bc59167c9d08\", \"state\": \"queued\", \"waiting\": \"quiet\"}}"
+  },
+  {
+   "name": "queued-waited-for-quiet",
+   "ok": true,
+   "at": 1795770976.5,
+   "waiting": "quiet"
+  },
+  {
+   "name": "replay-is-the-same-operation",
+   "ok": true,
+   "at": 1795770976.5
+  },
+  {
+   "name": "same-id-as-a-queued-line-conflicts",
+   "ok": true,
+   "at": 1795770976.5,
+   "code": "REQUEST_ID_CONFLICT"
+  },
+  {
+   "name": "a-stale-episode-is-refused",
+   "ok": true,
+   "at": 1795770976.5,
+   "code": "EPISODE_MOVED"
+  },
+  {
+   "name": "control-characters-are-refused",
+   "ok": true,
+   "at": 1795770976.6,
+   "code": "INVALID_ARGUMENTS"
+  },
+  {
+   "name": "interjected-during-tool",
+   "ok": true,
+   "at": 1795771049.9,
+   "seconds": 1.1,
+   "phase": "tool",
+   "sent_in": "tool",
+   "agent": "working"
+  },
+  {
+   "name": "the-agent-changed-its-plan",
+   "ok": true,
+   "at": 1795771157.1,
+   "ended": true,
+   "files": "{\"extra-v1fe8bbce.txt\": true, \"queued-v1fe8bbce.txt\": false, \"result-interject-v1fe8bbce.txt\": true, \"result-v1fe8bbce.txt\": false}"
+  },
+  {
+   "name": "the-queued-line-went-later",
+   "ok": true,
+   "at": 1795771173.3,
+   "seconds": 194.8
+  },
+  {
+   "name": "the-agent-asks",
+   "ok": true,
+   "at": 1795771240.9,
+   "state": "needs-input"
+  },
+  {
+   "name": "held-while-the-agent-asks",
+   "ok": false,
+   "at": 1795771270.9,
+   "state": "queued",
+   "waiting": "gap",
+   "agent": "needs-input",
+   "dialog_answered": false
+  }
+ ],
+ "card": "W3f19841858c21dd1d8bd4ab116fefce4",
+ "adapterStderrBytes": 0,
+ "failures": [
+  "held-while-the-agent-asks"
+ ]
+}

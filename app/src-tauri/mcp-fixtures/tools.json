@@ -31,6 +31,7 @@
     "deck_sessions_list",
     "deck_settings_read",
     "deck_worker_close",
+    "deck_worker_interject",
     "deck_worker_list",
     "deck_worker_reply",
     "deck_worker_report",
@@ -54,6 +55,7 @@
     "deck_session_control",
     "deck_session_create",
     "deck_worker_close",
+    "deck_worker_interject",
     "deck_worker_report",
     "deck_worker_send",
     "deck_worker_start"

@@ -211,6 +211,29 @@ row, never release or target one (`scheduler/select.rs`, `agent_holds`):
   `first-send` unless the separate, explicitly consented clock, Slack badge
   or phone task preset override applies on a later pass. Other process-bound programs keep the
   old fresh-start path (a 2.5 s settle, then delivery).
+- **Interjected worker lines** (`deck_worker_interject`, approved
+  2026-11-27) are the one row that waits for no quiet time
+  (`select.rs` "Interjected lines"): a later line the kernel-proven
+  orchestrator card wrote for a worker card it started, still carrying the
+  client's delegated authority. It may pass earlier rows of its list that
+  wait for nothing but their own quiet time (a Pi worker line: the pause
+  between two runs, while Deck's observer is bound); a row being sent or uncertain,
+  failed or backing off, paused, a checkpoint, a timed or head row, a row
+  under any hold and an earlier interjected line keep it behind them. Every
+  hold above, the session gap, the busy set and context protection still
+  apply. Because it goes while the agent works, the pre-fire transaction
+  reads the bound pane's own word again (from memory) and the Enter after
+  its paste is refused when the agent asked the user in between (the row is
+  then ambiguous, never resent). The measured reason (Claude Code 2.1.332,
+  Codex 0.172.0, agy 1.5.18, isolated probes 2026-11-27): a paste plus Enter
+  into an agent's permission or question dialog approves the tool or
+  answers the question; Claude Code's `permission_prompt` Notification came
+  about 6 s after its dialog (an ordinary row's 10 s quiet covered that,
+  an interjection does not), its `PermissionRequest` hook as the dialog
+  appeared (now Deck's), Codex's `PermissionRequest` before its overlay
+  showed, and agy says nothing at all (refused). The residual window is the
+  hook's own path, a few to tens of milliseconds; nothing here proves the
+  input box is on screen at the instant of the Enter.
 - Owner rows without a hook word keep the quiet-only rule (Codex: once
   trusted). Manual immediate
   send is not held. A stale `needs-input` (a question dismissed with Esc

@@ -2053,7 +2053,7 @@ fn until(what: &str, done: impl Fn() -> bool) {
 
 /// One line of the family: its common part and `body`.
 fn message(body: serde_json::Value) -> String {
-    let mut line = serde_json::json!({ "protocol": "pi-observer", "v": 4, "source": "pi" });
+    let mut line = serde_json::json!({ "protocol": "pi-observer", "v": 5, "source": "pi" });
     line.as_object_mut()
         .unwrap()
         .extend(body.as_object().unwrap().clone());
@@ -2073,7 +2073,7 @@ fn frame_line(lease: u64, nonce: &str, body: serde_json::Value) -> String {
 /// What an attest claims, without its nonce.
 fn claims(pane: &str, signal: bool, reply: bool) -> serde_json::Value {
     serde_json::json!({
-        "socket": "deck", "server_pid": 42, "pane": pane, "observerVersion": 4,
+        "socket": "deck", "server_pid": 42, "pane": pane, "observerVersion": 5,
         "piVersion": "1.1.0", "mode": "tui",
         "capabilities": { "signal": signal, "reply": reply }
     })
@@ -2309,7 +2309,7 @@ fn deck_s_own_line_is_answered_with_its_place_and_reaches_no_worker() {
     service.hand(theirs, crate::agent_pi::place_line(), 41);
     assert_eq!(
         answer_of(ours),
-        Some(serde_json::json!({"protocol": "pi-observer", "v": 4, "place": 41}))
+        Some(serde_json::json!({"protocol": "pi-observer", "v": 5, "place": 41}))
     );
     assert!(asked_at.elapsed() < Duration::from_secs(1));
     assert_eq!(probe::pending(), 1, "only the attest waits for the worker");
@@ -2442,7 +2442,7 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
             "bad-mode",
         ),
         (
-            &|line: String| line.replace("\"observerVersion\":4", "\"observerVersion\":3"),
+            &|line: String| line.replace("\"observerVersion\":5", "\"observerVersion\":4"),
             "bad-version",
         ),
         (
@@ -2472,7 +2472,7 @@ fn a_line_that_breaks_the_wire_is_refused_and_ends_only_a_proven_observer_s_leas
     ] {
         let reply = attest(change);
         assert_eq!(refusal(&reply).as_deref(), Some(code), "{reply}");
-        assert_eq!(reply["v"], 4);
+        assert_eq!(reply["v"], 5);
         assert_eq!(reply.as_object().unwrap().len(), 3, "{reply}");
     }
     // a hello that carries anything is no hello
@@ -3133,7 +3133,7 @@ impl Server {
             message(serde_json::json!({
                 "nonce": "@NONCE@",
                 "socket": "t", "server_pid": self.fact(session, "#{pid}").parse::<u32>().unwrap(),
-                "pane": self.fact(session, "#{pane_id}"), "observerVersion": 4,
+                "pane": self.fact(session, "#{pane_id}"), "observerVersion": 5,
                 "piVersion": "1.1.0", "mode": "tui",
                 "capabilities": { "signal": signal, "reply": reply }
             }))
@@ -4681,6 +4681,98 @@ fn observer_constants_match_the_transport() {
 /// the lease the kernel proved to be its pane's Pi, between two runs, once;
 /// counted by that lease's receipt; never offered during a run, to another
 /// pane's lease, or with the answer to the lease's last frame.
+/// An interjected worker line (`handover`, "Interjected lines") is offered
+/// in the middle of a run of its pane's lease — only it, never an ordinary
+/// line — and the answer says so: `deliver` with `"steer": true`. The run
+/// is untouched by it: still open, ended by the observer's own frame.
+#[test]
+fn an_interjected_line_goes_with_an_answer_during_a_run_and_says_so() {
+    use crate::agent_pi::handover::{hand_over_within, Outcome, Pane};
+    let _guard = fresh();
+    let shared = two_panes();
+    let world = shared.world();
+    let lease = bound(&world, "%1", 310).expect("the pane's own foreground program");
+    let waiting = |text: &'static str, steer: bool| {
+        std::thread::spawn(move || {
+            hand_over_within(
+                Pane {
+                    server_pid: 42,
+                    pane_id: "%1",
+                    pane_pid: 300,
+                },
+                text,
+                steer,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+        })
+    };
+    let offered = |answer: Answer| match answer {
+        Answer::Ack { deliver, .. } => deliver,
+        other => panic!("not an ack: {other:?}"),
+    };
+    let ack = |lease: u64, frame: Frame| {
+        let (peer, nonce) = held(lease);
+        let answer = sent_from(&world, lease, frame, Some(peer), &nonce).unwrap();
+        if let Answer::Ack { next, .. } = &answer {
+            hold(lease, peer, next.clone());
+        }
+        answer
+    };
+    assert_eq!(sent(&world, lease, working(1, 1)), Ok(1));
+    let worker = waiting("run the cheap check first", true);
+    std::thread::sleep(Duration::from_millis(50));
+    let handed = offered(ack(lease, Frame::Ping { seq: 2 })).expect("offered during the run");
+    assert!(handed.steer);
+    assert_eq!(handed.text, "run the cheap check first");
+    let line = super::super::ack_line_with(
+        2,
+        &Nonce::of([7; 16]),
+        Capabilities {
+            signal: true,
+            reply: false,
+        },
+        Some((&handed.id, &handed.text, handed.steer)),
+    );
+    let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), 6);
+    assert_eq!(value["deliver"].as_object().unwrap().len(), 3);
+    assert_eq!(value["deliver"]["steer"], true);
+    assert_eq!(
+        sent(
+            &world,
+            lease,
+            Frame::Delivered {
+                seq: 3,
+                id: handed.id.clone()
+            }
+        ),
+        Ok(3)
+    );
+    assert_eq!(worker.join().unwrap(), Outcome::Delivered);
+    // the run is still the observer's: an ordinary line still waits for it
+    let worker = waiting("after the run", false);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        offered(ack(lease, Frame::Ping { seq: 4 })).is_none(),
+        "an ordinary line waits for the run to settle"
+    );
+    let handed = offered(ack(lease, done(5, 1))).expect("between runs");
+    assert!(!handed.steer);
+    assert_eq!(
+        sent(
+            &world,
+            lease,
+            Frame::Delivered {
+                seq: 6,
+                id: handed.id.clone()
+            }
+        ),
+        Ok(6)
+    );
+    assert_eq!(worker.join().unwrap(), Outcome::Delivered);
+}
+
 #[test]
 fn a_worker_line_goes_with_the_answer_to_its_own_pane_s_lease_between_runs() {
     use crate::agent_pi::handover::{hand_over_within, Outcome, Pane};
@@ -4698,6 +4790,7 @@ fn a_worker_line_goes_with_the_answer_to_its_own_pane_s_lease_between_runs() {
                     pane_pid: 300,
                 },
                 text,
+                false,
                 Duration::from_secs(5),
                 Duration::from_secs(5),
             )
@@ -4743,7 +4836,7 @@ fn a_worker_line_goes_with_the_answer_to_its_own_pane_s_lease_between_runs() {
             signal: true,
             reply: false,
         },
-        Some((&handed.id, &handed.text)),
+        Some((&handed.id, &handed.text, handed.steer)),
     );
     let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(value.as_object().unwrap().len(), 6);

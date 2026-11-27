@@ -10,8 +10,10 @@
 //! observer's own messages, and starts, steers or resumes nothing. ONE
 //! exception (approved 2026-11-20, `handover`): an answer may carry a line
 //! of a worker card whose command starts `pi`, which the observer gives to
-//! Pi through Pi's own message path between two runs — never typed, never a
-//! command or a template, never offered twice.
+//! Pi through Pi's own message path between two runs — or, for a line its
+//! orchestrator card interjected (approved 2026-11-27), while Pi works, as
+//! Pi's own steering message — never typed, never a command or a template,
+//! never offered twice.
 //!
 //! # Contract
 //! - **What is supported, and what is not.** Pi 1.x from 1.1 gives an extension a
@@ -53,7 +55,7 @@
 //!   admits no re-entry.
 //! - **The wire** (`parse_message`): one JSON object per line, at most
 //!   `MAX_LINE` bytes (`MAX_REPLY_LINE` for a `reply` frame), protocol
-//!   `pi-observer`, version 4, source `pi`. Exactly eight shapes, told apart
+//!   `pi-observer`, version 5, source `pi`. Exactly eight shapes, told apart
 //!   by their exact key sets: `hello` (no key of its own: it asks for a
 //!   nonce and claims nothing), `attest` (`nonce`, `socket`, `server_pid`,
 //!   `pane`, `observerVersion`, `piVersion`, `mode`,
@@ -83,7 +85,10 @@
 //!   an `ack` to any frame but a `reset`, while the lease has run
 //!   boundaries and no run of it is open, may also carry `deliver` (`id`,
 //!   `text`): the one worker card's line waiting for that lease's pane
-//!   (`handover::take_for`), the ONE text Deck ever sends Pi;
+//!   (`handover::take_for`), the ONE text Deck ever sends Pi; an
+//!   interjected line (`"steer": true` as a third key, approved 2026-11-27)
+//!   may be carried while a run is open too, for the observer to give Pi as
+//!   a steering message;
 //!   `again`, when the sender could not be proven for a reason that is
 //!   nobody's fault (its process made a child, or an answer was lost):
 //!   nothing was read into anything, and the same message is welcome on a
@@ -99,12 +104,14 @@
 //! - **Versions.** Wire version 1 kept one connection per observer and
 //!   could not say whose bytes a frame was; version 2 carried a session
 //!   observation instead of a final message; version 3 could not take a
-//!   worker card's line. All are gone. A runtime that
+//!   worker card's line; version 4 could not tell an interjected line from
+//!   an ordinary one, and would have refused one carried during a run as a
+//!   malformed answer. All are gone. A runtime that
 //!   still holds an older observer in memory (Pi loaded it before Deck was
 //!   replaced) is answered `bad-version` in ITS framing, which that
 //!   observer takes as final: it stops, nothing of it is recognized or
 //!   shown, and Pi's next start or reload loads the observer this build
-//!   ships. Nothing of an older version is accepted beside version 3. Such
+//!   ships. Nothing of an older version is accepted beside version 5. Such
 //!   a Pi is still a Pi by its name (`PROCESS`), so its card says
 //!   `unavailable` and the hold on automatic prompts stands; that its
 //!   runtime needs a reload is not said anywhere, because nothing of an
@@ -141,8 +148,8 @@ pub(crate) const PROCESS: &str = "pi";
 pub(crate) const MAX_LINE: usize = 1024;
 /// The wire version and the observer's own version this build speaks
 /// (module header, "Versions").
-const WIRE_VERSION: u64 = 4;
-const OBSERVER_VERSION: u64 = 4;
+const WIRE_VERSION: u64 = 5;
+const OBSERVER_VERSION: u64 = 5;
 /// The largest integer a JavaScript client can count to without a gap.
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// The longest line of the one frame that carries free text (`reply`).
@@ -886,19 +893,27 @@ pub(crate) fn ack_line(seq: u64, next: &Nonce, now: Capabilities) -> String {
     ack_line_with(seq, next, now, None)
 }
 
+/// One hand-over as it is written into an answer: the line's id, its text
+/// and whether it is an interjected line the observer may give Pi as a
+/// steering message while a run is open (`handover`, "Interjected lines").
+pub(crate) type Deliver<'a> = (&'a str, &'a str, bool);
+
 /// `ack_line`, carrying one hand-over (`handover`): a line of a worker card
 /// the observer is asked to give to Pi. The ONE place Deck sends Pi text.
+/// An interjected line says so (`"steer":true`); an ordinary one carries
+/// exactly `id` and `text`, as before.
 pub(crate) fn ack_line_with(
     seq: u64,
     next: &Nonce,
     now: Capabilities,
-    deliver: Option<(&str, &str)>,
+    deliver: Option<Deliver<'_>>,
 ) -> String {
     let deliver = deliver
-        .map(|(id, text)| {
+        .map(|(id, text, steer)| {
             format!(
-                ",\"deliver\":{{\"id\":\"{id}\",\"text\":{}}}",
-                serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into())
+                ",\"deliver\":{{\"id\":\"{id}\",\"text\":{}{}}}",
+                serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into()),
+                if steer { ",\"steer\":true" } else { "" }
             )
         })
         .unwrap_or_default();

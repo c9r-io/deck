@@ -118,6 +118,7 @@ pub(super) fn execute_native(
                     submit: true,
                     require_bracketed: true,
                     require_paste_mode: false,
+                    enter_refused_when: None,
                 },
                 &transport,
             );

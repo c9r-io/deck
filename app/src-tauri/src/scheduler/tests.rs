@@ -51,6 +51,7 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         authority: None,
         readiness_override: None,
         channel_first_send: None,
+        interject: None,
     }
 }
 
@@ -677,6 +678,7 @@ fn add_validation_rejects_bad_combinations() {
         first_send_granted: None,
         channel_first_send: None,
         channel_first_send_granted: None,
+        interject: None,
     };
     assert!(validate_add(&base()).is_ok());
     let mut a = base();
@@ -788,6 +790,7 @@ fn add_validation_covers_quiet_and_start() {
         first_send_granted: None,
         channel_first_send: None,
         channel_first_send_granted: None,
+        interject: None,
     };
     let mut a = base();
     a.quiet_secs = Some(MIN_QUIET_SECS);
@@ -2000,6 +2003,7 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         first_send_granted: None,
         channel_first_send: None,
         channel_first_send_granted: None,
+        interject: None,
     }
 }
 
@@ -2959,8 +2963,10 @@ fn seen_codex(
             authority_unverified: false,
             board_unverified: false,
             channel_unverified: false,
+            interject_unverified: false,
             human_held: false,
             pi_ready: false,
+            pi_connected: false,
         },
     )])
 }
@@ -3421,6 +3427,7 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
         origin: None,
         channel_first_send: None,
         automatic: false,
+        interject: false,
     });
     assert!(acknowledge_ambiguous(&mut q, "gone").is_ok());
     assert!(retry_item(&mut q, "gone").is_ok());
@@ -3440,6 +3447,7 @@ fn retry_and_acknowledge_resolve_every_delivery_state_exactly_once() {
         origin: None,
         channel_first_send: None,
         automatic: false,
+        interject: false,
     });
     assert!(acknowledge_ambiguous(&mut q, "plain").is_ok());
     assert!(
@@ -6156,6 +6164,7 @@ fn the_override_rides_the_external_head_row_only() {
         first_send_granted: None,
         channel_first_send: None,
         channel_first_send_granted: None,
+        interject: None,
     };
     assert!(validate_add(&args).is_ok());
     let mut ordinary = qs(vec![]);
@@ -8479,6 +8488,7 @@ fn board_sources(tasks: &first_send::PhoneTasks) -> first_send::Sources<'_> {
         settings: None,
         board: Some(tasks),
         delegations: None,
+        interjects: None,
     }
 }
 
@@ -9621,6 +9631,7 @@ fn waiting_rows_sendable(q: &QueueState) -> bool {
         settings: None,
         board: tasks.as_ref(),
         delegations: None,
+        interjects: None,
     };
     q.items.iter().any(|row| {
         (row.readiness_override.is_some() && first_send::fence(row, sources) == Fence::Clear)
@@ -9635,6 +9646,7 @@ fn tick_sweep(q: &mut QueueState) {
         settings: None,
         board: tasks.as_ref(),
         delegations: None,
+        interjects: None,
     };
     revoke_stale(q, sources);
     first_send::revoke_stale(q, sources);
@@ -10071,6 +10083,7 @@ fn agent_sources<'a>(
         settings: Some(config),
         board: None,
         delegations,
+        interjects: None,
     }
 }
 
@@ -10227,6 +10240,7 @@ fn an_agent_rule_s_approval_rests_on_the_client_s_delegation() {
                 settings: Some(&badge_config),
                 board: None,
                 delegations: None,
+                interjects: None,
             }
         ),
         Fence::Clear
@@ -10352,6 +10366,7 @@ fn delegated_rows_stand_on_the_worker_delegation_and_hold_for_the_human() {
         settings: Some(&config),
         board: None,
         delegations,
+        interjects: None,
     };
     assert_eq!(fence(&row, sources(Some(&workers))), Fence::Clear);
     assert_eq!(
@@ -10367,6 +10382,7 @@ fn delegated_rows_stand_on_the_worker_delegation_and_hold_for_the_human() {
                 settings: None,
                 board: None,
                 delegations: Some(&workers),
+                interjects: None,
             }
         ),
         Fence::Unverified,
@@ -10458,6 +10474,7 @@ fn a_worker_types_first_line_override_rests_on_the_clients_choice() {
         settings: Some(&config),
         board: None,
         delegations: d,
+        interjects: None,
     };
     assert_eq!(
         first_send::fence(&head, sources(Some(&with_first))),
@@ -10696,6 +10713,7 @@ fn a_worker_cards_later_line_is_not_stuck_after_a_restart() {
         settings: Some(&config),
         board: None,
         delegations: Some(&with_first),
+        interjects: None,
     };
     // the agent after a restart: alive, no interaction evidence
     let restarted = Observed::default();
@@ -10818,5 +10836,541 @@ fn a_pi_worker_line_waits_for_its_observer_between_runs_and_nothing_else_of_pi_m
     assert_eq!(
         hold_reason(&other.items[0], ready.get("s")),
         Some(Hold::PiInputUnverified)
+    );
+}
+
+/* ---------- interjected worker lines (`select.rs` "Interjected lines") ---------- */
+
+/// A worker card's later line as `ops::worker_queue_add` writes it: external,
+/// chain, the shortest quiet time, the client's delegated authority, in the
+/// card's list `g` at `seq`; `interject` names the orchestrator card that
+/// interjected it.
+fn worker_line(id: &str, seq: u32, added: u64, interject: Option<&str>) -> QueueItem {
+    let mut row = qi(id, "chain");
+    row.external = true;
+    row.quiet_secs = Some(MIN_QUIET_SECS);
+    row.group = Some("g".into());
+    row.seq = Some(seq);
+    row.added = added;
+    row.authority = Some(StepAuthority {
+        rule: format!("{}claude", crate::mcp::WORKER_TYPE_RULE_PREFIX),
+        grant: String::new(),
+        step: 0,
+        class: ContentClass::Delegated,
+        trigger: TriggerClass::Agent,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    });
+    row.interject = interject.map(|card| Interject {
+        orchestrator: card.into(),
+    });
+    row
+}
+
+fn stage_of(q: &QueueState, id: &str, activity: &Observations) -> &'static str {
+    let row = q.items.iter().find(|i| i.id == id).unwrap();
+    plan_stage(q, row, NOW, 720, activity)
+}
+
+/// The one waiver: an interjected line does not wait for the card to fall
+/// quiet. A working agent whose output is still arriving holds an ordinary
+/// line at `quiet`; the interjected one is selected, and its plan says it
+/// waits for nothing.
+#[test]
+fn an_interjected_line_waits_for_no_quiet_time() {
+    let busy = seen_agent(NOW, crate::agent_status::WORKING);
+    let queued = qs(vec![worker_line("a", 2, NOW - 5, None)]);
+    assert!(select_due(&queued, NOW, 720, &busy).is_empty());
+    assert_eq!(stage_of(&queued, "a", &busy), "quiet");
+    let interjected = qs(vec![worker_line("b", 2, NOW - 5, Some("OA"))]);
+    assert_eq!(ids(&select_due(&interjected, NOW, 720, &busy)), ["b"]);
+    assert_eq!(stage_of(&interjected, "b", &busy), "context");
+    assert!(interject_row(&interjected.items[0]));
+}
+
+/// An interjected line goes before earlier rows of its list that wait for
+/// nothing but their quiet time; they stay as they were, and once the card
+/// is quiet the ordinary order holds again (the older row first).
+#[test]
+fn an_interjected_line_passes_rows_that_wait_only_for_quiet() {
+    let busy = seen_agent(NOW, crate::agent_status::WORKING);
+    let mut owner = qi("o", "chain");
+    owner.group = Some("g".into());
+    owner.seq = Some(1);
+    owner.added = NOW - 90;
+    let rows = vec![
+        owner,
+        worker_line("a", 2, NOW - 50, None),
+        worker_line("b", 3, NOW - 5, Some("OA")),
+    ];
+    let mut q = qs(rows.clone());
+    assert_eq!(ids(&select_due(&q, NOW, 720, &busy)), ["b"]);
+    assert_eq!(stage_of(&q, "a", &busy), "previous");
+    assert_eq!(stage_of(&q, "b", &busy), "context");
+    // the line goes; the rows it passed keep their text, list and order
+    q.items[2].state.move_to(ItemState::Firing);
+    q.items[2].delivery = Some("d-b".into());
+    finalize_delivery(&mut q, "b", "d-b", NOW, false);
+    assert_eq!(ids(&q.items), ["o", "a"]);
+    assert_eq!(
+        q.items
+            .iter()
+            .map(|i| (i.text.as_str(), i.group.as_deref(), i.seq))
+            .collect::<Vec<_>>(),
+        [("x", Some("g"), Some(1)), ("x", Some("g"), Some(2))]
+    );
+    assert!(q.deliveries[0].interject, "audited as interjected");
+    // once quiet, the oldest row of the list goes first, the line behind it
+    let calm = seen_agent(NOW - 400, crate::agent_status::WORKING);
+    let q = qs(rows);
+    assert_eq!(ids(&select_due(&q, NOW, 720, &calm)), ["o"]);
+}
+
+/// What an interjected line never passes: a row being sent or whose
+/// delivery is uncertain, one that failed or backs off, a paused row, a
+/// checkpoint, a timed row (the run's head included), a row under a hold,
+/// and an earlier interjected line. Each keeps it behind, at `previous`.
+#[test]
+fn an_interjected_line_never_passes_a_row_that_waits_for_more_than_quiet() {
+    let busy = seen_agent(NOW, crate::agent_status::WORKING);
+    let line = worker_line("b", 3, NOW - 5, Some("OA"));
+    let earlier = || worker_line("a", 2, NOW - 50, None);
+    let mut cases: Vec<(&str, QueueItem)> = Vec::new();
+    let mut a = earlier();
+    a.state = ItemState::Firing;
+    cases.push(("being sent", a));
+    let mut a = earlier();
+    a.state = ItemState::Ambiguous;
+    cases.push(("uncertain", a));
+    let mut a = earlier();
+    a.state = ItemState::Failed;
+    a.attempts = 1;
+    a.last_attempt_at = Some(NOW);
+    cases.push(("failed, backing off", a));
+    let mut a = earlier();
+    a.state = ItemState::Failed;
+    a.attempts = MAX_ATTEMPTS;
+    cases.push(("dead", a));
+    let mut a = earlier();
+    a.paused = true;
+    cases.push(("paused", a));
+    let mut a = earlier();
+    a.state = ItemState::Review;
+    a.review = Some(ReviewCheckpoint {
+        delivery: "d".into(),
+        permit: None,
+    });
+    cases.push(("a checkpoint", a));
+    let mut a = earlier();
+    a.mode = "at".into();
+    a.at = Some(NOW + 3600);
+    cases.push(("a timed row", a));
+    let mut a = earlier();
+    a.mode = "at".into();
+    a.at = Some(NOW - 5);
+    a.authority.as_mut().unwrap().rule = "worker-type:claude".into();
+    a.external = false;
+    a.authority = None;
+    a.expected_process = Some("codex".into());
+    cases.push(("a head row held at first-send", a));
+    let mut a = earlier();
+    a.authority = None;
+    cases.push(("send-now only (external, no authority)", a));
+    let mut a = earlier();
+    a.interject = Some(Interject {
+        orchestrator: "OA".into(),
+    });
+    a.paused = true;
+    cases.push(("an earlier interjected line", a));
+    for (why, a) in cases {
+        let q = qs(vec![a, line.clone()]);
+        let selected = select_due(&q, NOW, 720, &busy);
+        assert!(
+            !ids(&selected).contains(&"b"),
+            "{why}: the interjected line stays behind"
+        );
+        assert_eq!(stage_of(&q, "b", &busy), "previous", "{why}");
+    }
+}
+
+/// Two interjected lines go in the order Deck accepted them, one at a time,
+/// and the session gap still keeps 60 seconds between them.
+#[test]
+fn interjected_lines_keep_their_order_and_the_session_gap() {
+    let busy = seen_agent(NOW, crate::agent_status::WORKING);
+    let mut q = qs(vec![
+        worker_line("b1", 2, NOW - 5, Some("OA")),
+        worker_line("b2", 3, NOW - 4, Some("OA")),
+    ]);
+    assert_eq!(ids(&select_due(&q, NOW, 720, &busy)), ["b1"]);
+    assert_eq!(stage_of(&q, "b2", &busy), "previous");
+    q.items[0].state.move_to(ItemState::Firing);
+    q.items[0].delivery = Some("d-b1".into());
+    finalize_delivery(&mut q, "b1", "d-b1", NOW, false);
+    assert!(
+        select_due(&q, NOW + 10, 720, &busy).is_empty(),
+        "the gap holds the next one"
+    );
+    let row = q.items.iter().find(|i| i.id == "b2").unwrap();
+    assert_eq!(plan_stage(&q, row, NOW + 10, 720, &busy), "gap");
+    assert_eq!(
+        ids(&select_due(&q, NOW + SESSION_MIN_GAP_SECS, 720, &busy)),
+        ["b2"]
+    );
+}
+
+/// Every hold still applies to an interjected line: the agent's own
+/// question, the user's takeover, the first-interaction gate (lifted only
+/// by the client's worker first-send override), Codex trust and an
+/// unreadable approval source.
+#[test]
+fn the_holds_still_apply_to_an_interjected_line() {
+    let line = worker_line("b", 2, NOW - 5, Some("OA"));
+    let q = qs(vec![line.clone()]);
+    let asking = seen_agent(NOW, crate::agent_status::NEEDS_INPUT);
+    assert!(select_due(&q, NOW, 720, &asking).is_empty());
+    assert_eq!(stage_of(&q, "b", &asking), "agent");
+    let mut held = seen_agent(NOW, crate::agent_status::WORKING);
+    mark_human_held(&mut held, &["s".to_string()].into());
+    assert!(select_due(&q, NOW, 720, &held).is_empty());
+    assert_eq!(stage_of(&q, "b", &held), "human");
+    let fresh = unestablished(NOW);
+    assert!(select_due(&q, NOW, 720, &fresh).is_empty());
+    assert_eq!(stage_of(&q, "b", &fresh), "first-send");
+    let mut overridden = line.clone();
+    overridden.readiness_override = Some(ReadinessOverride {
+        rule: format!("{}claude", crate::mcp::WORKER_TYPE_RULE_PREFIX),
+        trigger: first_send::FirstSendOrigin::Agent,
+        clock_target: None,
+        connector: None,
+        delegation: Some(AgentSource {
+            client: "client_a".into(),
+        }),
+    });
+    assert_eq!(
+        ids(&select_due(&qs(vec![overridden]), NOW, 720, &fresh)),
+        ["b"],
+        "the client's worker first-send choice, as for a queued line"
+    );
+    let mut codex = line.clone();
+    codex.expected_process = Some("codex".into());
+    let unproven = seen_codex(NOW, None, crate::agent_status::CodexSignalTrust::Unknown);
+    assert!(select_due(&qs(vec![codex.clone()]), NOW, 720, &unproven).is_empty());
+    let shared = seen_codex(
+        NOW,
+        None,
+        crate::agent_status::CodexSignalTrust::Unavailable,
+    );
+    assert_eq!(stage_of(&qs(vec![codex]), "b", &shared), "codex-signal");
+    let mut unread = seen_agent(NOW, crate::agent_status::WORKING);
+    mark_authority_unverified(&mut unread);
+    assert!(select_due(&q, NOW, 720, &unread).is_empty());
+    assert_eq!(stage_of(&q, "b", &unread), "authority-unverified");
+}
+
+/// A Pi worker: an ordinary line waits for a pause between runs; an
+/// interjected one needs only the observer bound to the current generation
+/// (it is handed over as Pi's steering message, never typed). Without an
+/// observer both wait at `pi-handover`; an owner row stays send-now only.
+#[test]
+fn a_pi_interjected_line_needs_the_observer_and_no_pause_between_runs() {
+    let pi = |connected: bool, ready: bool| {
+        HashMap::from([(
+            "s".to_string(),
+            Observed {
+                activity: NOW,
+                agent: Some(crate::agent_status::WORKING),
+                pi: true,
+                pi_connected: connected,
+                pi_ready: ready,
+                ..Observed::default()
+            },
+        )])
+    };
+    let for_pi = |mut row: QueueItem| {
+        row.expected_process = Some("pi".into());
+        row.cmd = "pi".into();
+        row
+    };
+    let queued = for_pi(worker_line("a", 2, NOW - 5, None));
+    let interjected = for_pi(worker_line("b", 2, NOW - 5, Some("OA")));
+    let working = pi(true, false);
+    assert_eq!(
+        hold_reason(&queued, working.get("s")),
+        Some(Hold::PiHandover)
+    );
+    assert_eq!(hold_reason(&interjected, working.get("s")), None);
+    assert_eq!(
+        ids(&select_due(
+            &qs(vec![interjected.clone()]),
+            NOW,
+            720,
+            &working
+        )),
+        ["b"]
+    );
+    let unbound = pi(false, false);
+    assert_eq!(
+        hold_reason(&interjected, unbound.get("s")),
+        Some(Hold::PiHandover)
+    );
+    let mut owner = for_pi(qi("o", "chain"));
+    owner.interject = Some(Interject {
+        orchestrator: "OA".into(),
+    });
+    assert_eq!(
+        hold_reason(&owner, working.get("s")),
+        Some(Hold::PiInputUnverified),
+        "the marker alone types nothing into a Pi"
+    );
+}
+
+/// A Pi worker line waits for the pause between two of Pi's runs, Pi's
+/// form of the quiet time: an interjected line behind it goes while the run
+/// is open, through the bound observer. Without a bound observer neither
+/// goes, and a line of the same list under another hold keeps it behind.
+#[test]
+fn a_pi_interjected_line_passes_a_line_that_waits_for_the_pause_between_runs() {
+    let pi = |connected: bool, human: bool| {
+        HashMap::from([(
+            "s".to_string(),
+            Observed {
+                activity: NOW,
+                agent: Some(crate::agent_status::WORKING),
+                pi: true,
+                pi_connected: connected,
+                pi_ready: false,
+                human_held: human,
+                ..Observed::default()
+            },
+        )])
+    };
+    let for_pi = |mut row: QueueItem| {
+        row.expected_process = Some("pi".into());
+        row.cmd = "pi".into();
+        row
+    };
+    let rows = vec![
+        for_pi(worker_line("a", 2, NOW - 50, None)),
+        for_pi(worker_line("b", 3, NOW - 5, Some("OA"))),
+    ];
+    let q = qs(rows.clone());
+    let working = pi(true, false);
+    assert_eq!(ids(&select_due(&q, NOW, 720, &working)), ["b"]);
+    assert_eq!(stage_of(&q, "a", &working), "pi-handover");
+    assert_eq!(stage_of(&q, "b", &working), "context");
+    // no observer bound: the interjected line waits for it as well
+    let unbound = pi(false, false);
+    assert!(select_due(&q, NOW, 720, &unbound).is_empty());
+    // the user holds the card: nothing of the orchestrator's goes
+    let held = pi(true, true);
+    assert!(select_due(&q, NOW, 720, &held).is_empty());
+    // a line of the list under another hold keeps the interjected line
+    // behind it: one whose delegation was withdrawn (external, no authority
+    // left), and a Pi line that would be typed rather than handed over
+    let mut withdrawn = rows.clone();
+    withdrawn[0].authority = None;
+    let mut typed = rows;
+    typed[0].authority = None;
+    typed[0].external = false;
+    for (rows, hold) in [
+        (withdrawn, Hold::External),
+        (typed, Hold::PiInputUnverified),
+    ] {
+        let q = qs(rows);
+        assert_eq!(hold_reason(&q.items[0], working.get("s")), Some(hold));
+        assert!(select_due(&q, NOW, 720, &working).is_empty(), "{hold:?}");
+        assert_eq!(stage_of(&q, "b", &working), "previous", "{hold:?}");
+    }
+}
+
+/// The marker alone grants nothing: a row that lost its delegated authority
+/// or is no worker line waits as before (`interject_row`).
+#[test]
+fn the_interject_marker_alone_waives_nothing() {
+    let busy = seen_agent(NOW, crate::agent_status::WORKING);
+    let mut owner = qi("o", "chain");
+    owner.interject = Some(Interject {
+        orchestrator: "OA".into(),
+    });
+    owner.added = NOW - 5;
+    assert!(!interject_row(&owner));
+    assert!(select_due(&qs(vec![owner]), NOW, 720, &busy).is_empty());
+    let mut stripped = worker_line("b", 2, NOW - 5, Some("OA"));
+    stripped.authority = None;
+    assert!(!interject_row(&stripped));
+    let q = qs(vec![stripped]);
+    assert!(select_due(&q, NOW, 720, &busy).is_empty());
+    assert_eq!(stage_of(&q, "b", &busy), "external");
+}
+
+/// An interjected line rests on its orchestrator card still driving the
+/// card (`authority.rs` `binding_stands`), beside the client's worker
+/// delegation: the fence and the sweep strip it when the binding is gone
+/// (it then waits for send-now), hold it when the bindings cannot be read,
+/// and an ordinary delegated line never reads them.
+#[test]
+fn an_interjected_line_rests_on_its_orchestrator_binding() {
+    let row = worker_line("b", 2, NOW - 5, Some("OA"));
+    let config = crate::inbound::Config {
+        slack_enabled: false,
+        rules: Vec::new(),
+    };
+    let workers: HashSet<String> = [crate::mcp::worker_delegation_key("client_a")].into();
+    let bound: HashSet<String> = [crate::mcp::interject_key("client_a", "card-s", "OA")].into();
+    let other: HashSet<String> = [crate::mcp::interject_key("client_a", "card-s", "OB")].into();
+    let sources = |interjects| first_send::Sources {
+        settings: Some(&config),
+        board: None,
+        delegations: Some(&workers),
+        interjects,
+    };
+    assert_eq!(fence(&row, sources(Some(&bound))), Fence::Clear);
+    assert_eq!(
+        fence(&row, sources(Some(&other))),
+        Fence::Revoked,
+        "another orchestrator card's binding is not this line's"
+    );
+    assert_eq!(fence(&row, sources(None)), Fence::Unverified);
+    let queued = worker_line("a", 2, NOW - 5, None);
+    assert_eq!(
+        fence(&queued, sources(None)),
+        Fence::Clear,
+        "an ordinary line has nothing to bind"
+    );
+    let mut q = QueueState {
+        items: vec![row.clone(), queued],
+        ..QueueState::default()
+    };
+    assert!(any_interject(&q));
+    assert_eq!(revoke_stale(&mut q, sources(None)), 0, "unreadable: kept");
+    assert_eq!(revoke_stale(&mut q, sources(Some(&bound))), 0);
+    assert_eq!(revoke_stale(&mut q, sources(Some(&other))), 1);
+    assert!(q.items[0].authority.is_none() && q.items[1].authority.is_some());
+    assert!(!interject_row(&q.items[0]));
+    assert!(!any_interject(&q), "a stripped line needs no binding read");
+}
+
+/// The pre-fire transaction reads the agent's own word for an interjected
+/// line again, at that instant (`delivery::pane_asks_now`): an agent that
+/// asked the user since the tick's observation gets nothing, no attempt is
+/// counted and no ledger written; the same line goes once it no longer asks.
+#[test]
+fn the_pre_fire_reads_the_agent_s_word_again_for_an_interjected_line() {
+    let busy = seen_agent(NOW, crate::agent_status::WORKING);
+    let qm = Mutex::new(qs(vec![worker_line("b", 2, NOW - 5, Some("OA"))]));
+    let fired = std::sync::atomic::AtomicUsize::new(0);
+    let fire = |_: &QueueItem| {
+        fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    };
+    let no_kill = |_: &str| {};
+    let config = || {
+        Some(crate::inbound::Config {
+            slack_enabled: false,
+            rules: Vec::new(),
+        })
+    };
+    let hooks = SendHooks {
+        fire: &fire,
+        persist: &ok_persist,
+        kill: &no_kill,
+        board: &test_board,
+        authority: &config,
+    };
+    first_send::DELEGATIONS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some([crate::mcp::worker_delegation_key("client_a")].into()))
+    });
+    first_send::INTERJECTS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(Some(
+            [crate::mcp::interject_key("client_a", "card-s", "OA")].into(),
+        ))
+    });
+    PANE_ASKS_FOR_TESTS.with(|cell| cell.set(Some(true)));
+    let res = send_one(&qm, &AtomicBool::new(false), "s", 720, &busy, &hooks);
+    assert_eq!(res, SendResult::Nothing);
+    {
+        let q = qm.lock_or_recover();
+        assert_eq!(q.items[0].attempts, 0, "no attempt counted");
+        assert!(q.pending.is_empty(), "no firing intent");
+    }
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+    PANE_ASKS_FOR_TESTS.with(|cell| cell.set(Some(false)));
+    let res = send_one(&qm, &AtomicBool::new(false), "s", 720, &busy, &hooks);
+    assert!(matches!(res, SendResult::Sent { .. }), "{res:?}");
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // its orchestrator card no longer drives the card: stripped, not sent
+    let qm = Mutex::new(qs(vec![worker_line("c", 2, NOW - 5, Some("OA"))]));
+    first_send::INTERJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(HashSet::new())));
+    let res = send_one(&qm, &AtomicBool::new(false), "s", 720, &busy, &hooks);
+    assert_eq!(res, SendResult::Nothing);
+    assert!(qm.lock_or_recover().items[0].authority.is_none());
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    PANE_ASKS_FOR_TESTS.with(|cell| cell.set(None));
+    first_send::INTERJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    first_send::DELEGATIONS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// No caller can make an interjected row: the field is not part of the
+/// owner and channel commands' arguments (a webview, Slack, Connector or
+/// template payload naming it is read without it), the row core copies only
+/// what `worker_queue_add` set, and an edited text drops it.
+#[test]
+fn no_caller_but_the_worker_path_makes_an_interjected_row() {
+    let mut args: QueueAddArgs = serde_json::from_value(serde_json::json!({
+        "session": "s", "cardId": "card-s", "dir": "/tmp", "cmd": "claude",
+        "text": "go", "mode": "chain", "at": null, "every": null,
+        "winFrom": null, "winTo": null, "untilN": null, "untilAt": null,
+        "steps": null, "tpl": null, "tplIdx": null, "tplTotal": null,
+        "interject": {"orchestrator": "OA"}
+    }))
+    .unwrap();
+    assert!(args.interject.is_none(), "a caller's field is never read");
+    assert!(
+        !serde_json::to_string(&args).unwrap().contains("interject"),
+        "nor part of an operation fingerprint"
+    );
+    let mut q = qs(vec![]);
+    add_item(&mut q, args.clone(), "go".into()).unwrap();
+    assert!(q.items[0].interject.is_none());
+    args.interject = Some(Interject {
+        orchestrator: "OA".into(),
+    });
+    add_item(&mut q, args, "go".into()).unwrap();
+    let id = q.items[1].id.clone();
+    assert_eq!(q.items[1].interject.as_ref().unwrap().orchestrator, "OA");
+    update_text(&mut q, &id, "edited".into()).unwrap();
+    assert!(
+        q.items[1].interject.is_none(),
+        "an edited line is the user's"
+    );
+}
+
+/// Bindings that cannot be read this tick (no current Board yet, one from
+/// its backup) hold interjected lines and nothing else: an ordinary worker
+/// line and an approved row of another kind still go as before.
+#[test]
+fn unreadable_bindings_hold_interjected_lines_only() {
+    let mut seen = seen_agent(NOW - 400, crate::agent_status::WORKING);
+    mark_interject_unverified(&mut seen);
+    let interjected = worker_line("b", 2, NOW - 5, Some("OA"));
+    assert_eq!(
+        hold_reason(&interjected, seen.get("s")),
+        Some(Hold::AuthorityUnverified)
+    );
+    let queued = worker_line("a", 2, NOW - 500, None);
+    assert_eq!(hold_reason(&queued, seen.get("s")), None, "not its source");
+    assert_eq!(ids(&select_due(&qs(vec![queued]), NOW, 720, &seen)), ["a"]);
+    let mut pi = interjected.clone();
+    pi.expected_process = Some("pi".into());
+    let mut observed = seen.get("s").copied().unwrap();
+    observed.pi = true;
+    observed.pi_connected = true;
+    assert_eq!(
+        hold_reason(&pi, Some(&observed)),
+        Some(Hold::AuthorityUnverified),
+        "a Pi's interjected line too"
     );
 }

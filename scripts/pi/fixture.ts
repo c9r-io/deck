@@ -42,8 +42,13 @@ export default function (pi) {
       id: "fixture", name: "Local fixture", reasoning: false, input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000,
     }],
-    streamSimple(model, _context, options) {
-      record("fixture_provider_request", null);
+    streamSimple(model, context, options) {
+      // whether a line Deck interjected is in what the model is asked now
+      // (a closed boolean: `INTERJECT` anywhere in the conversation), so a
+      // run can tell when Pi's steering reached the model
+      let interject = false;
+      try { interject = JSON.stringify((context && context.messages) || []).includes("INTERJECT"); } catch (_) { interject = false; }
+      record("fixture_provider_request", null, { interject });
       const stream = createAssistantMessageEventStream();
       const failed = failNext > 0;
       if (failed) failNext -= 1;

@@ -22,6 +22,13 @@ provider (`scripts/pi/fixture.ts`).
   cargo build --manifest-path app/src-tauri/Cargo.toml     # this checkout's debug build
   pi-live-verify.py --runtime npm|standalone [--standalone DIR] [--host SSH_ALIAS]
   pi-live-verify.py --mode pi-layout [--host SSH_ALIAS]
+  pi-live-verify.py --mode pi-interject --runtime npm|standalone --model default [--host SSH_ALIAS]
+
+`pi-interject` (`deck_worker_interject`): the page opens one orchestrator
+card and this script types `scripts/mcp-interject-e2e.py --type pi` into it
+(only a call from that card may interject); the client starts the Pi worker
+on a long task and interjects while the model writes and while its program
+runs (about 15 minutes; the display is kept awake that long).
 
 `pi-layout` starts no Pi: the page paints the real dialogs from answers it
 scripts itself, and this script only launches the carrier, waits for its
@@ -65,6 +72,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent if "__file__" in globals() and __file__ != "<stdin>" else Path("/nonexistent")
 TAURI = REPO / "app/src-tauri"
 FIXTURES = REPO / "scripts/pi"
+
+# `pi-interject`: the worker's step 2, a 100 s program; its two marker files
+# tell the scripted orchestrator which phase a line landed in
+PHASE1 = """import time
+open("p1-started", "w").close()
+for i in range(10):
+    print("phase1", i * 10, "s", flush=True)
+    time.sleep(10)
+open("p1-done", "w").close()
+print("phase1 done", flush=True)
+"""
 ENTRY = "Contents/Resources/pi/signal.ts"
 CHECKS = ("pi-clean", "pi-enable", "pi-run-created", "pi-connected", "pi-hold", "pi-turn-done", "pi-attention",
           "pi-send-now", "pi-disabled", "pi-reload", "pi-replies", "pi-shown", "pi-review", "pi-narrowed",
@@ -151,6 +169,10 @@ class Run:
         self.model = chosen or ((self.root / "model").read_text().strip() if (self.root / "model").exists() else None)
         # `--choose PROVIDER/MODEL`: the type is plain `pi` listing that model, and the orchestrator's start picks it
         # (`deck_worker_start` `model`); the run then reads which model answered from Pi's own session files
+        # `pi-interject --paragraphs N`: the story the worker writes first; long enough that a fast model still
+        # writes it past the session gap (it travels with the root as well)
+        length = getattr(args, "paragraphs", None)
+        self.paragraphs = length or (int((self.root / "paragraphs").read_text()) if (self.root / "paragraphs").exists() else 200)
         picked = getattr(args, "choose", None)
         self.choose = picked or ((self.root / "choose").read_text().strip() if (self.root / "choose").exists() else None)
         self.evidence = self.data / "evidence"
@@ -289,6 +311,12 @@ class Run:
                 "description": "Deck: report the result of this worker card to its orchestrator"}}}, indent=2) + "\n")
         (self.pi_fixture / "command").write_text(command + "\n")
         (self.pi_fixture / "dir").write_text(str(self.work) + "\n")
+        if self.mode == "pi-interject":
+            # the scripted orchestrator travels with the root; its worker's step 2 is a 100 s program
+            for name in ("mcp-interject-e2e.py", "mcp-agent-e2e.py"):
+                shutil.copyfile(REPO / "scripts" / name, self.root / "tools" / name)
+            (self.work / "phase1.py").write_text(PHASE1)
+            (self.root / "paragraphs").write_text(f"{self.paragraphs}\n")
         (self.pi_fixture / "marker").write_text(self.marker + "\n")
 
     def formal(self) -> dict:
@@ -376,7 +404,7 @@ class Run:
             env.pop("PI_OFFLINE")
         passed = [part for name, value in env.items() for part in ("--env", f"{name}={value}")]
         # the display stays awake for the run; this is the run's own process and ends with it
-        awake = subprocess.Popen(["/usr/bin/caffeinate", "-d", "-u", "-t", "480"])
+        awake = subprocess.Popen(["/usr/bin/caffeinate", "-d", "-u", "-t", "2400" if self.mode == "pi-interject" else "480"])
         self.registry("add-process", "--pid", str(awake.pid), check=False)
         time.sleep(2)
         subprocess.run(["/usr/bin/env", "-i", "/usr/bin/open", "-n", *passed, str(self.app), "--args",
@@ -711,6 +739,56 @@ class Run:
                 self.register_new()
                 time.sleep(1)
 
+    # ---------- `pi-interject`: the orchestrator runs in a card (deck_worker_interject) ----------
+
+    def interject(self) -> dict:
+        """Wait for `pii-armed`, type the scripted orchestrator into the one card's pane (Deck proves the calling card
+        from the kernel, so only there may it interject), and wait for its evidence and the page's end."""
+        end = time.monotonic() + 240
+        while time.monotonic() < end and "pii-armed" not in self.log_checks():
+            self.register_new()
+            time.sleep(0.5)
+        if "pii-armed" not in self.log_checks():
+            raise RuntimeError("the page never armed the client")
+        credentials = sorted(self.evidence.glob("mcp-credential-client_*"))
+        if len(credentials) != 1:
+            raise RuntimeError("not one client credential")
+        client = credentials[0].name[len("mcp-credential-"):]
+        panes = subprocess.run([str(self.tmux), "-S", str(self.socket), "list-panes", "-a", "-F", "#{pane_id}"],
+                               capture_output=True, text=True).stdout.split()
+        if len(panes) != 1:
+            raise RuntimeError(f"{len(panes)} panes before the worker started, not the orchestrator card's one")
+        evidence = self.evidence / "interject"
+        line = shlex.join([sys.executable, str(self.root / "tools/mcp-interject-e2e.py"),
+                           "--adapter", str(self.app / "Contents/MacOS/deck-mcp"), "--socket", str(self.data / "mcp-control.sock"),
+                           "--client-id", client, "--credential-file", str(credentials[0]), "--evidence", str(evidence),
+                           "--tag", self.suffix, "--type", "pi", "--no-dialog", "--paragraphs", str(self.paragraphs)])
+        subprocess.run([str(self.tmux), "-S", str(self.socket), "send-keys", "-t", panes[0], "-l", line], check=True)
+        subprocess.run([str(self.tmux), "-S", str(self.socket), "send-keys", "-t", panes[0], "Enter"], check=True)
+        result = evidence / f"interject-e2e-{self.suffix}.json"
+        end = time.monotonic() + 1500
+        while time.monotonic() < end and not result.exists():
+            self.register_new()
+            time.sleep(2)
+        time.sleep(1)
+        for target, name in ((panes[0], "orchestrator"), (None, "worker")):
+            text = (subprocess.run([str(self.tmux), "-S", str(self.socket), "capture-pane", "-p", "-J", "-t", target, "-S", "-400"],
+                                   capture_output=True, text=True).stdout if target else self.pane())
+            (self.logs / f"interject-pane-{name}.txt").write_text(text)
+        end = time.monotonic() + 120
+        while time.monotonic() < end and "done" not in self.log_checks():
+            time.sleep(0.5)
+        return json.loads(result.read_text()) if result.exists() else {}
+
+    def judge_interject(self, record: dict) -> None:
+        self.check("the scripted orchestrator wrote its evidence", bool(record))
+        for step in record.get("steps", []):
+            detail = {key: value for key, value in step.items() if key not in ("name", "ok", "at", "first_look")}
+            self.check(f"orchestrator: {step['name']}", step["ok"], **detail)
+        self.check("the page reached its end", "done" in self.log_checks())
+        if self.model:
+            self.facts["answered"] = self.models_answered()
+
     def judge_worker(self, facts: dict) -> None:
         log = (self.data / "app.log").read_text(errors="replace") if (self.data / "app.log").exists() else ""
         first, dialog, draft = facts.get("first") or {}, facts.get("dialog") or {}, facts.get("draft") or {}
@@ -780,6 +858,8 @@ class Run:
                 self.judge(self.watch())
             elif self.mode == "pi-worker":
                 self.judge_worker(self.orchestrate())
+            elif self.mode == "pi-interject":
+                self.judge_interject(self.interject())
             else:
                 self.judge_layout(self.watch(360))
         except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, ValueError) as error:
@@ -839,13 +919,14 @@ def on_host(run: Run, host: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", choices=("pi-live", "pi-layout", "pi-worker"), default="pi-live")
+    parser.add_argument("--mode", choices=("pi-live", "pi-layout", "pi-worker", "pi-interject"), default="pi-live")
     parser.add_argument("--runtime", choices=("npm", "standalone"))
     parser.add_argument("--model", help="pi-worker only: PROVIDER/MODEL, or `default` for the running machine's own Pi "
                         "default; a real model whose credential entry is borrowed for the run, and the worker is asked "
                         "to call deck_worker_report")
     parser.add_argument("--choose", help="pi-worker with --model only: PROVIDER/MODEL the type lists and the start "
                         "picks (the type's command is then plain `pi`, its default the --model one)")
+    parser.add_argument("--paragraphs", type=int, help="pi-interject only: the length of the worker's story (default 200)")
     parser.add_argument("--standalone", help="the unpacked official build (the directory that holds pi)")
     parser.add_argument("--npm-package", default=str(Path.home() / ".local/lib/node_modules/@earendil-works/pi-coding-agent"))
     parser.add_argument("--host", help="an SSH alias: run on that machine instead of this one")
@@ -858,7 +939,7 @@ def main() -> int:
         return 0 if not summary["stopped"] and summary["cleanup"]["exit"] == 0 else 1
     if args.choose and not (args.mode == "pi-worker" and args.model and "/" in args.choose):
         parser.error("--choose PROVIDER/MODEL is for --mode pi-worker with --model")
-    if args.mode in ("pi-live", "pi-worker"):
+    if args.mode in ("pi-live", "pi-worker", "pi-interject"):
         if not args.runtime:
             parser.error("--runtime is needed")
         if args.runtime == "standalone" and not (args.standalone and (Path(args.standalone) / "pi").is_file()):

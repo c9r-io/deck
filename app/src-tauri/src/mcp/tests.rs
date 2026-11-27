@@ -9090,3 +9090,293 @@ fn an_agent_leaves_notes_only_in_its_own_card() {
     );
     drop(root);
 }
+
+/// `deck_worker_interject` (`workers.rs`, approved 2026-11-27): only the
+/// orchestrator card that started a worker card may interject into it —
+/// proven from the kernel, never named by the client — and only into an
+/// agent that takes a message while it works. A caller from no card, another
+/// orchestrator card, an unowned worker, an agy worker, a control character
+/// and a self-reported parent are refused before anything is written; the
+/// caller's own worker passes every check that comes before the queue. The
+/// tool's name is part of the request's identity.
+#[test]
+fn only_the_orchestrator_card_that_started_a_worker_may_interject() {
+    let (runtime, _runner, root) = fixture("interject", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |card: Option<&str>, tool: &str, args: Value| {
+        let _as = super::origin::enter_as(card);
+        route(&runtime, request(tool, args))
+    };
+    set_permissions(&runtime, false, true, false);
+    let worker = |card: &str, orchestrator: Option<&str>| Worker {
+        card_id: card.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{card}"),
+        automation_id: "worker-type:claude".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: orchestrator.map(str::to_owned),
+        reported: 0,
+        model: None,
+    };
+    runtime
+        .write(|doc| {
+            doc.workers.extend([
+                worker("W1", Some("OA")),
+                worker("W2", Some("OB")),
+                worker("WU", None),
+                worker("WG", Some("OA")),
+                worker("WP", Some("OA")),
+            ]);
+            Ok(())
+        })
+        .unwrap();
+    let card = |id: &str, cmd: &str| {
+        json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id,
+               "cmd": cmd, "dir": "/tmp", "projectId": "P1", "columnId": "C1"})
+    };
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            card("OA", ""), card("OB", ""),
+            card("W1", "claude"), card("W2", "claude"), card("WU", "claude"),
+            card("WG", "agy"), card("WP", "pi")
+        ]}),
+        true,
+    );
+    let working: HashMap<String, Seen> = ["deck-w1", "deck-w2", "deck-wu", "deck-wg", "deck-wp"]
+        .into_iter()
+        .map(|s| (s.to_owned(), seen_for_tests(Some("working"), 7)))
+        .collect();
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(working)));
+    let line = |card: &str, request: &str| {
+        json!({"request_id": request, "send_sequence": 0, "card_id": card,
+               "after_episode": 7, "text": "run the cheap check first"})
+    };
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+    // who: never from no card, another orchestrator's or an unowned card
+    let none = call(None, "deck_worker_interject", line("W1", "req_i0"));
+    assert_eq!(code(&none), "WORKER_NOT_FOUND", "{none}");
+    assert!(none["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no Deck card"));
+    assert_eq!(
+        code(&call(
+            Some("OB"),
+            "deck_worker_interject",
+            line("W1", "req_i1")
+        )),
+        "WORKER_NOT_FOUND"
+    );
+    assert_eq!(
+        code(&call(
+            Some("OA"),
+            "deck_worker_interject",
+            line("WU", "req_i2")
+        )),
+        "WORKER_NOT_FOUND",
+        "an unowned worker is nobody's to interject into"
+    );
+    // a queued line to the same unowned card passes the same checks
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_send", line("WU", "req_s2"))),
+        "CONTEXT_CHANGED",
+        "send's own rule is unchanged: it reaches the queue step"
+    );
+    // what: an agy worker cannot take one safely
+    assert_eq!(
+        code(&call(
+            Some("OA"),
+            "deck_worker_interject",
+            line("WG", "req_i3")
+        )),
+        "INTERJECT_UNSUPPORTED"
+    );
+    // plain text only, and no parent the client could name
+    let mut escape = line("W1", "req_i4");
+    escape["text"] = json!("go\u{1b}[201~\u{1b}[Z");
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_interject", escape)),
+        "INVALID_ARGUMENTS"
+    );
+    let mut parent = line("W2", "req_i5");
+    parent["parent_card_id"] = json!("OB");
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_interject", parent)),
+        "INVALID_ARGUMENTS"
+    );
+    // the episode and the sequence, as for a queued line
+    let mut moved = line("W1", "req_i6");
+    moved["after_episode"] = json!(6);
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_interject", moved)),
+        "EPISODE_MOVED"
+    );
+    let mut stale = line("W1", "req_i7");
+    stale["send_sequence"] = json!(3);
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_interject", stale)),
+        "STALE_REQUEST"
+    );
+    // its own Claude and Pi workers pass every check before the queue (this
+    // test has no queue: the step after them answers CONTEXT_CHANGED)
+    for card in ["W1", "WP"] {
+        let out = call(Some("OA"), "deck_worker_interject", line(card, "req_i8"));
+        assert_eq!(code(&out), "CONTEXT_CHANGED", "{card}: {out}");
+        assert_eq!(out["error"]["message"], "Deck's queue is not available");
+    }
+    // nothing refused above was written: no operation, no sequence moved
+    assert!(runtime
+        .read(|doc| doc.operations.iter().all(|o| o.kind != WORKER_SEND_KIND))
+        .unwrap());
+    assert_eq!(
+        call(Some("OA"), "deck_worker_list", json!({}))["nextSendSequence"],
+        0
+    );
+    // the views say who may interject into what
+    let listed = call(Some("OA"), "deck_worker_list", json!({}));
+    let may = |id: &str| {
+        listed["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["cardId"] == id)
+            .map(|w| w["mayInterject"].clone())
+    };
+    assert_eq!(may("W1"), Some(json!(true)));
+    assert_eq!(may("WP"), Some(json!(true)));
+    assert_eq!(may("WU"), Some(json!(false)), "unowned");
+    assert_eq!(may("WG"), Some(json!(false)), "agy");
+    assert_eq!(may("W2"), None, "another orchestrator's: not listed");
+    let all = call(None, "deck_worker_list", json!({}));
+    assert!(all["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|w| w["mayInterject"] == false));
+    assert_eq!(
+        call(Some("OA"), "deck_capabilities", json!({}))["mayInterjectWorkers"],
+        true
+    );
+    assert_eq!(
+        call(None, "deck_capabilities", json!({}))["mayInterjectWorkers"],
+        false
+    );
+    // an accepted interjection replays as itself, and its request id never
+    // names a queued line (the tool is part of the request's identity)
+    let args: WorkerSendArgs = serde_json::from_value(line("W1", "req_i9")).unwrap();
+    let recorded = Operation {
+        operation_id: "op_i9".into(),
+        request_id: "req_i9".into(),
+        request_hash: request_hash("deck_worker_interject", &args),
+        result: Some(
+            json!({"cardId": "W1", "afterEpisode": 7, "mode": "interject",
+                            "orchestratorCardId": "OA"}),
+        ),
+        ..operation(WORKER_SEND_KIND, "committed")
+    };
+    runtime
+        .write(|doc| {
+            doc.operations.push(recorded);
+            Ok(())
+        })
+        .unwrap();
+    let replayed = call(Some("OA"), "deck_worker_interject", line("W1", "req_i9"));
+    assert_eq!(replayed["operationId"], "op_i9", "{replayed}");
+    assert_eq!(replayed["result"]["mode"], "interject");
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_send", line("W1", "req_i9"))),
+        "REQUEST_ID_CONFLICT"
+    );
+    // withdrawn: nothing at all
+    set_permissions(&runtime, false, false, false);
+    assert_eq!(
+        code(&call(
+            Some("OA"),
+            "deck_worker_interject",
+            line("W1", "req_i10")
+        )),
+        "PERMISSION_DENIED"
+    );
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// The bindings the scheduler fences interjected lines on
+/// (`workers::bindings_in`): a worker card's record naming an orchestrator
+/// card that is on the current Board, for a client that may drive its
+/// workers. The orchestrator card leaving the Board, the card handed back
+/// to nobody and the choice withdrawn each take the binding away; no current
+/// Board proves nothing.
+#[test]
+fn an_interject_binding_stands_while_its_orchestrator_card_drives_the_card() {
+    let (runtime, _runner, root) = fixture("interject-bindings", "svc_test");
+    set_permissions(&runtime, false, true, false);
+    runtime
+        .write(|doc| {
+            doc.workers.push(Worker {
+                card_id: "W1".into(),
+                client_id: "client_a".into(),
+                operation_id: "op_w1".into(),
+                automation_id: "worker-type:claude".into(),
+                created_at: 1,
+                held: false,
+                orchestrator: Some("OA".into()),
+                reported: 0,
+                model: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+    let target = |session: &str| crate::documents::CardTarget {
+        session: session.into(),
+        title: String::new(),
+        dir: "/tmp".into(),
+        cmd: "claude".into(),
+        project_id: "P1".into(),
+        column_id: "C1".into(),
+        reminder: false,
+    };
+    let both: HashMap<String, crate::documents::CardTarget> = [
+        ("OA".to_owned(), target("deck-oa")),
+        ("W1".to_owned(), target("deck-w1")),
+    ]
+    .into();
+    let key = interject_key("client_a", "W1", "OA");
+    assert_eq!(
+        bindings_in(&runtime, Some(&both)),
+        Some([key.clone()].into())
+    );
+    let worker_only: HashMap<_, _> = [("W1".to_owned(), target("deck-w1"))].into();
+    assert_eq!(
+        bindings_in(&runtime, Some(&worker_only)),
+        Some(HashSet::new()),
+        "its orchestrator card left the Board"
+    );
+    assert_eq!(bindings_in(&runtime, None), None, "no current Board");
+    // the user takes it over: a hold, not the end of the binding
+    assert!(worker_set_held(&runtime, "W1", true).unwrap());
+    assert_eq!(bindings_in(&runtime, Some(&both)), Some([key].into()));
+    assert!(worker_set_held(&runtime, "W1", false).unwrap());
+    // handed back to nobody (its orchestrator card gone): no binding again
+    runtime
+        .write(|doc| {
+            doc.workers[0].orchestrator = None;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(bindings_in(&runtime, Some(&both)), Some(HashSet::new()));
+    runtime
+        .write(|doc| {
+            doc.workers[0].orchestrator = Some("OA".into());
+            Ok(())
+        })
+        .unwrap();
+    set_permissions(&runtime, false, false, false);
+    assert_eq!(
+        bindings_in(&runtime, Some(&both)),
+        Some(HashSet::new()),
+        "the worker choice withdrawn"
+    );
+    drop(root);
+}

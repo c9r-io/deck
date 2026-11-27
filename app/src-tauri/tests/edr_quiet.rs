@@ -36,7 +36,9 @@
 //!   Pi's tool, message-sending, session, UI or model entry points but ONE:
 //!   a worker card's line, which it hands to Pi with one plain call of Pi's
 //!   send-a-message entry point after one idle check (`agent_pi/handover.rs`,
-//!   approved 2026-11-20; pinned below). The test-only Pi
+//!   approved 2026-11-20; pinned below), or, for an interjected line while
+//!   Pi works, with the one call of the same entry point as Pi's own
+//!   steering message (approved 2026-11-27). The test-only Pi
 //!   fixtures (`scripts/pi/`) use exactly those entry points and are packaged
 //!   by nothing;
 //! - run any tmux but the signed sidecar next to its own executable
@@ -1370,14 +1372,25 @@ fn pi_observer_violations(name: &str, source: &str) -> Vec<String> {
     // the hand-over of a worker card's line (`agent_pi/handover.rs`, approved
     // 2026-11-20): ONE call of Pi's own send-a-message entry point, with the
     // text alone — never a command or template option, never queued behind a
-    // run — after ONE idle check; named nowhere else, not even in a comment
+    // run as a follow-up — after ONE idle check; and, for an interjected line
+    // while Pi works (approved 2026-11-27), ONE call of the same entry point
+    // with Pi's steering option and nothing else; named nowhere else, not
+    // even in a comment
     let (sends, idles) = (
         source.matches("sendUserMessage").count(),
         source.matches("isIdle").count(),
     );
     if name == "observer.ts" {
-        if sends != 1 || source.matches("pi.sendUserMessage(text);").count() != 1 {
-            violations.push(format!("{name}: the hand-over is not the one plain call"));
+        if sends != 2
+            || source.matches("pi.sendUserMessage(text);").count() != 1
+            || source
+                .matches("pi.sendUserMessage(text, { deliverAs: \"steer\" });")
+                .count()
+                != 1
+        {
+            violations.push(format!(
+                "{name}: the hand-over is not the one plain call and the one steering call"
+            ));
         }
         if idles != 1 || source.matches("context.isIdle() === true").count() != 1 {
             violations.push(format!("{name}: the idle check is not the one it is"));
@@ -1488,6 +1501,8 @@ fn the_pi_observer_holds_to_its_closed_vocabulary() {
         "pi.sendUserMessage(\"continue\");",
         "pi.sendUserMessage(text, { expandPromptTemplates: true });",
         "pi.sendUserMessage(text, { deliverAs: \"followUp\" });",
+        "pi.sendUserMessage(text, { deliverAs: \"steer\" });",
+        "pi.sendUserMessage(text, { deliverAs: \"steer\", expandPromptTemplates: true });",
         "const idle = ctx.isIdle();",
         "pi.sendMessage({});",
         "pi.registerTool({});",

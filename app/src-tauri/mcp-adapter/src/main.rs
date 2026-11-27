@@ -45,7 +45,7 @@ const BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {
 /// Deck may legitimately take longer than one runner round trip: a request
 /// can wait for the delivery lock behind an in-flight job dispatch.
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MUTATING: [&str; 17] = [
+const MUTATING: [&str; 18] = [
     "deck_automation_trigger",
     "deck_card_update",
     "deck_card_note",
@@ -55,6 +55,7 @@ const MUTATING: [&str; 17] = [
     "deck_config_propose",
     "deck_worker_report",
     "deck_worker_send",
+    "deck_worker_interject",
     "deck_worker_start",
     "deck_worker_close",
     "deck_session_create",
@@ -67,7 +68,7 @@ const MUTATING: [&str; 17] = [
 /// What every client reads at initialization: how to use Deck, and the one
 /// workflow for drafting configuration.
 const INSTRUCTIONS: &str = "Use Deck MCP only for authorized development work. Call deck_capabilities first: it says which of the local user's separate permissions this client holds. Retain operation, session, job, generation, cursor, control epoch, control sequence and create sequence values; never blindly retry ambiguous work.
-Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description; when it lists models, pick the one that suits the task), deck_worker_wait/list follow it, deck_worker_send queues your next line, deck_worker_reply reads a Claude turn's final message, deck_worker_close closes a card you started once you are done with it. The user may take a card over; never fight it.
+Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description; when it lists models, pick the one that suits the task), deck_worker_wait/list follow it, deck_worker_send queues your next line (it goes once the card is quiet), deck_worker_interject sends a line to a card you started from your own Deck card without waiting for it to be quiet (Claude Code, Codex and Pi; the agent takes it its own way: Claude Code after its running tool calls, Codex into its running turn, Pi as a steering message), deck_worker_reply reads a Claude turn's final message, deck_worker_close closes a card you started once you are done with it. The user may take a card over; never fight it.
 Reports: when you give a worker its task, tell it in that first line to call deck_worker_report with its result when done (and, if useful, what the report should contain). Pass the newest reports.latest you saw to deck_worker_wait so the wait returns when a card reports, then read the text with deck_worker_reports. If YOU were started as a worker and your task says to report, call deck_worker_report once you have the result; you need not know who asked.
 Drafting configuration (mayDraftConfig), when the user asks you to set up an automation or template:
 1. deck_config_describe: read the fields, examples, and the project's columns, templates, Agent rules and clock rules; reuse what exists.
@@ -936,6 +937,11 @@ impl DeckServer {
                 "Queue one line for one of your worker cards, written after the episode you name (refused with EPISODE_MOVED if the card moved on). Deck types it into the card's agent only when its own readiness checks allow: never while the agent asks the user something (needs-input) or while the user has taken the card over. Returns an operation; its delivery shows in deck_worker_list sends. You can never answer the agent's permission prompts.",
                 mutating.clone(),
             ),
+            tool::<WorkerSendInput>(
+                "deck_worker_interject",
+                "Send one line to a worker card you started from the Deck card you run in, WITHOUT waiting for the card to be quiet: use it to change a worker's goal or next step while it is still working. Only your own worker cards (deck_worker_list mayInterject): WORKER_NOT_FOUND for any other card and for every card when you run outside a Deck card; INTERJECT_UNSUPPORTED for an agent that cannot take one safely (agy). Plain text only. Name the episode you decided on (EPISODE_MOVED if the card moved on). Everything else is as for deck_worker_send: the same nextSendSequence, rate and 4 unsent lines per card, and Deck still holds the line while the agent asks the user something (needs-input) or the user has taken the card over, and keeps 60 seconds between two lines it sends to one card. It does not interrupt anything: the agent reads it its own way (Claude Code once its running tool calls finish, Codex in its running turn, Pi as a steering message after its current tool calls). Returns an operation; deck_worker_list sends says per line its state (queued, delivered = Deck submitted it to the agent's input, not that the agent read or acted on it; canceled; uncertain = it may have reached the agent, never sent again), its mode and, while queued, the stage it waits at (waiting).",
+                mutating.clone(),
+            ),
             tool::<WorkerCloseInput>(
                 "deck_worker_close",
                 "Close one worker card you started from the Deck card you run in, once you are done with it (read its reply or report first: its screen goes with it, its reports stay readable). Name the episode you decided on (deck_worker_list agent.episode). Only cards you started can be closed: WORKER_NOT_FOUND for any other card, and for every card when you run outside a Deck card. Refused with WORKER_TAKEN_OVER while the user has taken it over, WORKER_NEEDS_YOU while its agent asks the user something (leave it to them), EPISODE_MOVED if the card moved on. Returns an operation to poll (deck_operation_get): committed when the card is gone, or rejected with a code: card-shown = the user is looking at it, reminder-protected = it carries a reminder, card-kept = it holds a kept scratchpad (each the user's to close), worker-taken-over, worker-needs-you, episode-moved. Shares nextSendSequence with starts and lines; at most 30 a minute together.",
@@ -1221,6 +1227,17 @@ impl DeckServer {
                     return invalid_arguments(issue);
                 }
                 self.invoke::<WorkerSendInput>("deck_worker_send", arguments)
+                    .await
+            }
+            "deck_worker_interject" => {
+                if let Err(issue) = validate_sequence(
+                    &arguments,
+                    "send_sequence",
+                    "non-negative integer (nextSendSequence from deck_worker_list or deck_worker_wait)",
+                ) {
+                    return invalid_arguments(issue);
+                }
+                self.invoke::<WorkerSendInput>("deck_worker_interject", arguments)
                     .await
             }
             "deck_worker_close" => {

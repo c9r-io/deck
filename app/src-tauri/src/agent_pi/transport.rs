@@ -696,7 +696,9 @@ impl Answer {
                 *seq,
                 next,
                 *usable,
-                deliver.as_ref().map(|d| (d.id.as_str(), d.text.as_str())),
+                deliver
+                    .as_ref()
+                    .map(|d| (d.id.as_str(), d.text.as_str(), d.steer)),
             ),
             Answer::Revoked { seq, next, usable } => super::revoked_line(*seq, next, *usable),
             Answer::Again(next) => super::again_line(next),
@@ -710,6 +712,8 @@ impl Answer {
 pub(crate) struct Handed {
     pub(crate) id: String,
     pub(crate) text: String,
+    /// An interjected line, offered while a run may be open (`handover`).
+    pub(crate) steer: bool,
 }
 
 impl std::fmt::Debug for Handed {
@@ -1281,14 +1285,21 @@ fn committed(
         entry.next_seq += 1;
         entry.valid = Instant::now();
         // a worker card's line waiting for this pane goes out with the answer
-        // to any frame but the lease's last, between two runs of a lease that
-        // still has run boundaries (`handover`)
-        let deliver = (!entry.run_open
-            && entry.usable.signal
-            && !matches!(frame, Frame::Reset { .. }))
-        .then(|| super::handover::take_for(lease, key.server_pid(), key.pane_id(), pane_pid))
-        .flatten()
-        .map(|(id, text)| Handed { id, text });
+        // to any frame but the lease's last, of a lease that still has run
+        // boundaries: between two runs, or — an interjected line only —
+        // while a run is open (`handover`)
+        let deliver = (entry.usable.signal && !matches!(frame, Frame::Reset { .. }))
+            .then(|| {
+                super::handover::take_for(
+                    lease,
+                    key.server_pid(),
+                    key.pane_id(),
+                    pane_pid,
+                    entry.run_open,
+                )
+            })
+            .flatten()
+            .map(|(id, text, steer)| Handed { id, text, steer });
         Ok((
             Answer::Ack {
                 seq,

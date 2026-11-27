@@ -24,9 +24,15 @@
 //   this lease carries `deliver`, and only while Pi is idle and no run of
 //   this lease is open, it gives the text to Pi's own send-a-message call — never as a
 //   command or a template (no `expandPromptTemplates`), never queued behind
-//   a run (no `deliverAs`) — and says so in its next frame, `delivered`
+//   a run (no `followUp`) — and says so in its next frame, `delivered`
 //   with the line's id; otherwise `declined` with `busy` (a run is open or
-//   Pi is not idle) or `error` (Pi refused the call). Pi's own message path,
+//   Pi is not idle) or `error` (Pi refused the call). An interjected line
+//   (`"steer": true`, approved 2026-11-27) may also come while Pi works:
+//   then it goes to the same call as Pi's own steering message
+//   (`deliverAs: "steer"`: delivered after the current assistant turn's
+//   tool calls, before the next model call), and when Pi is idle as the
+//   ordinary message; the run is neither opened, closed nor reported for
+//   it. `delivered` says only that Pi took the message. Pi's own message path,
 //   not the keyboard: the line lands in no dialog and leaves the editor's
 //   draft alone. The text is held in this closure only until that call.
 // - Routing is `DECK_STATUS_SOCK`, `TMUX` and `TMUX_PANE`, which Deck's own
@@ -39,7 +45,7 @@
 // - Only an interactive terminal session (`ctx.mode === "tui"`) speaks.
 //   The factory registers callbacks and starts nothing; the first message is
 //   sent by `session_start`.
-// - Protocol `pi-observer` v4, one JSON line per message, at most 1024
+// - Protocol `pi-observer` v5, one JSON line per message, at most 1024
 //   bytes (8000 for the one frame that carries a final message), and ONE
 //   message per connection: connect, write the line, read
 //   Deck's one line of answer, close. No connection is ever kept or used
@@ -121,8 +127,8 @@ import fs from "node:fs";
 import net from "node:net";
 
 const PROTOCOL = "pi-observer";
-const WIRE_VERSION = 4;
-const OBSERVER_VERSION = 4;
+const WIRE_VERSION = 5;
+const OBSERVER_VERSION = 5;
 const MAX_LINE = 1024;
 /* Deck's answer that carries a worker card's line (16 KiB of text, as JSON) */
 const MAX_ANSWER = 128 * 1024;
@@ -232,15 +238,19 @@ function nonceOf(reply) {
   return !!reply && typeof reply.nonce === "string" && /^[0-9a-f]{32}$/.test(reply.nonce) ? reply.nonce : null;
 }
 
-/** The worker card's line an answer carries, `{ id, text }`, null when it
- *  carries none, or false when what it carries is not exactly that. */
+/** The worker card's line an answer carries, `{ id, text, steer }`: `id`
+ *  and `text`, and `steer: true` for an interjected line and nothing in its
+ *  place for any other; null when it carries none, or false when what it
+ *  carries is not exactly that. */
 export function handoverOf(reply) {
   if (!reply || !("deliver" in reply)) return null;
   const d = reply.deliver;
-  return !!d && typeof d === "object" && Object.keys(d).length === 2
+  if (!d || typeof d !== "object") return false;
+  const steer = "steer" in d;
+  return Object.keys(d).length === (steer ? 3 : 2) && (!steer || d.steer === true)
     && typeof d.id === "string" && /^[a-z0-9_]{1,64}$/.test(d.id)
     && typeof d.text === "string" && d.text.length > 0
-    && Buffer.byteLength(d.text, "utf8") <= MAX_HANDOVER_TEXT ? { id: d.id, text: d.text } : false;
+    && Buffer.byteLength(d.text, "utf8") <= MAX_HANDOVER_TEXT ? { id: d.id, text: d.text, steer } : false;
 }
 
 /** The closed word of a refusal, or null for any other answer. */
@@ -514,17 +524,20 @@ export function deckPiObserver(capabilities, piVersion) {
     };
 
     /* A worker card's line: given to Pi only while it is idle and no run of
-       this lease is open, through Pi's own message path; the receipt is the
-       next frame (file header). */
-    const handOver = ({ id, text }) => {
+       this lease is open, through Pi's own message path; an interjected line
+       (`steer`) also while Pi works, as Pi's own steering message. The
+       receipt is the next frame (file header). */
+    const handOver = ({ id, text, steer }) => {
       let idle = false;
       try { idle = !!context && context.isIdle() === true; } catch (_) { idle = false; }
-      if (!may.signal || active || !idle) {
+      const steering = steer && !idle;
+      if (!may.signal || (!steering && (active || !idle))) {
         queue.unshift({ declined: id, because: "busy" });
         return;
       }
       try {
-        pi.sendUserMessage(text);
+        if (steering) pi.sendUserMessage(text, { deliverAs: "steer" });
+        else pi.sendUserMessage(text);
       } catch (_) {
         queue.unshift({ declined: id, because: "error" });
         return;

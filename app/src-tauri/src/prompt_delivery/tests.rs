@@ -58,6 +58,7 @@ fn request(pane: &PaneIdentity) -> LiteralRequest<'_> {
         submit: true,
         require_bracketed: true,
         require_paste_mode: false,
+        enter_refused_when: None,
     }
 }
 
@@ -114,6 +115,56 @@ fn submit_waits_then_reuses_the_full_atomic_guard_for_enter() {
     }
     assert_eq!(calls[1][5], "send-keys -t %3 Enter");
     assert_eq!(*io.waits.borrow(), [Duration::from_millis(600)]);
+}
+/// The caller's last refusal before the Enter (an interjected worker line
+/// whose agent asked the user meanwhile): asked once, after the paste and
+/// the pause; `true` sends no Enter and is the same partial result as a
+/// refused one, `false` changes nothing.
+#[test]
+fn a_refusal_before_the_enter_sends_no_enter_and_is_a_partial_delivery() {
+    let _scope = crate::session_runtime::test_activity_scope();
+    let pane = probe().identity;
+    for (refused, outcome, calls) in [
+        (true, LiteralOutcome::EnterRefused, 1),
+        (false, LiteralOutcome::Submitted, 2),
+    ] {
+        let io = FakeTransport::default();
+        let asked = Cell::new(0);
+        let check = || {
+            asked.set(asked.get() + 1);
+            refused
+        };
+        let mut req = request(&pane);
+        req.enter_refused_when = Some(&check);
+        assert_eq!(deliver_with(req, &io).unwrap(), outcome);
+        assert_eq!(asked.get(), 1, "asked once");
+        let calls_made = io.calls.borrow();
+        assert_eq!(calls_made.len(), calls);
+        assert_eq!(calls_made[0][0], "load-buffer", "the paste went");
+        assert!(
+            calls_made
+                .iter()
+                .flatten()
+                .any(|arg| arg.contains("send-keys"))
+                != refused,
+            "an Enter only when not refused"
+        );
+        assert_eq!(*io.waits.borrow(), [Duration::from_millis(600)]);
+    }
+    // a refused paste never asks
+    let io = FakeTransport::default();
+    io.replies
+        .borrow_mut()
+        .push_back(Ok("deck-context-refused\n".into()));
+    let asked = Cell::new(false);
+    let check = || {
+        asked.set(true);
+        true
+    };
+    let mut req = request(&pane);
+    req.enter_refused_when = Some(&check);
+    assert!(deliver_with(req, &io).is_err());
+    assert!(!asked.get());
 }
 #[test]
 fn scheduler_compatibility_omits_interactive_guards_and_supports_argv_alias() {

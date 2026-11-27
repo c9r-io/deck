@@ -979,6 +979,17 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "worker-interject": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "interject-armed": {},
+        "interject-card": {},
+        "interject-order": {},
+        "interject-held": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "reentry-shapes": {
       "terminal": "done",
       "checks": {
@@ -1064,6 +1075,18 @@
         "piw-delivered": {},
         "piw-enable": {},
         "piw-started": {},
+        "piw-exception": { "failureOnly": true }
+      }
+    },
+    "pi-interject": {
+      "terminal": "done",
+      "checks": {
+        "done": {},
+        "pii-armed": {},
+        "pii-card": {},
+        "pii-order": {},
+        "piw-certain": {},
+        "piw-enable": {},
         "piw-exception": { "failureOnly": true }
       }
     },

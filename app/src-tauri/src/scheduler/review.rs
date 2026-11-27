@@ -452,7 +452,11 @@ pub(crate) fn plan_item(
     minutes: u32,
     activity: Option<&Observations>,
 ) -> QueuePlan {
+    // an interjected line waits for no quiet time, and may pass rows ahead
+    // of it that wait only for theirs (`select.rs` "Interjected lines")
+    let interjected = interject_row(i);
     let quiet_remaining = activity
+        .filter(|_| !interjected)
         .and_then(|a| a.get(&i.session))
         .map(|o| (o.activity + i.quiet_secs.unwrap_or(CHAIN_QUIET_SECS)).saturating_sub(now));
     let gap_until = q
@@ -467,7 +471,7 @@ pub(crate) fn plan_item(
             && x.mode != "every"
             && x.state != ItemState::ReviewApproved
             && (x.seq, x.added) < (i.seq, i.added)
-    });
+    }) && !(interjected && activity.is_some_and(|a| passes_earlier(q, i, now, a)));
     let stage = if matches!(
         i.state,
         ItemState::Review | ItemState::ReviewApproved | ItemState::Ambiguous | ItemState::Firing
@@ -503,7 +507,7 @@ pub(crate) fn plan_item(
             Hold::Human => "human",
             Hold::AgyUntrusted => "agy-trust",
         }
-    } else if i.mode == "chain" && quiet_remaining.is_some_and(|s| s > 0) {
+    } else if i.mode == "chain" && !interjected && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"
     } else if activity.is_none() {
         "unknown"
@@ -520,6 +524,18 @@ pub(crate) fn plan_item(
         first_send_override: i.readiness_override.is_some(),
         lasting: false,
     }
+}
+
+/// The stage `plan_item` gives row `i` under one observation: what an MCP
+/// client reads for its own worker lines (`ops::worker_rows`).
+pub(crate) fn plan_stage(
+    q: &QueueState,
+    i: &QueueItem,
+    now: u64,
+    minutes: u32,
+    activity: &Observations,
+) -> &'static str {
+    plan_item(q, i, now, minutes, Some(activity)).stage
 }
 
 /// One session's most pressing delivery wait: the row and its plan stage.
@@ -689,6 +705,9 @@ pub(crate) fn queue_view(q: QueueState) -> QueueView {
         }
         if any_agent_delegation(&q) && first_send::delegations().is_none() {
             mark_authority_unverified(seen);
+        }
+        if any_interject(&q) && first_send::interjects().is_none() {
+            mark_interject_unverified(seen);
         }
     }
     let channel_unverified = q.items.iter().any(|item| {

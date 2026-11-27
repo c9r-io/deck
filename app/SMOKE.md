@@ -511,6 +511,68 @@ not exist there, so the runner wrote Deck's entry naming a link
 helper — Deck recognizes its entry by that path — and removed the file and
 the run's trusted folder after).
 
+## Interjected worker lines (WKWebView mode `worker-interject`)
+
+`deck_worker_interject` end to end in the real window (approved
+2026-11-27): the same carrier and fixture as `workers` (`copy_agent.py`,
+`work/`, `worker-hooks.json` — the Signal hooks of Deck's current Claude
+Code table, `PermissionRequest` included, the Stop hook with `--reply
+workers`, and `permissions.allow` for `Bash(sleep:*)` and `Bash(echo:*)`
+only). The page turns MCP on, authorizes one client with one Claude worker
+type (`claude --setting-sources project --permission-mode acceptEdits
+--settings <that file>`) and the first-send choice, opens ONE plain-shell
+card "Orch I" and reports `interject-armed`. The operator then types
+`scripts/mcp-interject-e2e.py` (adapter, socket, credential and evidence
+arguments as `mcp-worker-e2e.py`) INTO that card's pane: Deck proves the
+calling card from the kernel, so only there does the client hold the
+orchestrator role. The client starts one worker on a task that runs a
+100 s foreground command (`sleep 100 && echo … > p1-<tag>.txt` — Claude
+Code refuses a standalone `sleep` and would background it), then, past
+the minute after the first line and while that command runs, queues a
+line (`deck_worker_send`) and interjects one (`deck_worker_interject`):
+the interjected line is delivered while the agent still works and the
+queued one waits at `quiet`; the agent writes the interjected file name,
+not the original; the queued line goes after the turn. It checks replay,
+`REQUEST_ID_CONFLICT`, `EPISODE_MOVED` and a control character, then
+interjects a command the agent must ask permission for (a program of its
+own: accept-edits approves file commands in the folder by itself) and,
+once the card says `needs-input`, one more line, which must wait at
+`agent` for 30 s with the dialog unanswered. The page checks
+`interject-card`, `interject-order` (the queued line seen at `quiet` and
+still queued when the interjected one was delivered, the interjected
+delivery first) and `interject-held`, closes both cards and reports `done`
+b=5. Scenario `codex` (write `codex` into `scenario`): the worker type is
+`codex --no-daemon` with the host's own Deck Codex hook entries, the
+client runs with `--type codex --outside <a directory outside the
+workspace>` (Codex asks only for a write outside its sandbox), and the
+host's Codex must trust the work directory for the run (the runner copies
+`~/.codex/config.toml` aside, appends one trust block and puts the copy
+back byte for byte afterwards). Judge with `scripts/smoke-verdict <data>
+worker-interject` and the client's PASS line. The runner and the round's
+evidence live outside the repository (`docs/evidence/interject-20261127/`
+indexes them).
+
+## Interjected lines into a Pi worker (WKWebView mode `pi-interject`)
+
+`scripts/pi-live-verify.py --mode pi-interject --runtime npm|standalone
+--model default [--host SSH_ALIAS]`: the `pi-worker` setup (relocated home,
+Pi's work status through its Settings switch, ONE client driving worker
+cards of type `pi` on the machine's own model, its credential entry borrowed
+for the run) plus ONE plain-shell orchestrator card "Orch I" (`pii-armed`).
+The script types `scripts/mcp-interject-e2e.py --type pi --no-dialog` into
+that card's pane (copied into the root with the step-2 program
+`phase1.py`), so Deck proves the calling card from the kernel. The client
+runs the same two phases as `worker-interject` (an interjected line while
+the model writes, a second one while `phase1.py` runs, a queued line
+before both); Pi gets each interjected line from Deck's observer as its
+own steering message, never typed. The page sees the worker card
+(`pii-card`), the queued line waiting at `pi-handover` or `quiet` and
+still queued when the first interjected line went, two interjected
+deliveries before the queued one (`pii-order`), and no uncertain delivery
+or Pi input hold (`piw-certain`). There is no dialog step: Deck sees no
+question of Pi's. The client's steps come back as `orchestrator: …` checks
+in the script's `result.json`.
+
 ## One-time automations (check `automation-once`, mode `run`)
 
 `automation-once` runs after `automation-editor` in the ordinary `run`

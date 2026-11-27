@@ -231,6 +231,25 @@
 //! client is saved at once (`mcp_client_permissions`, under the settings
 //! fence). The user takes a card over by typing into its pane
 //! (`worker_set_held`, from the webview) and hands it back by hand only.
+//! `deck_worker_interject` (part of the worker choice, approved 2026-11-27)
+//! is `deck_worker_send` whose line waits for no quiet time: the same
+//! arguments, sequence, rate, unsent bound, episode check, delegated
+//! authority and holds, from the orchestrator card that started the card
+//! and from no other caller (`workers::opened_by`, the kernel's word;
+//! `WORKER_NOT_FOUND` otherwise), into an agent that takes a message while
+//! it works (`workers::interject_agent`: Claude Code, Codex, Pi; agy is
+//! `INTERJECT_UNSUPPORTED`), as plain text. Its tool name is part of the
+//! request's identity; its operation says `mode: interject` and names the
+//! orchestrator card, and its queue row carries that binding
+//! (`scheduler::Interject`), which the scheduler's sweep and pre-fire
+//! fence read against `workers::interject_bindings` (the card's record
+//! still names that orchestrator card, both on the current Board, the
+//! choice standing): a line whose binding is gone is stripped like a
+//! revoked approval and waits for send-now. The scheduler's side, the one
+//! waiver and what it needs, is `scheduler/select.rs` "Interjected lines".
+//! `deck_worker_list` and `deck_worker_wait` say per line its `mode` and,
+//! while queued, the plan stage it waits at (`waiting`), and per card
+//! `mayInterject`; `deck_capabilities` says `mayInterjectWorkers`.
 //! `deck_worker_close` (part of the worker choice) closes ONE worker card
 //! for the orchestrator card that started it, proven from the kernel
 //! (`origin.rs`; a caller from no card closes nothing, an unowned card is
@@ -461,9 +480,10 @@ use state::*;
 use wire::*;
 use workers::*;
 pub(crate) use workers::{
-    held_worker_sessions, note_worker_change, replies_wanted_any, replies_wanted_for,
-    worker_card_held, worker_client_for_item, worker_delegation_key, worker_first_send_key,
-    WorkerCardView, WorkerType, MAX_CLIENT_WORKERS_CEILING, WORKER_TYPE_RULE_PREFIX,
+    held_worker_sessions, interject_bindings, interject_key, note_worker_change,
+    replies_wanted_any, replies_wanted_for, worker_card_held, worker_client_for_item,
+    worker_delegation_key, worker_first_send_key, WorkerCardView, WorkerType,
+    MAX_CLIENT_WORKERS_CEILING, WORKER_TYPE_RULE_PREFIX,
 };
 
 const STATE_VERSION: u32 = 6;

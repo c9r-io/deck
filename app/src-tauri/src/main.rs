@@ -229,6 +229,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("cards-mcp", "m.verifyCardsMcp()"),
     ("notes-mcp", "m.verifyNotesMcp()"),
     ("agy-trust", "m.verifyAgyTrust()"),
+    ("worker-interject", "m.verifyWorkerInterject()"),
     ("workers-account", "m.verifyWorkersAccount()"),
     ("workers-capacity", "m.verifyWorkersCapacity()"),
     ("orchestrators", "m.verifyOrchestrators()"),
@@ -236,6 +237,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("reentry-shapes", "m.verifyReentryShapes()"),
     ("ux-failures", "m.verifyUxFailures()"),
     ("pi-worker", "m.verifyPiWorker()"),
+    ("pi-interject", "m.verifyPiInterject()"),
 ];
 
 fn smoke_entry(mode: &str) -> &'static str {

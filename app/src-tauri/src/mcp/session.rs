@@ -92,6 +92,10 @@ pub(super) fn capabilities(
                 // notes for the user go into that card's scratchpad
                 // (`notes.rs`): only a call from a card can leave one
                 "mayLeaveNotes": !card.is_null(),
+                // an interjected line goes only from the card that started
+                // the worker (`workers::worker_interject`): driving worker
+                // cards, and a call from a card
+                "mayInterjectWorkers": client.allow_workers && !card.is_null(),
                 // the Deck card this call comes from, as the kernel says
                 // (`origin.rs`); its worker cards are grouped under it
                 "orchestratorCard": card

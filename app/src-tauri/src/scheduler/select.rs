@@ -123,6 +123,34 @@
 //!   holds too. It is not Signal, comes after the agent's own input request
 //!   and before every other hold, and only the user's "Hand back" lifts it.
 //!
+//! - Interjected lines (`deck_worker_interject`, approved 2026-11-27): a
+//!   later line the kernel-proven orchestrator card wrote for a worker card
+//!   it started (`interject_row`: the row's `interject` marker on a line that
+//!   still carries the client's delegated authority) waits for no quiet
+//!   time: the agent receives it through its own way of taking a message
+//!   while it works (Claude Code and Codex queue or steer a submitted line,
+//!   Pi takes it as a steering message, `agent_pi::handover`). That waiver,
+//!   and what it needs, is all that changes. (1) Its list's head rule: it
+//!   may go before the earlier rows of its list when each of them waits for
+//!   nothing but its own quiet time (`passes_earlier`, `waits_only_for_quiet`;
+//!   for a Pi worker line that is the pause between two runs, which the
+//!   observer bound to the pane waits for);
+//!   a row being sent, uncertain, failed or backing off, paused, a
+//!   checkpoint, a timed row, the run's head row, a row under any hold here
+//!   and an earlier interjected line keep it behind them, so two
+//!   interjected lines go in the order Deck accepted them, one paste and
+//!   one Enter each. The rows it passes keep their text, order and handling.
+//!   (2) For a Pi it needs the observer bound to the current generation
+//!   (`Observed::pi_connected`) rather than a pause between runs. Every
+//!   hold above still applies to it — `needs-input`, the human hold, Codex
+//!   trust, the first-interaction gate with only the client's worker
+//!   first-send override, the approval source — and so do the session gap,
+//!   pause, review, retry and the busy set; the pre-fire transaction reads
+//!   its orchestrator binding (`fence`) and the pane's own word again
+//!   (`delivery::send_one_guarded`), and the Enter after its paste is
+//!   refused when the agent asked the user meanwhile (`delivery::fire_item`).
+//!   Signal still only holds: nothing here releases a row on a word.
+//!
 //! Owner rows keep the quiet-only rule (plus the holds above). Manual
 //! send-now (`select_for_request`) is the user acting while looking at the
 //! pane and is not held. A stale `needs-input` (a question dismissed with
@@ -175,6 +203,11 @@ pub(crate) struct Observed {
     /// a worker card's line may be put in the mailbox for it
     /// (`agent_pi::handover`). It releases nothing that is typed.
     pub(crate) pi_ready: bool,
+    /// The same observer is bound, whether or not a run is open: an
+    /// interjected worker line may be offered to it, which the observer
+    /// hands Pi as a steering message while Pi works (`agent_pi::handover`,
+    /// "Interjected lines" above). It releases nothing that is typed either.
+    pub(crate) pi_connected: bool,
     /// Not Signal: a tick-wide fact copied to every session so selection
     /// stays pure — this tick could not read the automation-authority source
     /// (settings), so no row may be sent automatically on its approval
@@ -188,6 +221,12 @@ pub(crate) struct Observed {
     /// which that source backs. Nothing else depends on it.
     pub(crate) board_unverified: bool,
     pub(crate) channel_unverified: bool,
+    /// Not Signal: a tick-wide fact like `authority_unverified`, for the one
+    /// source only interjected lines rest on — the standing
+    /// orchestrator-worker bindings (`first_send::interjects`) could not be
+    /// read this tick (no current Board yet, one answered from its backup, an
+    /// unreadable ledger). It holds interjected lines and nothing else.
+    pub(crate) interject_unverified: bool,
     /// Not Signal: the user took this worker card over by typing into its
     /// pane and has not handed it back (`mcp/workers.rs`). Holds only the
     /// rows a delegated client wrote (`Hold::Human`).
@@ -214,6 +253,15 @@ pub(crate) fn mark_board_unverified(seen: &mut Observations) {
 pub(crate) fn mark_channel_unverified(seen: &mut Observations) {
     for observed in seen.values_mut() {
         observed.channel_unverified = true;
+    }
+}
+
+/// The tick could not read the orchestrator-worker bindings: every
+/// session's observation holds its interjected lines
+/// (`Hold::AuthorityUnverified`), without touching any row.
+pub(crate) fn mark_interject_unverified(seen: &mut Observations) {
+    for observed in seen.values_mut() {
+        observed.interject_unverified = true;
     }
 }
 
@@ -320,9 +368,13 @@ pub(crate) fn observe_with(
                     .get(session)
                     .is_some_and(|e| e.pi_signal == Some(agent_status::PiCoverage::Connected))
                     && agents.get(session).map(|o| o.state) != Some(agent_status::WORKING),
+                pi_connected: evidence
+                    .get(session)
+                    .is_some_and(|e| e.pi_signal == Some(agent_status::PiCoverage::Connected)),
                 authority_unverified: false,
                 board_unverified: false,
                 channel_unverified: false,
+                interject_unverified: false,
                 human_held: false,
             });
     }
@@ -393,6 +445,15 @@ pub(crate) fn row_pi(i: &QueueItem) -> bool {
 /// `pi-input-unverified`.
 pub(crate) fn pi_handover(i: &QueueItem) -> bool {
     row_pi(i) && delegated_row(i)
+}
+
+/// An interjected worker line (`QueueItem.interject`, "Interjected lines"
+/// above): a later line of a worker card that still carries the client's
+/// delegated authority. The marker alone means nothing: a row whose
+/// authority was stripped (a withdrawn delegation, its orchestrator card
+/// gone) or whose text was edited is no interjected line any more.
+pub(crate) fn interject_row(i: &QueueItem) -> bool {
+    i.interject.is_some() && i.mode == "chain" && delegated_row(i)
 }
 
 /// Whether an automatic send of `i` would go to a recognized Pi, asked of
@@ -484,11 +545,19 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         // a worker card's line: handed over between two runs by the observer
         // the kernel proved to be this pane's Pi; no keystroke, so no
         // first-interaction gate (the delegation still stands: the tick's
-        // authority sweep strips it like any approval)
-        if !o.pi_ready {
+        // authority sweep strips it like any approval). An interjected line
+        // needs the observer and no pause between runs: the observer gives
+        // it to Pi as a steering message while a run is open.
+        let offerable = if interject_row(i) {
+            o.pi_connected
+        } else {
+            o.pi_ready
+        };
+        if !offerable {
             return Some(Hold::PiHandover);
         }
-        return o.authority_unverified.then_some(Hold::AuthorityUnverified);
+        return (o.authority_unverified || interject_row(i) && o.interject_unverified)
+            .then_some(Hold::AuthorityUnverified);
     }
     // a failed read of the authority source is no proof the approval
     // still stands (and no proof it was revoked): hold, keep everything
@@ -498,7 +567,9 @@ fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool
         Some(first_send::Backing::Board) => o.board_unverified,
         None => false,
     };
-    if approval_unverified {
+    // an interjected line also rests on its orchestrator binding, which
+    // this tick could not read: no proof either way, so it holds
+    if approval_unverified || interject_row(i) && o.interject_unverified {
         return Some(Hold::AuthorityUnverified);
     }
     let configured = row_agent(i);
@@ -585,6 +656,58 @@ fn group_head<'a>(q: &'a QueueState, i: &QueueItem) -> Option<&'a QueueItem> {
         .min_by_key(|x| (x.seq.unwrap_or(1), x.added))
 }
 
+/// Whether `x`, a row of an interjected line's list ahead of it, waits for
+/// nothing but its own quiet time ("Interjected lines" above): an ordinary
+/// follow-up row, pending, not paused, no checkpoint, not in a retry's
+/// backoff, held by no agent, readiness or authority hold. Only such a row
+/// may be passed. A row that is being sent or whose delivery is uncertain,
+/// one that failed, a checkpoint, a paused or timed row, the run's head row
+/// and every other interjected line keep the line behind them. A Pi worker
+/// line's wait for the pause between two of Pi's runs (`Hold::PiHandover`
+/// while the observer is bound) is Pi's form of the quiet time, the very
+/// wait an interjected line is spared: it may be passed too; the same hold
+/// without a bound observer may not (the interjected line waits for that
+/// observer itself).
+fn waits_only_for_quiet(q: &QueueState, x: &QueueItem, now: u64, activity: &Observations) -> bool {
+    let seen = activity.get(&x.session);
+    x.mode == "chain"
+        && x.interject.is_none()
+        && x.state == ItemState::Pending
+        && !x.paused
+        && !is_review(x)
+        && review_allows(q, x)
+        && retry_ok(x, now)
+        && match hold_reason(x, seen) {
+            None => true,
+            Some(Hold::PiHandover) => pi_handover(x) && seen.is_some_and(|o| o.pi_connected),
+            Some(_) => false,
+        }
+}
+
+/// Whether interjected line `i` may go before the earlier rows of its list:
+/// every live row ahead of it (`group_head`'s order) waits only for its quiet
+/// time. Their text, order and later handling are untouched.
+pub(crate) fn passes_earlier(
+    q: &QueueState,
+    i: &QueueItem,
+    now: u64,
+    activity: &Observations,
+) -> bool {
+    let Some(g) = i.group.as_deref() else {
+        return true;
+    };
+    let key = |x: &QueueItem| (x.seq.unwrap_or(1), x.added);
+    q.items
+        .iter()
+        .filter(|x| {
+            x.id != i.id
+                && x.group.as_deref() == Some(g)
+                && x.state != ItemState::ReviewApproved
+                && key(x) < key(i)
+        })
+        .all(|x| waits_only_for_quiet(q, x, now, activity))
+}
+
 fn eligible(
     q: &QueueState,
     i: &QueueItem,
@@ -615,10 +738,12 @@ fn eligible(
     {
         return false;
     }
-    // group discipline: only the head step of a group is ever a candidate
+    // group discipline: only the head step of a group is ever a candidate,
+    // except an interjected line ahead of rows that wait only for quiet
+    let interjected = interject_row(i);
     if i.mode != "every" {
         if let Some(h) = group_head(q, i) {
-            if h.id != i.id {
+            if h.id != i.id && !(interjected && passes_earlier(q, i, now, activity)) {
                 return false;
             }
         }
@@ -628,6 +753,8 @@ fn eligible(
     }
     match i.mode.as_str() {
         "at" => i.at.map(|t| now >= t).unwrap_or(false),
+        // an interjected line waits for no quiet time: that is its one waiver
+        "chain" if interjected => true,
         "chain" => activity
             .get(&i.session)
             .map(|o| now >= o.activity + i.quiet_secs.unwrap_or(CHAIN_QUIET_SECS))

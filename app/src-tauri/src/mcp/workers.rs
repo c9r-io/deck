@@ -54,6 +54,15 @@
 //!   holds, when the card's episode is not the one the client named
 //!   (`EPISODE_MOVED`): Signal may refuse a send, never release one. Every
 //!   scheduler hold still decides when it goes out.
+//! - `deck_worker_interject` is the same line without the chain's quiet
+//!   time (`queue_line` with `Line::Interject`): only from the orchestrator
+//!   card that started the card (`opened_by`, never `own_card`'s wider
+//!   reach), only into an agent that takes a message while it works
+//!   (`interject_agent`), plain text only (`plain_text`); its operation
+//!   carries `mode` and the orchestrator card, and the row it queues the
+//!   binding the scheduler checks again (`interject_bindings`). The views
+//!   say each line's `mode` and `waiting` stage and each card's
+//!   `mayInterject`.
 //! - The user takes a card over by typing into its pane and hands it back
 //!   only by hand, both through `worker_set_held` from the webview.
 //!   While held, the card's delegated lines hold at `human`.
@@ -396,6 +405,65 @@ pub(crate) fn worker_card_held(card: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// The key one orchestrator-worker binding takes in `interject_bindings`
+/// (ids are `valid_id`: the separators cannot occur in them).
+pub(crate) fn interject_key(client: &str, card: &str, orchestrator: &str) -> String {
+    format!("interject:{client}:{card}:{orchestrator}")
+}
+
+/// Every orchestrator-worker binding that stands now, for the scheduler's
+/// sweep and pre-fire fence of interjected lines (`scheduler/authority.rs`
+/// `binding_stands`): the card's client may still drive its worker cards
+/// (MCP on, the client neither revoked nor fenced, its worker choice on),
+/// the card's record still names that orchestrator card (a card handed back
+/// to nobody names none), and both cards are on the current Board. `None`
+/// when the ledger or the current Board cannot be read (no Board yet, or one
+/// answered from its backup): no proof either way, so those lines hold.
+pub(crate) fn interject_bindings() -> Option<HashSet<String>> {
+    let Some(runtime) = RUNTIME.get() else {
+        return Some(HashSet::new());
+    };
+    bindings_in(runtime, crate::documents::card_targets(true).as_ref())
+}
+
+/// `interject_bindings` for one runtime and one reading of the current
+/// Board (`None`: no current Board).
+pub(super) fn bindings_in(
+    runtime: &Runtime,
+    cards: Option<&HashMap<String, crate::documents::CardTarget>>,
+) -> Option<HashSet<String>> {
+    let emergency = runtime.emergency.lock_or_recover();
+    if emergency.disabled {
+        return Some(HashSet::new());
+    }
+    let fenced = emergency.clients.clone();
+    drop(emergency);
+    let cards = cards?;
+    runtime
+        .read(|doc| {
+            if !doc.config.enabled {
+                return HashSet::new();
+            }
+            let driving: HashSet<&str> = doc
+                .config
+                .clients
+                .iter()
+                .filter(|c| c.revoked_at.is_none() && !fenced.contains(&c.id) && c.allow_workers)
+                .map(|c| c.id.as_str())
+                .collect();
+            doc.workers
+                .iter()
+                .filter(|w| driving.contains(w.client_id.as_str()))
+                .filter_map(|w| {
+                    let orchestrator = w.orchestrator.as_deref()?;
+                    (cards.contains_key(orchestrator) && cards.contains_key(&w.card_id))
+                        .then(|| interject_key(&w.client_id, &w.card_id, orchestrator))
+                })
+                .collect()
+        })
+        .ok()
+}
+
 /// The clients that may read worker replies now.
 fn reply_readers(doc: &DiskDoc) -> HashSet<String> {
     doc.config
@@ -470,10 +538,29 @@ pub(super) fn observe_sessions() -> Option<HashMap<String, Seen>> {
         return forced;
     }
     let rows = crate::tmux::list_panes().ok()?;
-    let agents = crate::agent_status::projections(&rows);
-    let current = crate::agent_status::reporting(&rows, crate::agent_status::live_generation);
+    Some(seen_in(&rows))
+}
+
+/// The same listing read twice, for the client's views: each session as the
+/// client sees it, and the scheduler's own observation of it, which says at
+/// which stage each of the client's unsent lines waits
+/// (`scheduler::worker_rows`). One tmux call, as before. `None` when tmux
+/// could not be read.
+fn observe_for_views() -> Option<(HashMap<String, Seen>, crate::scheduler::Observations)> {
+    #[cfg(test)]
+    if let Some(forced) = OBSERVE_FOR_TESTS.with(|cell| cell.borrow().clone()) {
+        return forced.map(|seen| (seen, crate::scheduler::Observations::new()));
+    }
+    let rows = crate::tmux::list_panes().ok()?;
+    let seen = seen_in(&rows);
+    Some((seen, crate::scheduler::observe(rows)))
+}
+
+fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
+    let agents = crate::agent_status::projections(rows);
+    let current = crate::agent_status::reporting(rows, crate::agent_status::live_generation);
     let evidence = crate::agent_status::generation_evidence(
-        &rows,
+        rows,
         crate::agent_status::live_generation,
         |_| None,
     );
@@ -500,7 +587,7 @@ pub(super) fn observe_sessions() -> Option<HashMap<String, Seen>> {
             entry.episode = observation.episode;
         }
     }
-    Some(seen)
+    seen
 }
 
 #[cfg(test)]
@@ -578,6 +665,12 @@ struct WorkerRow {
     taken_over: bool,
     target: Option<crate::documents::CardTarget>,
     sends: Vec<String>,
+    /// Which of `sends` are interjected lines (`result.mode`).
+    interjected: HashSet<String>,
+    /// The calling card started this card and its agent takes interjected
+    /// lines: `deck_worker_interject` would not be refused for who or what
+    /// it is (the episode, rate and holds still decide).
+    may_interject: bool,
     /// `reports::summary`: content-free.
     reports: Value,
 }
@@ -589,12 +682,23 @@ fn rows_of(doc: &DiskDoc, client: &str, orchestrator: Option<&str>) -> Vec<Worke
         .filter(|w| w.client_id == client && super::origin::sees(w, orchestrator))
         .filter_map(|w| {
             let target = targets.get(&w.card_id).cloned();
-            target.as_ref()?;
+            let cmd = target.as_ref()?.cmd.clone();
+            let sends = sends_of(doc, client, &w.card_id);
+            let interjected = doc
+                .operations
+                .iter()
+                .filter(|o| sends.contains(&o.operation_id) && is_interjected(o))
+                .map(|o| o.operation_id.clone())
+                .collect();
             Some(WorkerRow {
                 worker: w.clone(),
                 taken_over: super::origin::taken_over(w, Some(&targets)),
                 target,
-                sends: sends_of(doc, client, &w.card_id),
+                sends,
+                interjected,
+                may_interject: orchestrator.is_some()
+                    && w.orchestrator.as_deref() == orchestrator
+                    && interject_agent(&cmd),
                 reports: super::reports::summary(doc, w),
             })
         })
@@ -606,11 +710,14 @@ fn view(
     client: &str,
     row: &WorkerRow,
     seen: Option<&HashMap<String, Seen>>,
+    plans: Option<&crate::scheduler::Observations>,
 ) -> Value {
     let target = row.target.as_ref();
     let observed = target.and_then(|t| seen.and_then(|s| s.get(&t.session)).copied());
     let (unsent, states) = queues(runtime)
-        .map(|q| crate::scheduler::worker_rows(&q.q, &row.worker.card_id, client, &row.sends))
+        .map(|q| {
+            crate::scheduler::worker_rows(&q.q, &row.worker.card_id, client, &row.sends, plans)
+        })
         .unwrap_or_default();
     let agent = match (seen, observed) {
         (None, _) => json!(null),
@@ -637,11 +744,25 @@ fn view(
         "alive": observed.is_some_and(|o| o.alive),
         "agent": agent,
         "takenOver": row.taken_over,
+        "mayInterject": row.may_interject,
         "unsent": unsent,
         "reports": row.reports,
+        // each line's queue state, how it goes (`queued` after the card is
+        // quiet, `interject` without waiting for that) and, while it is
+        // unsent, the stage it waits at (the panel's own plan stage)
         "sends": states
             .iter()
-            .map(|(id, state)| json!({"operationId": id, "state": state}))
+            .map(|(id, state, waiting)| {
+                let mut line = json!({
+                    "operationId": id,
+                    "state": state,
+                    "mode": if row.interjected.contains(id) { INTERJECT_MODE } else { "queued" },
+                });
+                if let Some(stage) = waiting {
+                    line["waiting"] = json!(stage);
+                }
+                line
+            })
             .collect::<Vec<_>>(),
     })
 }
@@ -673,10 +794,12 @@ pub(super) fn worker_list(
 ) -> Result<Value, Value> {
     parse::<Empty>(arguments)?;
     let (rows, next, replies, types) = snapshot(runtime, client_id)?;
-    let seen = observe_sessions();
+    let observed = observe_for_views();
+    let seen = observed.as_ref().map(|(seen, _)| seen);
+    let plans = observed.as_ref().map(|(_, plans)| plans);
     Ok(json!({
         "ok": true,
-        "workers": rows.iter().map(|row| view(runtime, client_id, row, seen.as_ref())).collect::<Vec<_>>(),
+        "workers": rows.iter().map(|row| view(runtime, client_id, row, seen, plans)).collect::<Vec<_>>(),
         "observed": seen.is_some(),
         "mayReadReplies": replies,
         "workerTypes": types,
@@ -706,11 +829,13 @@ pub(super) fn worker_wait(
     loop {
         let mark = change_count();
         let (rows, next, replies, types) = snapshot(runtime, client_id)?;
-        let seen = observe_sessions();
+        let observed = observe_for_views();
+        let seen = observed.as_ref().map(|(seen, _)| seen);
+        let plans = observed.as_ref().map(|(_, plans)| plans);
         let views: Vec<Value> = rows
             .iter()
             .filter(|row| args.cards.iter().any(|c| c.card_id == row.worker.card_id))
-            .map(|row| view(runtime, client_id, row, seen.as_ref()))
+            .map(|row| view(runtime, client_id, row, seen, plans))
             .collect();
         let changed = args.cards.iter().any(|asked| {
             match views.iter().find(|v| v["cardId"] == asked.card_id.as_str()) {
@@ -840,10 +965,113 @@ fn capacity(message: &str) -> Value {
     )
 }
 
+/// How a worker line goes: queued (`deck_worker_send`, the chain's quiet
+/// time and the list's order) or interjected (`deck_worker_interject`: no
+/// quiet time, only from the orchestrator card that started the card,
+/// `scheduler/select.rs` "Interjected lines"). The tool's name is part of
+/// the request's identity (`request_hash`), so one request id never names
+/// both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Line {
+    Queued,
+    Interject,
+}
+
+impl Line {
+    fn tool(self) -> &'static str {
+        match self {
+            Line::Queued => "deck_worker_send",
+            Line::Interject => "deck_worker_interject",
+        }
+    }
+}
+
+/// The value an interjected line's operation carries in `result.mode`; a
+/// queued line's carries none, as before.
+pub(super) const INTERJECT_MODE: &str = "interject";
+
+/// Whether an operation is an interjected line (`result.mode`).
+fn is_interjected(operation: &Operation) -> bool {
+    operation
+        .result
+        .as_ref()
+        .and_then(|r| r.get("mode"))
+        .and_then(Value::as_str)
+        == Some(INTERJECT_MODE)
+}
+
+/// The agents whose worker cards take an interjected line: those that take
+/// a message while they work through their own message path and say when
+/// they ask the user something — Claude Code (a submitted line is queued
+/// into the running turn), Codex (it steers the running turn) and Pi (the
+/// observer hands it over as a steering message). agy reports no question
+/// at all (`agent_agy`: a confirmation reads `working`), so a line typed
+/// while it works could answer one: refused, never queued in its place.
+pub(super) fn interject_agent(cmd: &str) -> bool {
+    matches!(
+        crate::admission::worker_agent_command(cmd),
+        Some("claude" | "codex" | crate::agent_pi::PROCESS)
+    )
+}
+
+/// An interjected line is plain text: newlines and tabs, no other control
+/// character. It is pasted while the agent works, when a question of the
+/// agent's may come up at any moment, and an escape sequence in a paste is
+/// a keystroke to an application that reads it outside its input.
+fn plain_text(text: &str) -> bool {
+    !text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+}
+
+fn not_interjectable(from_no_card: bool) -> Value {
+    error_value(
+        "WORKER_NOT_FOUND",
+        if from_no_card {
+            "this call comes from no Deck card: only the orchestrator card that started a worker card can interject into it"
+        } else {
+            "that card is not a worker card this orchestrator card started"
+        },
+        "Interject only into the cards you started from this Deck card (deck_worker_list mayInterject); queue a line with deck_worker_send for any other card you drive.",
+    )
+}
+
+fn interject_unsupported() -> Value {
+    error_value(
+        "INTERJECT_UNSUPPORTED",
+        "this card's agent cannot take an interjected line safely: it does not tell Deck when it asks the user something",
+        "Queue the line with deck_worker_send instead: it goes once the card is quiet, under the same checks.",
+    )
+}
+
 pub(super) fn worker_send(
     runtime: &Runtime,
     client_id: &str,
     arguments: Value,
+) -> Result<Value, Value> {
+    queue_line(runtime, client_id, arguments, Line::Queued)
+}
+
+/// `deck_worker_interject`: one line for a worker card, which Deck sends
+/// without waiting for the card to fall quiet. Only for the orchestrator
+/// card that started the card, proven from the kernel (`opened_by`; a
+/// caller from no card, an unowned card and another orchestrator's card are
+/// `WORKER_NOT_FOUND`), and only into an agent that takes a message while it
+/// works (`interject_agent`). The same choice, sequence, rate, unsent bound,
+/// episode check, delegated authority and holds as `deck_worker_send`.
+pub(super) fn worker_interject(
+    runtime: &Runtime,
+    client_id: &str,
+    arguments: Value,
+) -> Result<Value, Value> {
+    queue_line(runtime, client_id, arguments, Line::Interject)
+}
+
+fn queue_line(
+    runtime: &Runtime,
+    client_id: &str,
+    arguments: Value,
+    line: Line,
 ) -> Result<Value, Value> {
     let args: WorkerSendArgs = parse(arguments)?;
     if !valid_id(&args.request_id)
@@ -856,13 +1084,27 @@ pub(super) fn worker_send(
             "Send non-empty text of at most 16 KiB with a fresh request id.",
         ));
     }
-    let hash = request_hash("deck_worker_send", &args);
+    if line == Line::Interject && !plain_text(&args.text) {
+        return Err(error_value(
+            "INVALID_ARGUMENTS",
+            "an interjected line must be plain text: no control character but newlines and tabs",
+            "Send the message as plain text with a fresh request id.",
+        ));
+    }
+    let hash = request_hash(line.tool(), &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
     let replay = replay_of(runtime, client_id, Choice::Workers, &args.request_id, &hash)?;
     if let Some(operation) = replay {
         return Ok(operation_view(&operation));
     }
+    // an interjected line: only from the orchestrator card that started the
+    // card, never from no card (the kernel's word, never the client's)
+    let caller = match (line, orchestrator) {
+        (Line::Interject, None) => return Err(not_interjectable(true)),
+        (Line::Interject, Some(card)) => Some(card),
+        (Line::Queued, _) => None,
+    };
     let (worker, stale) = runtime
         .read(|doc| -> Result<Result<(Worker, bool), Value>, DeckError> {
             let client = permitted(doc, client_id, Choice::Workers)?;
@@ -870,7 +1112,13 @@ pub(super) fn worker_send(
                 return Ok(Err(super::origin::no_lane()));
             }
             let stale = super::origin::send_sequence(client, orchestrator) != args.send_sequence;
-            Ok(own_card(doc, client_id, orchestrator, &args.card_id).map(|w| (w, stale)))
+            let worker = match caller {
+                Some(caller) => opened_by(doc, client_id, caller, &args.card_id)
+                    .cloned()
+                    .ok_or_else(|| not_interjectable(false)),
+                None => own_card(doc, client_id, orchestrator, &args.card_id),
+            };
+            Ok(worker.map(|w| (w, stale)))
         })
         .map_err(map_error)?
         .map_err(map_error)??;
@@ -891,6 +1139,9 @@ pub(super) fn worker_send(
                 "Read deck_worker_list again; a closed card cannot be driven.",
             )
         })?;
+    if line == Line::Interject && !interject_agent(&target.cmd) {
+        return Err(interject_unsupported());
+    }
     // the episode the client decided on must still be the card's: a turn
     // that moved on since makes this line stale (refused, never held)
     let seen = observe_sessions().ok_or_else(|| {
@@ -917,7 +1168,8 @@ pub(super) fn worker_send(
     let sends = runtime
         .read(|doc| sends_of(doc, client_id, &worker.card_id))
         .map_err(map_error)?;
-    let (unsent, _) = crate::scheduler::worker_rows(&queue.q, &worker.card_id, client_id, &sends);
+    let (unsent, _) =
+        crate::scheduler::worker_rows(&queue.q, &worker.card_id, client_id, &sends, None);
     if unsent >= MAX_UNSENT_PER_CARD {
         return Err(capacity(
             "the card already holds 4 unsent lines from this client",
@@ -930,17 +1182,33 @@ pub(super) fn worker_send(
     }
     let minted = random_id("op_", 16).map_err(map_error)?;
     let operation = runtime
-        .write(|doc| {
+        .write(|doc| -> Result<Result<Operation, Value>, DeckError> {
             let client = permitted(doc, client_id, Choice::Workers)?;
             if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
-                return Ok(existing.clone());
+                return Ok(Ok(existing.clone()));
             }
             if args.send_sequence != super::origin::send_sequence(client, orchestrator) {
                 return Err(DeckError::new(ErrorKind::ContextChanged, STALE_REQUEST));
             }
+            // the card handed back to nobody meanwhile: refused whole
+            if let Some(caller) = caller {
+                if opened_by(doc, client_id, caller, &worker.card_id).is_none() {
+                    return Ok(Err(not_interjectable(false)));
+                }
+            }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
+            let result = match caller {
+                Some(caller) => json!({
+                    "cardId": worker.card_id,
+                    "afterEpisode": args.after_episode,
+                    "mode": INTERJECT_MODE,
+                    // `origin::RESULT_KEY`: the binding the line rests on
+                    "orchestratorCardId": caller,
+                }),
+                None => json!({"cardId": worker.card_id, "afterEpisode": args.after_episode}),
+            };
             let operation = Operation {
-                result: Some(json!({"cardId": worker.card_id, "afterEpisode": args.after_episode})),
+                result: Some(result),
                 ..Operation::new(
                     minted.clone(),
                     client_id,
@@ -954,9 +1222,9 @@ pub(super) fn worker_send(
                 super::origin::bump_send(client, orchestrator);
             }
             doc.operations.push(operation.clone());
-            Ok(operation)
+            Ok(Ok(operation))
         })
-        .map_err(map_error)?;
+        .map_err(map_error)??;
     if operation.state != "accepted" || operation.operation_id != minted {
         return Ok(operation_view(&operation));
     }
@@ -978,6 +1246,7 @@ pub(super) fn worker_send(
             dir: &target.dir,
             cmd: &target.cmd,
             text: &args.text,
+            interject: caller,
         },
         false,
         first_send_allowed(runtime, client_id),
@@ -1878,6 +2147,7 @@ pub(super) fn settle_start(runtime: &Runtime, operation_id: &str, session: &str)
                 dir: &dir,
                 cmd: &cmd,
                 text: &text,
+                interject: None,
             },
             true,
             first_send,

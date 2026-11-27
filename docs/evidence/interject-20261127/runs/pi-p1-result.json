@@ -1,0 +1,296 @@
+{
+ "root": "/private/tmp/deck-pi-live-32lulzu2",
+ "mode": "pi-interject",
+ "checks": [
+  {
+   "check": "the carrier is this checkout's debug build: its executables byte for byte before the ad-hoc signing, which rewrote the main executable only, and the observer's files as the sources have them",
+   "ok": true,
+   "detail": {
+    "rewritten": [
+     "Contents/MacOS/deck"
+    ]
+   }
+  },
+  {
+   "check": "this machine's Pi has a credential for the model's provider",
+   "ok": true,
+   "detail": {
+    "model": "minimax/MiniMax-M3"
+   }
+  },
+  {
+   "check": "the scripted orchestrator wrote its evidence",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "orchestrator: initialize",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "orchestrator: tools-list",
+   "ok": true,
+   "detail": {
+    "count": 39
+   }
+  },
+  {
+   "check": "orchestrator: caller-is-a-card",
+   "ok": true,
+   "detail": {
+    "card": true,
+    "may": true
+   }
+  },
+  {
+   "check": "orchestrator: worker-started",
+   "ok": true,
+   "detail": {
+    "state": "committed"
+   }
+  },
+  {
+   "check": "orchestrator: first-line-delivered",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "orchestrator: agent-working",
+   "ok": true,
+   "detail": {
+    "episode": 1
+   }
+  },
+  {
+   "check": "orchestrator: lines-accepted",
+   "ok": true,
+   "detail": {
+    "queued": "committed",
+    "interjected": "committed",
+    "mode": "interject",
+    "phase": "output"
+   }
+  },
+  {
+   "check": "orchestrator: interjected-during-output",
+   "ok": false,
+   "detail": {
+    "seconds": 4.7,
+    "phase": "tool",
+    "agent": "working",
+    "queued_waiting": "gap"
+   }
+  },
+  {
+   "check": "orchestrator: queued-waited-for-quiet",
+   "ok": true,
+   "detail": {
+    "waiting": "pi-handover"
+   }
+  },
+  {
+   "check": "orchestrator: replay-is-the-same-operation",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "orchestrator: same-id-as-a-queued-line-conflicts",
+   "ok": true,
+   "detail": {
+    "code": "REQUEST_ID_CONFLICT"
+   }
+  },
+  {
+   "check": "orchestrator: a-stale-episode-is-refused",
+   "ok": true,
+   "detail": {
+    "code": "EPISODE_MOVED"
+   }
+  },
+  {
+   "check": "orchestrator: control-characters-are-refused",
+   "ok": true,
+   "detail": {
+    "code": "INVALID_ARGUMENTS"
+   }
+  },
+  {
+   "check": "orchestrator: interjected-during-tool",
+   "ok": true,
+   "detail": {
+    "seconds": 4.8,
+    "phase": "tool",
+    "sent_in": "tool",
+    "agent": "working"
+   }
+  },
+  {
+   "check": "orchestrator: the-agent-changed-its-plan",
+   "ok": true,
+   "detail": {
+    "ended": true,
+    "files": "{\"extra-32lulzu2.txt\": true, \"queued-32lulzu2.txt\": false, \"result-32lulzu2.txt\": false, \"result-interject-32lulzu2.txt\": true}"
+   }
+  },
+  {
+   "check": "orchestrator: the-queued-line-went-later",
+   "ok": true,
+   "detail": {
+    "seconds": 151.1
+   }
+  },
+  {
+   "check": "the page reached its end",
+   "ok": true,
+   "detail": {}
+  },
+  {
+   "check": "the borrowed credential is gone from the root",
+   "ok": true,
+   "detail": {
+    "borrowed": true
+   }
+  },
+  {
+   "check": "this machine's own Deck is as it was: the same processes, the same file names in its data directory",
+   "ok": true,
+   "detail": {
+    "processes": 2
+   }
+  },
+  {
+   "check": "scripts/smoke-verdict pi-interject is green",
+   "ok": true,
+   "detail": {
+    "exit": 0
+   }
+  }
+ ],
+ "stopped": null,
+ "facts": {
+  "build": {
+   "head": "01ff6dbf9cb59a662643e4f4814c8c640925b65b",
+   "dirty": true,
+   "dirty_paths": [
+    "CLAUDE.md",
+    "app/SMOKE.md",
+    "app/run.sh",
+    "app/src-tauri/mcp-adapter/src/main.rs",
+    "app/src-tauri/mcp-adapter/tests/stdio.rs",
+    "app/src-tauri/mcp-fixtures/tools.json",
+    "app/src-tauri/resources/pi/observer.ts",
+    "app/src-tauri/src/agent_pi.rs",
+    "app/src-tauri/src/agent_pi/handover.rs",
+    "app/src-tauri/src/agent_pi/tests.rs",
+    "app/src-tauri/src/agent_pi/transport.rs",
+    "app/src-tauri/src/agent_pi/transport/tests.rs",
+    "app/src-tauri/src/agent_reentry/launch.rs",
+    "app/src-tauri/src/agent_status.rs",
+    "app/src-tauri/src/agent_status/hooks.rs",
+    "app/src-tauri/src/agent_status/hooks/tests.rs",
+    "app/src-tauri/src/connector/native.rs",
+    "app/src-tauri/src/diagnostics.rs",
+    "app/src-tauri/src/main.rs",
+    "app/src-tauri/src/mcp/control.rs",
+    "app/src-tauri/src/mcp/mod.rs",
+    "app/src-tauri/src/mcp/session.rs",
+    "app/src-tauri/src/mcp/tests.rs",
+    "app/src-tauri/src/mcp/workers.rs",
+    "app/src-tauri/src/prompt_delivery.rs",
+    "app/src-tauri/src/prompt_delivery/tests.rs",
+    "app/src-tauri/src/scheduler/authority.rs",
+    "app/src-tauri/src/scheduler/delivery.rs",
+    "app/src-tauri/src/scheduler/first_send.rs",
+    "app/src-tauri/src/scheduler/mod.rs",
+    "app/src-tauri/src/scheduler/ops.rs",
+    "app/src-tauri/src/scheduler/review.rs",
+    "app/src-tauri/src/scheduler/select.rs",
+    "app/src-tauri/src/scheduler/tests.rs",
+    "app/src-tauri/src/scheduler/thread.rs",
+    "app/src-tauri/src/storage.rs",
+    "app/src-tauri/src/voice.rs",
+    "app/src-tauri/tests/edr_quiet.rs",
+    "app/src-tauri/tests/signal_census.rs",
+    "app/ui/test/fixtures/smoke-manifest.json",
+    "app/ui/test/pi-observer.test.mjs",
+    "app/ui/test/pi-worker-smoke.mjs",
+    "app/ui/test/smoke-manifest.test.mjs",
+    "app/ui/test/wk-smoke.mjs",
+    "app/ui/test/workers-smoke.mjs",
+    "docs/evidence/interject-20261127/",
+    "docs/mcp.md",
+    "docs/scheduler-context-safety.md",
+    "research_notes/",
+    "scripts/check-edr-binary",
+    "scripts/mcp-agent-e2e.py",
+    "scripts/mcp-cards-e2e.py",
+    "scripts/mcp-interject-e2e.py",
+    "scripts/pi-live-verify.py",
+    "scripts/pi/exec-peer.c",
+    "scripts/pi/fixture.ts",
+    "scripts/pi_native.py",
+    "scripts/test_release_tools.py"
+   ],
+   "diff_sha256": "f83101dc404f6fd407b016b3b3a75313b30251aca1900d6baef1df23fce99e9a",
+   "source_sha256": "2f47d3f1760101c3b4677d9598a51d0163f83d3a9998a1135eafde043e579c23",
+   "source_files": 441,
+   "built_after_every_source": true,
+   "command": [
+    "pi-live-verify.py",
+    "--mode",
+    "pi-interject",
+    "--runtime",
+    "standalone",
+    "--standalone",
+    "/tmp/dps.5blk/pi-standalone/pi",
+    "--model",
+    "default",
+    "--host",
+    "air2"
+   ]
+  },
+  "carrier": {
+   "files": {
+    "Contents/MacOS/deck": "60e875916c32597837fa4f091b1be55ba7704e573956c6e355a10dafc3de50a7",
+    "Contents/MacOS/deck-lifecycle-helper": "3a5b25f6baf613b3ec207ddf6f2db913e0a224e53217829dc00c0125235160c4",
+    "Contents/MacOS/deck-mcp": "3f1016b0a5b217da2e708f7df55327f8820c5935fe94e862a6a641aaebd392be",
+    "Contents/MacOS/deck-mcp-runner": "302b85bff3a47357a28e951e2a0a6ebebbe4c4d1eee0bfc790b2fbcc70a72369",
+    "Contents/MacOS/deck-status-helper": "c9c775da5dfe18dac1cf23ee47de817b7ed0039f54a0d0d974c135dba0ee05be",
+    "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0",
+    "Contents/Resources/pi/observer.ts": "b8ee10eec897f2142d5f449ccd52e8d7e5a95a3329b47b00c3b500f4bec5ebe3",
+    "Contents/Resources/pi/reply.ts": "82d3f1a7c073dd2c3f9bf6e5082b8630cac880aaeffe90f31193c48806c7a2a9",
+    "Contents/Resources/pi/signal.ts": "d8dc67b96b07f942d57d8e58c291d14b6838adbac7fc8a7e770946d9ad0588bc"
+   },
+   "as_built_sha256": {
+    "Contents/MacOS/deck": "aacfe7f67c62b75cf323d29fa1cfe01c19ea04a9284cfd7f3d9b578c336f0daa",
+    "Contents/MacOS/deck-lifecycle-helper": "3a5b25f6baf613b3ec207ddf6f2db913e0a224e53217829dc00c0125235160c4",
+    "Contents/MacOS/deck-mcp": "3f1016b0a5b217da2e708f7df55327f8820c5935fe94e862a6a641aaebd392be",
+    "Contents/MacOS/deck-mcp-runner": "302b85bff3a47357a28e951e2a0a6ebebbe4c4d1eee0bfc790b2fbcc70a72369",
+    "Contents/MacOS/deck-status-helper": "c9c775da5dfe18dac1cf23ee47de817b7ed0039f54a0d0d974c135dba0ee05be",
+    "Contents/MacOS/tmux": "887791ec90f522d99a9d784b6459a71fd3d32d1d1541f8e6be315cb83c913ac0"
+   },
+   "executables_copied_byte_for_byte_before_signing": true,
+   "rewritten_by_the_signing": [
+    "Contents/MacOS/deck"
+   ],
+   "observer_files_are_the_sources": true,
+   "version": "0.8.43"
+  },
+  "runtime": {
+   "kind": "standalone",
+   "pi_sha256": "5a4656b60b74b3a50de71d5388969d0c6e91a4eed75c35744cf8ea008f115b06"
+  }
+ },
+ "cleanup": {
+  "exit": 0,
+  "processes_from_root": 0,
+  "socket_left": false
+ },
+ "moved_to_trash_there": true,
+ "runtime": "standalone",
+ "where": "another machine",
+ "failed": [
+  "orchestrator: interjected-during-output"
+ ]
+}

@@ -28,6 +28,18 @@
 //!   the row is left for the user, as a paste whose Enter was refused is).
 //! - The text lives here only while its line waits, in memory, and never
 //!   in a log line or a `Debug`.
+//! - Interjected lines (`deck_worker_interject`, approved 2026-11-27): a
+//!   line the orchestrator card interjected is put here with `steer`. It
+//!   is the one line that may be offered while a run of the lease is open
+//!   (`take_for`'s `run_open`), and the answer says so (`"steer":true`,
+//!   wire v5). The observer gives it to Pi with `pi.sendUserMessage(text,
+//!   { deliverAs: "steer" })` while Pi works — Pi's own steering, delivered
+//!   after the current assistant turn's tool calls, before the next model
+//!   call — and as an ordinary message when Pi is idle; still never as a
+//!   command or a template. `Delivered` then means Pi took the message into
+//!   its own queue, not that the model read it. Nothing about the run is
+//!   touched: no run is opened, closed or reported for it. Every other line
+//!   waits for the run to settle exactly as before.
 
 use crate::agent_pi::Decline;
 use crate::sync::LockRecover;
@@ -55,6 +67,9 @@ struct Offer {
     pane_id: String,
     pane_pid: u32,
     text: String,
+    /// An interjected line: it may be offered while a run of the lease is
+    /// open, and the observer gives it to Pi as a steering message.
+    steer: bool,
     stage: Stage,
 }
 
@@ -78,13 +93,15 @@ pub(crate) struct Pane<'a> {
 }
 
 /// Put `text` in the mailbox for `pane` and wait for what became of it.
-pub(crate) fn hand_over(pane: Pane<'_>, text: &str) -> Outcome {
-    hand_over_within(pane, text, ASK_BUDGET, RECEIPT_BUDGET)
+/// `steer`: an interjected line ("Interjected lines" above).
+pub(crate) fn hand_over(pane: Pane<'_>, text: &str, steer: bool) -> Outcome {
+    hand_over_within(pane, text, steer, ASK_BUDGET, RECEIPT_BUDGET)
 }
 
 pub(crate) fn hand_over_within(
     pane: Pane<'_>,
     text: &str,
+    steer: bool,
     ask: Duration,
     receipt: Duration,
 ) -> Outcome {
@@ -104,6 +121,7 @@ pub(crate) fn hand_over_within(
         pane_id: pane.pane_id.to_string(),
         pane_pid: pane.pane_pid,
         text: text.to_string(),
+        steer,
         stage: Stage::Waiting,
     });
     let stage = |mailbox: &Vec<Offer>| mailbox.iter().find(|o| o.id == id).map(|o| o.stage);
@@ -135,24 +153,28 @@ pub(crate) fn hand_over_within(
 }
 
 /// The waiting line of the pane `lease` is bound to, now offered to that
-/// lease: its id and text. The transport asks this while it answers a frame
-/// of a lease the kernel proved to be the pane's foreground Pi, outside a
-/// run (`transport::committed`).
+/// lease: its id, its text and whether it is an interjected line. The
+/// transport asks this while it answers a frame of a lease the kernel
+/// proved to be the pane's foreground Pi (`transport::committed`); while a
+/// run of that lease is open (`run_open`) only an interjected line is
+/// offered, every other one waits for the run to settle.
 pub(crate) fn take_for(
     lease: u64,
     server_pid: u32,
     pane_id: &str,
     pane_pid: u32,
-) -> Option<(String, String)> {
+    run_open: bool,
+) -> Option<(String, String, bool)> {
     let mut mailbox = MAILBOX.lock_or_recover();
     let offer = mailbox.iter_mut().find(|o| {
         o.stage == Stage::Waiting
             && o.server_pid == server_pid
             && o.pane_id == pane_id
             && o.pane_pid == pane_pid
+            && (!run_open || o.steer)
     })?;
     offer.stage = Stage::Offered { lease };
-    let taken = (offer.id.clone(), offer.text.clone());
+    let taken = (offer.id.clone(), offer.text.clone(), offer.steer);
     drop(mailbox);
     CHANGED.notify_all();
     Some(taken)
@@ -197,23 +219,24 @@ mod tests {
             hand_over_within(
                 pane("%41"),
                 "fix the test",
+                false,
                 Duration::from_secs(5),
                 Duration::from_secs(5),
             )
         });
         let taken = loop {
-            if let Some(taken) = take_for(3, 7, "%41", 70) {
+            if let Some(taken) = take_for(3, 7, "%41", 70, false) {
                 break taken;
             }
             assert!(
-                take_for(3, 7, "%41", 71).is_none(),
+                take_for(3, 7, "%41", 71, false).is_none(),
                 "another pane process gets nothing"
             );
             thread::sleep(Duration::from_millis(5));
         };
         assert_eq!(taken.1, "fix the test");
         assert!(taken.0.starts_with("h_") && crate::agent_pi::handover_id(&taken.0));
-        assert!(take_for(3, 7, "%41", 70).is_none(), "offered once");
+        assert!(take_for(3, 7, "%41", 70, false).is_none(), "offered once");
         assert!(
             !receipt(4, &taken.0, Ok(())),
             "another lease's receipt does not count"
@@ -228,13 +251,13 @@ mod tests {
     fn a_line_nobody_asked_for_was_not_sent_and_one_without_a_receipt_is_unconfirmed() {
         let short = Duration::from_millis(60);
         assert_eq!(
-            hand_over_within(pane("%42"), "a", short, short),
+            hand_over_within(pane("%42"), "a", false, short, short),
             Outcome::NotAsked
         );
         let worker = thread::spawn(move || {
-            hand_over_within(pane("%43"), "b", Duration::from_secs(5), short)
+            hand_over_within(pane("%43"), "b", false, Duration::from_secs(5), short)
         });
-        while take_for(5, 7, "%43", 70).is_none() {
+        while take_for(5, 7, "%43", 70, false).is_none() {
             thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(worker.join().unwrap(), Outcome::Unconfirmed);
@@ -242,12 +265,13 @@ mod tests {
             hand_over_within(
                 pane("%44"),
                 "c",
+                false,
                 Duration::from_secs(5),
                 Duration::from_secs(5),
             )
         });
         let id = loop {
-            if let Some((id, _)) = take_for(6, 7, "%44", 70) {
+            if let Some((id, _, _)) = take_for(6, 7, "%44", 70, false) {
                 break id;
             }
             thread::sleep(Duration::from_millis(5));
@@ -262,6 +286,7 @@ mod tests {
             hand_over_within(
                 pane("%45"),
                 "first",
+                false,
                 Duration::from_millis(300),
                 Duration::from_millis(50),
             )
@@ -273,12 +298,62 @@ mod tests {
             hand_over_within(
                 pane("%45"),
                 "second",
+                false,
                 Duration::from_secs(1),
                 Duration::from_secs(1)
             ),
             Outcome::NotAsked
         );
         assert_eq!(worker.join().unwrap(), Outcome::NotAsked);
+    }
+
+    #[test]
+    fn only_an_interjected_line_is_offered_while_a_run_is_open() {
+        // an ordinary line waits for the run to settle
+        let worker = thread::spawn(|| {
+            hand_over_within(
+                pane("%46"),
+                "ordinary",
+                false,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+        });
+        while waiting_for("%46") == 0 {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            take_for(8, 7, "%46", 70, true).is_none(),
+            "not while a run is open"
+        );
+        let (id, text, steer) = take_for(8, 7, "%46", 70, false).expect("between runs");
+        assert_eq!((text.as_str(), steer), ("ordinary", false));
+        assert!(receipt(8, &id, Ok(())));
+        assert_eq!(worker.join().unwrap(), Outcome::Delivered);
+        // an interjected line is offered in the middle of a run, and says so
+        let worker = thread::spawn(|| {
+            hand_over_within(
+                pane("%47"),
+                "change of plan",
+                true,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+        });
+        let (id, text, steer) = loop {
+            if let Some(taken) = take_for(9, 7, "%47", 70, true) {
+                break taken;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!((text.as_str(), steer), ("change of plan", true));
+        assert!(
+            take_for(9, 7, "%47", 70, true).is_none(),
+            "offered once, run or no run"
+        );
+        assert!(take_for(9, 7, "%47", 70, false).is_none());
+        assert!(receipt(9, &id, Ok(())));
+        assert_eq!(worker.join().unwrap(), Outcome::Delivered);
     }
 
     fn waiting_for(pane_id: &str) -> usize {

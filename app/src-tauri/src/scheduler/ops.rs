@@ -289,6 +289,11 @@ pub(crate) struct QueueAddArgs {
     pub(crate) channel_first_send: Option<ChannelFirstSendClaim>,
     #[serde(skip)]
     pub(crate) channel_first_send_granted: Option<ChannelFirstSendConstraint>,
+    /// Set only by `worker_queue_add`, never by a caller: the row is a line
+    /// the kernel-proven orchestrator card interjected (`QueueItem.interject`).
+    /// No Tauri command, channel, Connector or template path can carry it.
+    #[serde(skip)]
+    pub(crate) interject: Option<Interject>,
 }
 
 /// Format (Unicode Cf) characters: invisible, so they must not hide what
@@ -671,6 +676,7 @@ pub(super) fn add_item_bound(
         authority: args.granted.first().cloned().flatten(),
         readiness_override: args.first_send_granted,
         channel_first_send: args.channel_first_send_granted,
+        interject: args.interject,
     });
     if let (Some(id), Some(fingerprint)) = (operation_id, operation_fingerprint) {
         let item = q.items.last().expect("queue item just appended");
@@ -788,6 +794,10 @@ pub(crate) struct WorkerSend<'a> {
     pub(crate) dir: &'a str,
     pub(crate) cmd: &'a str,
     pub(crate) text: &'a str,
+    /// `deck_worker_interject` only: the orchestrator card the kernel proved
+    /// the call came from, which `mcp/workers.rs` already checked started
+    /// this card. The row is then an interjected line (`QueueItem.interject`).
+    pub(crate) interject: Option<&'a str>,
 }
 
 /// The backend's one enqueue path, for a worker card's delegated line: the
@@ -807,6 +817,13 @@ pub(crate) struct WorkerSend<'a> {
 /// while the card's current agent has shown no interaction — after a Deck
 /// restart or an Agent re-entry, which keep no interaction evidence — and,
 /// like on the first, it lifts nothing but the first-interaction hold.
+///
+/// A later line may be interjected (`send.interject`, `deck_worker_interject`):
+/// the same row, the same quiet time stored, marked with the orchestrator
+/// card that wrote it. Selection then waives its quiet time and lets it pass
+/// earlier rows of its list that wait for nothing but theirs (`select.rs`
+/// "Interjected lines"); every other hold, the session gap and the binding
+/// to that orchestrator card still decide. A head row is never interjected.
 pub(crate) fn worker_queue_add(
     state: State<'_, Queues>,
     app: AppHandle,
@@ -814,6 +831,12 @@ pub(crate) fn worker_queue_add(
     head: bool,
     first_send: bool,
 ) -> Result<(), DeckError> {
+    if head && send.interject.is_some() {
+        return Err(DeckError::new(
+            ErrorKind::Invalid,
+            "a worker card's first line is never interjected",
+        ));
+    }
     let mut args = QueueAddArgs {
         session: send.session.into(),
         card_id: send.card.into(),
@@ -849,6 +872,9 @@ pub(crate) fn worker_queue_add(
         first_send_granted: None,
         channel_first_send: None,
         channel_first_send_granted: None,
+        interject: send.interject.map(|orchestrator| Interject {
+            orchestrator: orchestrator.into(),
+        }),
     };
     admit_worker(&mut args)?;
     validate_add(&args)?;
@@ -896,16 +922,26 @@ pub(super) fn worker_override_rule(automation: &str) -> String {
     }
 }
 
+/// One of a worker card's lines as its orchestrator reads it: its
+/// operation id, the queue's operation state, and — while it is still
+/// queued and its row is there — the plan stage it waits at.
+pub(crate) type WorkerLine = (String, &'static str, Option<&'static str>);
+
 /// What a worker card's orchestrator may read about its own lines: for
 /// each operation id, the queue's operation state (`queued`, `delivered`,
 /// `canceled`, `uncertain`), and how many of its rows on the card are still
-/// unsent. Ids and closed words only, never text.
+/// unsent. With an observation (`activity`), a queued line also says the
+/// stage its row waits at (`review::plan_item`, the ⏱ panel's own words:
+/// `human`, `agent`, `gap`, `quiet`, `previous`, `pi-handover`, `context`
+/// when nothing but the next pass holds it, …). Ids and closed words only,
+/// never text.
 pub(crate) fn worker_rows(
     queue: &Mutex<QueueState>,
     card: &str,
     client: &str,
     operations: &[String],
-) -> (usize, Vec<(String, &'static str)>) {
+    activity: Option<&Observations>,
+) -> (usize, Vec<WorkerLine>) {
     let q = queue.lock_or_recover();
     let unsent = q
         .items
@@ -921,13 +957,18 @@ pub(crate) fn worker_rows(
                     .is_none_or(|a| a.delegation.as_ref().is_some_and(|d| d.client == client))
         })
         .count();
+    let (now, minutes) = (now_epoch(), local_minutes());
     let states = operations
         .iter()
         .filter_map(|id| {
-            q.operations
-                .iter()
-                .find(|op| &op.id == id)
-                .map(|op| (id.clone(), op.state.as_str()))
+            let op = q.operations.iter().find(|op| &op.id == id)?;
+            let waiting = activity
+                .filter(|_| op.state == OperationState::Queued)
+                .and_then(|activity| {
+                    let row = q.items.iter().find(|i| i.id == op.item)?;
+                    Some(plan_stage(&q, row, now, minutes, activity))
+                });
+            Some((id.clone(), op.state.as_str(), waiting))
         })
         .collect();
     (unsent, states)
@@ -1223,6 +1264,8 @@ pub(crate) fn update_text(q: &mut QueueState, id: &str, text: String) -> Result<
         item.last_context = None;
         // the approved text is gone: an edited external row is send-now only
         item.authority = None;
+        // and an edited interjected line is no longer the orchestrator's
+        item.interject = None;
         if let Some(constraint) = item.channel_first_send.as_mut() {
             constraint.authorized = false;
         }

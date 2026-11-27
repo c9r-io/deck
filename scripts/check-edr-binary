@@ -125,13 +125,16 @@ else
         fi
       done
       # The one hand-over of a worker card's line (agent_pi/handover.rs,
-      # approved 2026-11-20): Pi's send-a-message entry point, once, as the
-      # plain call with the text alone, in observer.ts and in no other file
-      # (tests/edr_quiet.rs pins the same on the source).
+      # approved 2026-11-20): Pi's send-a-message entry point, as the plain
+      # call with the text alone and, for an interjected line while Pi works
+      # (approved 2026-11-27), as Pi's own steering message — each once, in
+      # observer.ts and in no other file (tests/edr_quiet.rs pins the same
+      # on the source).
       sends=$(LC_ALL=C grep -F -o -- sendUserMessage "$entry" | wc -l | tr -d ' ' || true)
       plain=$(LC_ALL=C grep -F -c -- 'pi.sendUserMessage(text);' "$entry" || true)
+      steer=$(LC_ALL=C grep -F -c -- 'pi.sendUserMessage(text, { deliverAs: "steer" });' "$entry" || true)
       if [ "${entry##*/}" = observer.ts ]; then wanted=1; else wanted=0; fi
-      if [ "$sends" != "$wanted" ] || [ "$plain" != "$wanted" ]; then
+      if [ "$sends" != "$((wanted * 2))" ] || [ "$plain" != "$wanted" ] || [ "$steer" != "$wanted" ]; then
         echo "$entry contains forbidden Pi observer token: sendUserMessage" >&2
         exit 1
       fi

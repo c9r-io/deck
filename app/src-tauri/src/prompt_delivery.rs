@@ -14,6 +14,10 @@
 //! Transport injection cannot bypass restart exclusion.
 //! MCP-managed panes also pass the shared MCP control fence, so scheduler,
 //! voice, Connector-derived, and other literal delivery cannot bypass takeover.
+//! A caller may add one more refusal between the paste and the Enter
+//! (`enter_refused_when`, an interjected worker line whose agent asked the
+//! user meanwhile): it can only turn a submission into `EnterRefused`, the
+//! same partial result as a refused Enter, never cause a keystroke.
 use crate::context::{self, PaneIdentity, RawProbe};
 use crate::error::{DeckError, ErrorKind};
 use crate::tmux::{tmux_owned, tmux_with_stdin};
@@ -37,6 +41,12 @@ pub(crate) struct LiteralRequest<'a> {
     pub submit: bool,
     pub require_bracketed: bool,
     pub require_paste_mode: bool,
+    /// Asked once more after the paste and before the Enter: `true` refuses
+    /// the Enter (`EnterRefused`, the text may already sit in the input).
+    /// Refusal only; the scheduler sets it for an interjected worker line
+    /// (`scheduler/delivery.rs` `fire_item`), every other caller leaves it
+    /// `None` and keeps its behaviour.
+    pub enter_refused_when: Option<&'a dyn Fn() -> bool>,
 }
 
 /// The IO boundary is shared by production delivery and its tests. Tests drive
@@ -105,6 +115,7 @@ fn transfer(
         submit,
         require_bracketed,
         require_paste_mode,
+        enter_refused_when,
     } = request;
     if delivery.is_empty()
         || !delivery
@@ -214,6 +225,12 @@ fn transfer(
         return Ok(LiteralOutcome::Inserted);
     }
     transport.pause(Duration::from_millis(600));
+    // the caller's last refusal before the Enter (an interjected line whose
+    // agent asked the user during the paste): the text may be in the pane,
+    // so this is the same partial result as a refused Enter
+    if enter_refused_when.is_some_and(|refused| refused()) {
+        return Ok(LiteralOutcome::EnterRefused);
+    }
     let enter = format!("send-keys -t {} Enter", pane.pane_id);
     let out = transport.run(&[
         "if-shell".into(),
