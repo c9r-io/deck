@@ -27,6 +27,10 @@
 //!   `QueueItem.readiness_override`: readiness is UNKNOWN and the user
 //!   accepted the startup-dialog risk for this rule's or preset's first send.
 //!
+//! A local notification rule's run (`FirstSendOrigin::Local`,
+//! `local_notify.rs`) is a Slack badge run here in every respect: external
+//! admission, the claimed notification as the native event, the rule enabled.
+//!
 //! Scope, closed: verified Slack badge runs use external admission; verified
 //! clock runs use owner admission and remain external=false; a verified
 //! phone task (Connector `task-create`) uses external admission and stays
@@ -182,6 +186,8 @@ pub(crate) enum FirstSendOrigin {
     /// an Agent rule's run, made from an item a delegated MCP client handed
     /// over
     Agent,
+    /// a local notification rule's run (`local_notify.rs`)
+    Local,
 }
 
 /// Which document backs an override: the one it is admitted, swept and
@@ -195,7 +201,7 @@ pub(crate) enum Backing {
 impl FirstSendOrigin {
     pub(crate) fn backing(self) -> Backing {
         match self {
-            Self::SlackBadge | Self::Clock | Self::Agent => Backing::Settings,
+            Self::SlackBadge | Self::Clock | Self::Agent | Self::Local => Backing::Settings,
             Self::Connector => Backing::Board,
         }
     }
@@ -346,7 +352,7 @@ pub(crate) fn supported_command(cmd: &str) -> bool {
 /// Whether `rule` currently allows the override for a row launched with
 /// `cmd`.
 fn allows(rule: &Rule, cmd: &str) -> bool {
-    matches!(rule.source.as_str(), "slack" | "clock" | "agent")
+    matches!(rule.source.as_str(), "slack" | "clock" | "agent" | "local")
         && (rule.source == "slack" || rule.enabled)
         && rule.first_send_without_readiness
         && rule.cmd == cmd
@@ -377,7 +383,7 @@ pub(crate) fn verify(
         .iter()
         .find(|r| r.id == claim.rule)
         .ok_or("no-rule")?;
-    if !matches!(rule.source.as_str(), "slack" | "clock" | "agent")
+    if !matches!(rule.source.as_str(), "slack" | "clock" | "agent" | "local")
         || (rule.source != "slack" && !rule.enabled)
     {
         return Err("trigger");
@@ -408,6 +414,7 @@ pub(crate) fn verify(
         trigger: match rule.source.as_str() {
             "clock" => FirstSendOrigin::Clock,
             "agent" => FirstSendOrigin::Agent,
+            "local" => FirstSendOrigin::Local,
             _ => FirstSendOrigin::SlackBadge,
         },
         clock_target: (rule.source == "clock").then(|| ClockTarget {
@@ -639,6 +646,7 @@ fn rule_still_allows(config: &Config, i: &QueueItem, o: &ReadinessOverride) -> b
                                 .is_some_and(|t| t.project == rule.project_id && t.dir == rule.dir)
                     }
                     FirstSendOrigin::Agent => rule.source == "agent" && o.delegation.is_some(),
+                    FirstSendOrigin::Local => rule.source == "local",
                     FirstSendOrigin::Connector => false,
                 }
         })

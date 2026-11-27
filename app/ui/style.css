@@ -1620,6 +1620,24 @@ body.side-collapsed #attention-btn { flex-direction: column; gap: var(--sp-2); }
 .mention-handed .mention-summary { flex: 1 1 12rem; min-width: 0; }
 .mention-handed-to { color: var(--text); }
 body.side-collapsed #mentions-btn { flex-direction: column; gap: var(--sp-2); }
+/* Notifications (notices.js): the mentions view's frame and rows, plus the
+   intake line (switch, the CLI's path, recent receipts) and state tags */
+#notices-count { margin-left: auto; font-size: var(--fs-11); }
+#notices-view[hidden], .notices-cli[hidden], #notices-no-routes[hidden] { display: none; }
+#notices-view { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.notices-intake { display: flex; flex-direction: column; gap: var(--sp-4); padding: 0 var(--sp-20) var(--sp-8); }
+.notices-intake .q-review-option { margin: 0; }
+.notices-intake .mentions-status { padding: 0; }
+.notices-cli { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8); color: var(--muted); font-size: var(--fs-12); }
+.notices-cli code { min-width: 0; overflow-wrap: anywhere; color: var(--text); -webkit-user-select: text; user-select: text; }
+#notices-list { overflow: auto; min-height: 0; border-right: 1px solid var(--border); padding-right: var(--sp-8); }
+#notices-detail { overflow: auto; min-height: 0; padding: var(--sp-4) var(--sp-8) var(--sp-16); }
+.notice-state { display: flex; flex-wrap: wrap; gap: var(--sp-8); color: var(--muted); font-size: var(--fs-12); }
+.notice-state span { overflow-wrap: anywhere; }
+.notice-tag { color: var(--accent); font-size: var(--fs-12); }
+.notice-labels { margin: var(--sp-8) 0 0; color: var(--muted); font-size: var(--fs-12); overflow-wrap: anywhere; }
+body.side-collapsed #notices-btn { flex-direction: column; gap: var(--sp-2); }
+body.side-collapsed #notices-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: var(--fs-10); }
 body.side-collapsed #mentions-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: var(--fs-10); }
 
 body.side-collapsed #attention-count { margin-left: 0; max-width: 34px; overflow: hidden; font-size: var(--fs-10); }

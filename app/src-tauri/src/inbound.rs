@@ -53,9 +53,13 @@
 //! and its credential adaptation reach this dispatcher only through the
 //! static extension tables (`extensions.rs`; Slack's entry is `slack.rs`):
 //! this file starts no service connection and verifies no service token.
-//! The clock and the Agent trigger (`inbound_agent.rs`: items a delegated
-//! MCP client hands over through a durable inbox) are the dispatcher's own
-//! built-in sources. `SOURCES` stays the
+//! The clock, the Agent trigger (`inbound_agent.rs`: items a delegated
+//! MCP client hands over through a durable inbox) and local notifications
+//! (`local_notify.rs`: what programs of the same user hand over through
+//! `deck-notify`; a rule matches producer, types and labels in `LocalMatch`,
+//! its badge is its id, and the inbox, not the seen ledger, holds the one
+//! claim per occurrence and its outcome) are the dispatcher's own built-in
+//! sources. `SOURCES` stays the
 //! closed, persisted source vocabulary, and the settings shape — channel
 //! rules included — is still validated here. An Agent item is acked like a
 //! badge item; its consumption fact is the inbox entry, and `inbound_pending`
@@ -150,10 +154,10 @@ use crate::keychain;
 use crate::storage;
 use crate::sync::LockRecover;
 
-pub(crate) const SOURCES: &[&str] = &["slack", "clock", "agent"];
+pub(crate) const SOURCES: &[&str] = &["slack", "clock", "agent", "local"];
 /// The sources the dispatcher appends itself (`spawn_inbound`); a registered
 /// service never supplies one of these names.
-pub(crate) const BUILT_IN_SOURCES: &[&str] = &["clock", "agent"];
+pub(crate) const BUILT_IN_SOURCES: &[&str] = &["clock", "agent", "local"];
 const MAX_RUNS: usize = 200;
 /// Closed vocabulary of what became of a run.
 const RUN_OUTCOMES: &[&str] = &["running", "closed", "skipped"];
@@ -250,6 +254,62 @@ pub(crate) struct Rule {
     /// new date in the editor removes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ran_at: Option<u64>,
+    /// A local notification rule only (`local_notify.rs`): which
+    /// notifications it fits and whether it takes them by itself. Its
+    /// `badge` is its id, and `since` bounds what `auto` may take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) local_match: Option<LocalMatch>,
+}
+
+/// What a local notification rule fits: `producer` and each of `types` are
+/// an exact value or a prefix ending in `*`; every label listed must be on
+/// the notification with that value (same pattern form). `auto`: the
+/// user's standing choice that matching notifications received from
+/// `since` on are taken by this rule without a click. Part of the rule's
+/// approval manifest (`scheduler::authority::grant_digest`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalMatch {
+    pub(crate) producer: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) types: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) labels: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub(crate) auto: bool,
+}
+
+pub(crate) const LOCAL_MATCH_MAX_TYPES: usize = 8;
+pub(crate) const LOCAL_MATCH_MAX_LABELS: usize = 8;
+
+/// A match pattern: a name (`local_notify::valid_name`) optionally ending
+/// in `*`, or `*` alone.
+fn valid_pattern(p: &str) -> bool {
+    p == "*" || crate::local_notify::valid_name(p.strip_suffix('*').unwrap_or(p))
+}
+
+impl LocalMatch {
+    fn validate(&self) -> Result<(), DeckError> {
+        let bad = |m: &str| Err(DeckError::new(ErrorKind::InvalidDoc, m.to_string()));
+        if !valid_pattern(&self.producer) {
+            return bad("a local rule names a producer");
+        }
+        if self.types.len() > LOCAL_MATCH_MAX_TYPES || !self.types.iter().all(|t| valid_pattern(t))
+        {
+            return bad("a local rule's types are bounded names");
+        }
+        if self.labels.len() > LOCAL_MATCH_MAX_LABELS
+            || !self.labels.iter().all(|(k, v)| {
+                crate::local_notify::valid_name(k)
+                    && !v.is_empty()
+                    && v.len() <= crate::local_notify::MAX_LABEL_VALUE_BYTES
+                    && !v.chars().any(char::is_control)
+            })
+        {
+            return bad("a local rule's labels are bounded names and values");
+        }
+        Ok(())
+    }
 }
 
 impl Rule {
@@ -495,6 +555,9 @@ impl Schedule {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Config {
     pub(crate) slack_enabled: bool,
+    /// Notifications › "Accept local notifications"
+    /// (`local_notify.rs`): the socket is bound only while it is on.
+    pub(crate) local_enabled: bool,
     pub(crate) rules: Vec<Rule>,
 }
 
@@ -640,6 +703,30 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                     "only a clock rule carries a schedule",
                 ));
             }
+            match (rule.source.as_str(), &rule.local_match) {
+                ("local", Some(m)) => {
+                    m.validate()?;
+                    if rule.badge != rule.id {
+                        return Err(DeckError::new(
+                            ErrorKind::InvalidDoc,
+                            "a local rule's badge is its id",
+                        ));
+                    }
+                }
+                ("local", None) => {
+                    return Err(DeckError::new(
+                        ErrorKind::InvalidDoc,
+                        "a local rule needs its match",
+                    ))
+                }
+                (_, Some(_)) => {
+                    return Err(DeckError::new(
+                        ErrorKind::InvalidDoc,
+                        "only a local rule carries a match",
+                    ))
+                }
+                (_, None) => {}
+            }
             if rule.name.chars().count() > RULE_NAME_MAX_CHARS || rule.name.contains(['\n', '\r']) {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
@@ -672,20 +759,20 @@ pub(crate) fn validate_settings(v: &Value) -> Result<(), DeckError> {
                 ));
             }
             if let Some(grant) = &rule.auto_send {
-                if !matches!(rule.source.as_str(), "slack" | "agent") {
+                if !matches!(rule.source.as_str(), "slack" | "agent" | "local") {
                     return Err(DeckError::new(
                         ErrorKind::InvalidDoc,
-                        "only a Slack badge or Agent rule carries an automation approval",
+                        "only a Slack badge, Agent or local rule carries an automation approval",
                     ));
                 }
                 grant.validate()?;
             }
             if rule.first_send_without_readiness
-                && !matches!(rule.source.as_str(), "slack" | "clock" | "agent")
+                && !matches!(rule.source.as_str(), "slack" | "clock" | "agent" | "local")
             {
                 return Err(DeckError::new(
                     ErrorKind::InvalidDoc,
-                    "only a Slack badge, clock or Agent rule may send its first step without readiness",
+                    "only a Slack badge, clock, Agent or local rule may send its first step without readiness",
                 ));
             }
             if !ids.insert(rule.id.clone()) {
@@ -754,6 +841,10 @@ pub(crate) fn config_from_value(v: Option<&Value>) -> Config {
         .pointer("/sources/slack/enabled")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let local_enabled = v
+        .pointer("/sources/local/enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let rules = v
         .get("rules")
         .and_then(Value::as_array)
@@ -765,6 +856,7 @@ pub(crate) fn config_from_value(v: Option<&Value>) -> Config {
         .unwrap_or_default();
     Config {
         slack_enabled,
+        local_enabled,
         rules,
     }
 }
@@ -1237,7 +1329,10 @@ pub(crate) fn inbound_status() -> InboundStatus {
 #[tauri::command]
 pub(crate) fn inbound_pending() -> Vec<PendingView> {
     let views: Vec<PendingView> = with_rt(|rt| rt.pending.iter().map(|p| p.view.clone()).collect());
-    if !views.iter().any(|v| v.event.source == "agent") {
+    if !views
+        .iter()
+        .any(|v| matches!(v.event.source.as_str(), "agent" | "local"))
+    {
         return views;
     }
     // An Agent item was accepted against one revision of its rule and
@@ -1260,6 +1355,19 @@ pub(crate) fn inbound_pending() -> Vec<PendingView> {
                 }
                 v.worker = crate::mcp::worker_client_for_item(&v.event.key);
                 v.column = crate::mcp::worker_column_for_item(&v.event.key, &v.rule.project_id);
+            }
+            // a local notification's claim froze its rule's revision the
+            // same way (`local_notify.rs`)
+            if v.event.source == "local" {
+                let frozen = crate::local_notify::revision_of(&v.event.key);
+                let now = current
+                    .rules
+                    .iter()
+                    .find(|r| r.source == "local" && r.badge == v.event.badge && r.enabled)
+                    .and_then(crate::inbound_agent::current_revision);
+                if frozen.is_none() || now.is_none() || frozen != now {
+                    v.blocked = Some("rule-changed".into());
+                }
             }
             v
         })
@@ -1301,8 +1409,10 @@ pub(crate) fn pending_event(key: &str, rule_id: &str) -> Option<Event> {
             .iter()
             .map(|p| &p.view)
             .find(|v| {
-                matches!(v.event.source.as_str(), "slack" | "clock" | "agent")
-                    && v.event.key == key
+                matches!(
+                    v.event.source.as_str(),
+                    "slack" | "clock" | "agent" | "local"
+                ) && v.event.key == key
                     && v.rule.id == rule_id
             })
             .map(|v| v.event.clone())
@@ -1399,6 +1509,35 @@ pub(crate) fn inbound_ack(
     if card.as_deref().is_some_and(|c| !bounded_id(c, 128)) {
         return Err(DeckError::new(ErrorKind::Invalid, "card id out of shape"));
     }
+    // A local notification's consumption fact is written FIRST, outside
+    // the dispatcher's lock: when it cannot be written the item stays
+    // pending and unmarked, so the next offer reaches the webview again and
+    // its card's origin reconciles it — never a claim left "routing" for good.
+    let local_key = with_rt(|rt| {
+        rt.pending
+            .iter()
+            .find(|p| p.view.id == id && p.view.event.source == "local")
+            .map(|p| p.view.event.key.clone())
+    });
+    if let Some(key) = &local_key {
+        // debug smoke only: a local item's ack is lost after its card exists
+        if crate::smoke_faults::take("local-ack-refused") {
+            return Err(DeckError::new(ErrorKind::Other, "smoke fault"));
+        }
+        if let Err(e) = crate::local_notify::handled(
+            key,
+            &outcome,
+            card.as_deref(),
+            (!reason.is_empty()).then_some(reason.as_str()),
+            now_secs(),
+        ) {
+            applog(&format!(
+                "[inbound] local item ack not recorded ({}) — offered again",
+                e.code()
+            ));
+            return Err(e);
+        }
+    }
     with_rt(|rt| {
         let Some(pos) = rt.pending.iter().position(|p| p.view.id == id) else {
             return;
@@ -1421,6 +1560,12 @@ pub(crate) fn inbound_ack(
                     "[inbound] agent item ack not recorded ({})",
                     e.code()
                 ));
+            }
+        }
+        if ev.source == "local" {
+            // the consumption fact was written above
+            if let Some(app) = crate::local_notify::app_handle() {
+                let _ = app.emit("local-notifications-changed", ());
             }
         }
         // a clock slot records every outcome (its drawer history); a badge
@@ -1560,6 +1705,8 @@ pub(crate) fn inbound_check_now() {
     // Every inbound settings save wakes each service's connection owner so
     // it re-reads credentials and its capability configuration immediately.
     crate::extensions::wake_services();
+    // and the local notification socket, which follows its switch
+    crate::local_notify::wake();
 }
 
 /* ---------- the poller ---------- */
@@ -1614,6 +1761,7 @@ pub(crate) fn spawn_inbound(app: AppHandle) {
         let mut sources = crate::extensions::service_sources();
         sources.push(Box::new(crate::inbound_clock::Clock::default()));
         sources.push(Box::new(crate::inbound_agent::AgentSource::default()));
+        sources.push(Box::new(crate::local_notify::LocalSource::default()));
         let mut failures: Vec<PollFailures> =
             sources.iter().map(|_| PollFailures::default()).collect();
         wait_for_tick(Duration::from_secs(5));
@@ -1876,11 +2024,20 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            body.matches("local_notify::LocalSource::default()").count(),
+            1
+        );
         use crate::inbound_agent::AgentSource;
         use crate::inbound_clock::Clock;
+        use crate::local_notify::LocalSource;
         assert_eq!(
             BUILT_IN_SOURCES,
-            [Clock::default().id(), AgentSource::default().id()]
+            [
+                Clock::default().id(),
+                AgentSource::default().id(),
+                LocalSource::default().id()
+            ]
         );
     }
 
@@ -2022,6 +2179,54 @@ mod tests {
             where_: "#dev".into(),
             link: "https://example.slack.com/archives/C1/p1".into(),
         }
+    }
+
+    /// A local rule carries its match and is spelled like a clock rule (its
+    /// badge is its id); no other rule carries a match; the local switch is
+    /// an ordinary source switch.
+    #[test]
+    fn a_local_rule_needs_its_match_and_only_it_has_one() {
+        let local = |m: Value| {
+            json!({"id": "rl1", "source": "local", "badge": "rl1", "projectId": "P1",
+                "columnId": "C1", "cmd": "claude", "template": "t", "localMatch": m})
+        };
+        let ok = local(json!({"producer": "ci-*", "types": ["build.failed"],
+            "labels": {"env": "prod"}, "auto": true}));
+        assert!(validate_settings(
+            &json!({"sources": {"local": {"enabled": true}}, "rules": [ok]})
+        )
+        .is_ok());
+        let cfg = config_from_value(Some(
+            &json!({"sources": {"local": {"enabled": true}}, "rules": [ok]}),
+        ));
+        assert!(cfg.local_enabled);
+        assert!(cfg.rules[0].local_match.as_ref().unwrap().auto);
+        let mut no_match = ok.clone();
+        no_match.as_object_mut().unwrap().remove("localMatch");
+        assert!(validate_settings(&json!({"rules": [no_match]})).is_err());
+        let mut other_badge = ok.clone();
+        other_badge["badge"] = json!("eyes");
+        assert!(validate_settings(&json!({"rules": [other_badge]})).is_err());
+        for bad in [
+            json!({"producer": ""}),
+            json!({"producer": "CI"}),
+            json!({"producer": "ci", "types": ["Build Failed"]}),
+            json!({"producer": "ci", "labels": {"env": ""}}),
+            json!({"producer": "ci", "labels": {"env": "a\nb"}}),
+        ] {
+            assert!(
+                validate_settings(&json!({"rules": [local(bad.clone())]})).is_err(),
+                "{bad}"
+            );
+        }
+        let mut slack_with_match = rule("deck");
+        slack_with_match["localMatch"] = json!({"producer": "ci"});
+        assert!(validate_settings(&json!({"rules": [slack_with_match]})).is_err());
+        let mut approved = ok.clone();
+        approved["autoSend"] =
+            json!({"digest": "a".repeat(64), "steps": ["b".repeat(64)], "classes": ["fixed"]});
+        approved["firstSendWithoutReadiness"] = json!(true);
+        assert!(validate_settings(&json!({"rules": [approved]})).is_ok());
     }
 
     #[test]

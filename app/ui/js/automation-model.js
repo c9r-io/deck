@@ -35,7 +35,7 @@
 // badge follow-up approval or inherit the clock/badge readiness-only flag.
 import { channelAgentCommand } from './channel-model.js';
 import { badgeTaken, hmToMin, INBOUND_BADGE_RE, INBOUND_PLACEHOLDERS, isoWeekday, minToHM, nextScheduleSlot, nextScheduleSlots, normalizeTemplateStep, onceInstant, parseCivilDate, runDateLabel } from './pure.js';
-import { DEFAULT_GRACE_MIN, GRACE_CHOICES, SCHEDULE_EVERY_MAX } from './settings-model.js';
+import { DEFAULT_GRACE_MIN, GRACE_CHOICES, LOCAL_MATCH_MAX_TYPES, SCHEDULE_EVERY_MAX, localPatternValid, normalizeLocalMatch } from './settings-model.js';
 import { formatNumber, t } from './i18n.js';
 import { fmtClock } from './scheduler-model.js';
 
@@ -186,7 +186,9 @@ export const triggerText = rule => (rule.source === 'clock'
   ? scheduleText(rule.schedule)
   : rule.source === 'channel' ? t('automation.trigger.channelSummary', { count: formatNumber(rule.channelIds.length) })
     : rule.source === 'agent' ? t('automation.trigger.agentSummary', { id: rule.badge })
-      : t('automation.trigger.badge', { badge: rule.badge }));
+      : rule.source === 'local' ? t(rule.localMatch?.auto ? 'automation.trigger.localSummaryAuto' : 'automation.trigger.localSummary',
+        { producer: rule.localMatch?.producer || '' })
+        : t('automation.trigger.badge', { badge: rule.badge }));
 
 /* "Close the card" depends on the program exiting, and an interactive agent
    does not exit by itself: its card stays and a clock rule's next slot is
@@ -195,7 +197,7 @@ export const triggerText = rule => (rule.source === 'clock'
 export const finishHintShown = (trigger, finish) => trigger === 'clock' && finish === 'close';
 
 export const ruleLabel = rule => rule.name || (rule.source === 'clock' || rule.source === 'channel' ? rule.id
-  : rule.source === 'agent' ? rule.badge : `:${rule.badge}:`);
+  : rule.source === 'agent' ? rule.badge : rule.source === 'local' ? (rule.localMatch?.producer || rule.id) : `:${rule.badge}:`);
 
 /* one recorded run as a line: its outcome decides the mark and the words;
    `openable` says a running run still has a card to open */
@@ -292,6 +294,19 @@ export function composeRule(fields, { previous = null, rules = [], projectId, ge
   }
   /* an Agent handover rule: its badge is the automation id a delegated
      client names (spelled like a badge), one rule per id */
+  /* a local notification rule (local_notify.rs): its badge is its id, its
+     match names a producer and optional types and labels; turning `auto`
+     on or changing the match moves `since` to now, so a rule never takes
+     notifications received before the user chose it */
+  if (fields.trigger === 'local') {
+    const read = localMatchFromFields(fields);
+    if (read.error) return fail(read.error, read.focus);
+    const id = previous && previous.source === 'local' ? previous.id : genId('l');
+    const before = previous && previous.source === 'local' ? previous : null;
+    const moved = !before || JSON.stringify(before.localMatch) !== JSON.stringify(read.match);
+    return { rule: { id, source: 'local', badge: id, ...shared, enabled: true, localMatch: read.match,
+      since: moved ? nowSecs : before.since } };
+  }
   if (fields.trigger === 'agent') {
     const badge = (fields.badge || '').trim();
     if (!INBOUND_BADGE_RE.test(badge)) return fail('automation.invalidAgentId', 'auto-badge');
@@ -316,6 +331,28 @@ export function composeRule(fields, { previous = null, rules = [], projectId, ge
       ...(changed ? (schedule.unit === 'once' ? { enabled: true } : {}) : (previous.ranAt ? { ranAt: previous.ranAt } : {})),
     },
   };
+}
+
+/* the editor's local-match fields → a match (settings-model.js
+   `normalizeLocalMatch` decides what is valid) */
+export function localMatchFromFields(fields) {
+  const split = value => String(value || '').split(',').map(part => part.trim()).filter(Boolean);
+  const producer = String(fields.localProducer || '').trim();
+  if (!localPatternValid(producer)) return { error: 'automation.local.invalidProducer', focus: 'auto-local-producer' };
+  const types = split(fields.localTypes);
+  if (types.length > LOCAL_MATCH_MAX_TYPES || !types.every(localPatternValid)) return { error: 'automation.local.invalidTypes', focus: 'auto-local-types' };
+  const labels = {};
+  for (const pair of split(fields.localLabels)) {
+    const at = pair.indexOf('=');
+    if (at <= 0) return { error: 'automation.local.invalidLabels', focus: 'auto-local-labels' };
+    /* a value as incoming values are normalized: one line, inner runs of
+       whitespace one space (local_notify.rs `one_line`); a comma cannot be
+       part of a value typed here */
+    labels[pair.slice(0, at).trim()] = pair.slice(at + 1).replace(/\s+/g, ' ').trim();
+  }
+  const match = normalizeLocalMatch({ producer, types, labels, auto: fields.localAuto === true });
+  if (!match) return { error: 'automation.local.invalidLabels', focus: 'auto-local-labels' };
+  return { match };
 }
 
 /* a saved rule replaces its own entry in place (or the entry under the id
@@ -356,6 +393,9 @@ export const grantManifest = (rule, steps, classes, external) => JSON.stringify(
   'deck-automation-grant', 1, rule.id, rule.source, rule.badge, rule.projectId,
   rule.dir || '', rule.cmd || '', rule.template, rule.finish === 'close' ? 'close' : 'keep',
   rule.reviewEach === true, steps, classes, external === true,
+  /* a local rule's match is covered too (local-grant.json pins both sides) */
+  ...(rule.localMatch ? [['local-match', rule.localMatch.producer, rule.localMatch.types || [],
+    Object.keys(rule.localMatch.labels || {}).sort().map(k => [k, rule.localMatch.labels[k]]), rule.localMatch.auto === true]] : []),
 ]);
 
 export const grantDigest = (rule, grant) => sha256(grantManifest(rule, grant.steps, grant.classes, grant.external));
@@ -382,7 +422,7 @@ export async function approveRule(rule, template, { external = false } = {}) {
 export async function grantDetail(rule, template) {
   const grant = rule?.autoSend;
   if (!grant) return 'none';
-  if (!['slack', 'agent'].includes(rule.source)) return 'stale-rule';
+  if (!['slack', 'agent', 'local'].includes(rule.source)) return 'stale-rule';
   if (!template) return 'stale-template';
   const current = await templateGrant(template);
   if (JSON.stringify(current.steps) !== JSON.stringify(grant.steps)
@@ -405,7 +445,7 @@ export async function grantState(rule, template) {
 export async function approvalsVoidedBy(rules, projectId, name, before, after) {
   const out = [];
   for (const rule of Array.isArray(rules) ? rules : []) {
-    if (!rule?.autoSend || !['slack', 'agent'].includes(rule.source) || rule.projectId !== projectId || rule.template !== name) continue;
+    if (!rule?.autoSend || !['slack', 'agent', 'local'].includes(rule.source) || rule.projectId !== projectId || rule.template !== name) continue;
     if ((await grantState(rule, { name, steps: before })) !== 'valid') continue;
     if ((await grantState(rule, { name, steps: after })) !== 'valid') out.push(rule);
   }
@@ -439,7 +479,7 @@ export function firstSendSupported(cmd) {
 export function withFirstSend(rule, on) {
   const next = { ...rule };
   delete next.firstSendWithoutReadiness;
-  if (on === true && ['slack', 'clock', 'agent'].includes(next.source)) next.firstSendWithoutReadiness = true;
+  if (on === true && ['slack', 'clock', 'agent', 'local'].includes(next.source)) next.firstSendWithoutReadiness = true;
   return next;
 }
 

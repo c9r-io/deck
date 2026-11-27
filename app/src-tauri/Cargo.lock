@@ -704,6 +704,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "deck-notify"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "deck-status-helper"
 version = "0.1.0"
 dependencies = [

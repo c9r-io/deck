@@ -1,0 +1,63 @@
+{
+  "_comment": "Shared local-rule grant digest vector: scheduler/authority.rs grant_digest and automation-model.js grantDigest must both produce rule.autoSend.digest; the local match is the manifest's last element.",
+  "templateSteps": [
+    "Review the latest changes and run the tests.",
+    "Investigate the issue described below:\n\n{{msg.text}} (from {{ msg.from }})",
+    "总结「结果」并给出 \"下一步\" \\ 建议"
+  ],
+  "manifest": "[\"deck-automation-grant\",1,\"rlocal01\",\"local\",\"rlocal01\",\"P1\",\"~/work/app\",\"claude\",\"triage\",\"keep\",false,[\"1d745cc6da4b659c29a7d369e3e195b04d9f9f458724cd95c2e677b6f1e655d8\",\"693f4ee2395a210776218f8078581714db2923be9608d54ea0bec87df8f6d6d6\",\"6813a69cbdc70baa39a78d784ed19ad09bfaac944d2f392809e4122a090f3efa\"],[\"fixed\",\"bounded\",\"fixed\"],true,[\"local-match\",\"ci-*\",[\"build.failed\",\"deploy.*\"],[[\"env\",\"prod\"],[\"team\",\"core \\\"α\\\"\"]],true]]",
+  "rule": {
+    "id": "rlocal01",
+    "source": "local",
+    "badge": "rlocal01",
+    "projectId": "P1",
+    "columnId": "C1",
+    "cmd": "claude",
+    "template": "triage",
+    "dir": "~/work/app",
+    "name": "CI failures",
+    "enabled": true,
+    "finish": "keep",
+    "since": 1795000000,
+    "localMatch": {
+      "producer": "ci-*",
+      "types": [
+        "build.failed",
+        "deploy.*"
+      ],
+      "labels": {
+        "env": "prod",
+        "team": "core \"α\""
+      },
+      "auto": true
+    },
+    "autoSend": {
+      "digest": "f899bb3667aee3cb36c1ec4c18e400602184c0c0b16c25cd7ca101fbfb17b31f",
+      "steps": [
+        "1d745cc6da4b659c29a7d369e3e195b04d9f9f458724cd95c2e677b6f1e655d8",
+        "693f4ee2395a210776218f8078581714db2923be9608d54ea0bec87df8f6d6d6",
+        "6813a69cbdc70baa39a78d784ed19ad09bfaac944d2f392809e4122a090f3efa"
+      ],
+      "classes": [
+        "fixed",
+        "bounded",
+        "fixed"
+      ],
+      "external": true
+    }
+  },
+  "widened": {
+    "localMatch": {
+      "producer": "*",
+      "types": [
+        "build.failed",
+        "deploy.*"
+      ],
+      "labels": {
+        "env": "prod",
+        "team": "core \"α\""
+      },
+      "auto": true
+    }
+  }
+}

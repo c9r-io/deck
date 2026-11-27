@@ -495,7 +495,7 @@ export async function runAttentionSmoke() {
     const newSessionMenu = withDefaults => [
       t('menu.newSessionNow'),
       ...(withDefaults ? [t('menu.newShellOnly')] : []),
-      '◷ ' + t('menu.autoClock'), '◇ ' + t('menu.autoSlack'), '▤ ' + t('menu.autoChannel'), '◆ ' + t('menu.autoAgent'),
+      '◷ ' + t('menu.autoClock'), '◇ ' + t('menu.autoSlack'), '▤ ' + t('menu.autoChannel'), '◆ ' + t('menu.autoAgent'), '✉ ' + t('menu.autoLocal'),
       '⚑ ' + t('menu.projectDefaults'), '↻ ' + t('menu.automations'), '◈ ' + t('menu.templates'),
     ];
     const sameLabels = (buttons, labels) => JSON.stringify(buttons.map(menuLabel)) === JSON.stringify(labels);

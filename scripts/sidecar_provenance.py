@@ -63,7 +63,7 @@ import struct
 import sys
 from pathlib import Path
 
-# (binary, crate directory under app/src-tauri). The same four build.rs
+# (binary, crate directory under app/src-tauri). The same five build.rs
 # builds; scripts/test_sidecar_provenance.py compares this table with
 # build.rs and tauri.conf.json so the three cannot drift apart.
 SIDECARS = (
@@ -71,6 +71,7 @@ SIDECARS = (
     ("deck-lifecycle-helper", "lifecycle-helper"),
     ("deck-mcp-runner", "mcp-runner"),
     ("deck-mcp", "mcp-adapter"),
+    ("deck-notify", "notify-cli"),
 )
 # Committed, pinned by its SHA-256 (gate.yml); the same file in every context.
 PREBUILT = ("tmux",)

@@ -201,7 +201,12 @@ evolution; it makes scope expansion deliberate.
   collection card; both use `provider.createStarted`, and neither moves or
   retires a card. An item a delegated MCP client hands to an Agent rule
   (`mcp/automation.rs` → `inbound_agent.rs` → the ordinary dispatcher)
-  creates that rule's card exactly as a badge does. ONE sanctioned
+  creates that rule's card exactly as a badge does, and so does a local
+  notification (approved 2026-11-28, `local_notify.rs`): one claimed
+  occurrence, by the user's Route click or by the first matching local rule
+  whose "handle automatically" the user ticked, creates that rule's card
+  through the dispatcher; a producer's resolve or withdraw never moves,
+  closes or cancels anything. ONE sanctioned
   relocation (approved 2026-11-18): a delegated MCP client holding the
   user's separate, revocable "organize cards" choice may rename one card
   of its projects or move it to a column of its own or another reachable
@@ -242,17 +247,24 @@ evolution; it makes scope expansion deliberate.
   rule's approval ends it ≠ **input readiness**
   (every scheduler hold, including the first-interaction gate). An approval
   releases only the external-follow-up hold; the fresh-start pass never types
-  into an interactive agent. A separately enabled, native-verified Slack badge, clock, Agent or phone task
-  preset first-send override may send the head row on a later pass after bounded compatibility
+  into an interactive agent. A separately enabled, native-verified Slack badge, clock, Agent, local
+  notification or phone task preset first-send override may send the head row on a later pass after bounded compatibility
   stabilization and current fences; it is not Agent readiness evidence.
   A channel rule may separately grant fully revocable permission for future
   scoped events to send a new run's first step. A native-proven channel head
   retains its authorization constraint after withdrawal or text edits;
   existing interaction evidence never bypasses that constraint. This does
   not expand later-step or tool authority, and `TriggerClass` stays the
-  closed list of three (Slack badge, phone task preset, delegated Agent
-  client), each tied to its own revocation source; a fourth is a hard-rule
-  change. **A delegated MCP client's further choices** are each separate and
+  closed list of four (Slack badge, phone task preset, delegated Agent
+  client, local notification rule — the fourth approved 2026-11-28: the
+  rule's own revision-bound approval over the dispatcher's own copy of the
+  claimed notification, revoked by the settings like a badge rule's; being
+  local is never content authority), each tied to its own revocation
+  source; a fifth is a hard-rule change. **Local notifications**
+  (`local_notify.rs`, `deck-notify`, `docs/local-notifications.md`): one
+  same-uid Unix socket in `~/.deck`, bound only while the user's switch is
+  on, never MCP, Tunnel, TCP or HTTP; the input carries content and
+  classification only, `producer` is a name, never an identity. **A delegated MCP client's further choices** are each separate and
   revocable under the settings fence; their mechanics live in `mcp/mod.rs`
   and the modules it names. **Worker cards** (approved 2026-11-09): text
   the client wrote goes automatically only into the cards its own triggers
@@ -360,7 +372,9 @@ evolution; it makes scope expansion deliberate.
   snapshots and audit semantics require sticky v7. A clock schedule that
   repeats every N > 1 units from an anchor date upgrades settings.json to
   sticky v8, and a clock rule's one-time schedule to sticky v11. An Agent's
-  note in a card's scratchpad upgrades deck.json to sticky v12. An Agent trigger rule (settings.json) and the queue origins it
+  note in a card's scratchpad upgrades deck.json to sticky v12. A local
+  notification rule or switch (settings.json) and the queue origins it
+  admits (queue.json) upgrade to sticky v14. An Agent trigger rule (settings.json) and the queue origins it
   admits (queue.json) upgrade to sticky v9, and the MCP ledger takes its own
   sticky versions, one per delegated capability: v7 for an automation
   delegation or a trigger record, up to v19 for a worker capacity other than the default (`mcp/mod.rs` `STATE_VERSION_*`). Channel inbox v2 protects
@@ -423,6 +437,7 @@ loaded by `ui/index.html`; xterm.js vendored in `app/ui/vendor/`. Backend
 | Automations: inbound sources, drawer, templates, Keychain | `inbound.rs`, `inbound_slack.rs`, `inbound_clock.rs`, `inbound_agent.rs` (the Agent handover inbox), `keychain.rs`, `ui/js/inbound.js`, `automation.js`, `templates.js` (+ `docs/auto-respond.md`) |
 | Slack mentions: the messages that @mention the user, read with their context and routed by hand to a Slack badge rule (the badge path unchanged) or handed by a permitted MCP client to its own Agent rule or marked by it for the user (`mcp/mentions.rs`), and read, routed or set aside one at a time from a paired phone (`connector/`); Deck stays silent in Slack | `slack_mentions.rs` (contract), `inbound_slack.rs` (`search_mentions`, `mention_context`), `ui/js/slack-mentions.js`, `slack-mentions-model.js`, `slack-emoji.js` (generated by `scripts/gen-slack-emoji.py`) (+ `docs/auto-respond.md`; smoke `mentions-live`) |
 | External admission policy | `admission.rs` (pinned by `tests/external_admission.rs`) |
+| Local notifications: the `deck-notify` CLI, the same-uid socket, the durable inbox (identity, order, occurrences, the one claim per occurrence), the `local` dispatcher source and rules, and the Notifications page over local notifications and Slack mentions | `local_notify.rs` (contract), `notify-cli/` (the CLI), `inbound.rs` (`LocalMatch`), `ui/js/notices.js`, `notices-model.js`, `automation-model.js` (`localMatchFromFields`) (+ `docs/local-notifications.md`, `tools/local-notify-example/`) |
 | Needs-attention view, away notifications, Dock badge | `ui/js/attention.js`, `attention-model.js`, `missed-once.js` (one-time automations whose day passed without a run), `notify.rs`, `native/NotificationBridge.swift`, `ui/js/notify-model.js` (+ `docs/notifications.md`) |
 | Card Reminders | `reminder.rs`, `ui/js/reminder-model.js` (+ `docs/card-reminders.md`) |
 | Agent status, attribution and listener | `agent_status.rs`, `agent_origin.rs`, `src-tauri/status-helper/` |

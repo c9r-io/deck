@@ -62,7 +62,7 @@ export function normalizeFontScale(value) {
   return Number((Math.round(number / FONT_SCALE_STEP) * FONT_SCALE_STEP).toFixed(1));
 }
 
-export const INBOUND_SOURCES = Object.freeze(['slack', 'clock', 'agent']);
+export const INBOUND_SOURCES = Object.freeze(['slack', 'clock', 'agent', 'local']);
 /* sources with an on/off switch of their own; the clock is on whenever one
    of its rules is enabled */
 const INBOUND_TOGGLES = Object.freeze(['slack']);
@@ -137,6 +137,31 @@ export function normalizeSchedule(raw) {
   return days.length ? { unit, days, minute, ...interval } : null;
 }
 
+/* local_notify.rs `valid_name`, and a match pattern: a name, optionally
+   ending in `*`, or `*` alone */
+export const LOCAL_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+export const localPatternValid = p => p === '*' || LOCAL_NAME_RE.test(String(p).endsWith('*') ? String(p).slice(0, -1) : String(p));
+export const LOCAL_MATCH_MAX_TYPES = 8;
+export const LOCAL_MATCH_MAX_LABELS = 8;
+
+/* a local rule's match, or null when the backend would refuse it */
+export function normalizeLocalMatch(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const producer = String(raw.producer ?? '');
+  if (!localPatternValid(producer)) return null;
+  const types = Array.isArray(raw.types) ? raw.types.map(String) : [];
+  if (types.length > LOCAL_MATCH_MAX_TYPES || !types.every(localPatternValid)) return null;
+  const entries = raw.labels && typeof raw.labels === 'object' && !Array.isArray(raw.labels) ? Object.entries(raw.labels) : [];
+  if (entries.length > LOCAL_MATCH_MAX_LABELS) return null;
+  const labels = {};
+  for (const [k, v] of entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const value = String(v ?? '');
+    if (!LOCAL_NAME_RE.test(k) || !value || new TextEncoder().encode(value).length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return null;
+    labels[k] = value;
+  }
+  return { producer, ...(types.length ? { types } : {}), ...(entries.length ? { labels } : {}), auto: raw.auto === true };
+}
+
 /* Mirrors the backend's structural validation (inbound::validate_settings):
    a rule that would be refused on save is dropped here so the UI never
    shows a rule the poller will not honor. Referential checks against the
@@ -149,6 +174,9 @@ export function normalizeInbound(value) {
     const src = raw.sources && typeof raw.sources === 'object' ? raw.sources[name] : null;
     sources[name] = { enabled: !!(src && src.enabled === true) };
   }
+  /* local notifications (local_notify.rs): stored only while on, so a
+     settings file that never used them keeps its schema version */
+  if (raw.sources?.local?.enabled === true) sources.local = { enabled: true };
   const seenPair = new Set(), seenId = new Set(), rules = [];
   for (const r of Array.isArray(raw.rules) ? raw.rules : []) {
     if (!r || typeof r !== 'object') continue;
@@ -162,11 +190,18 @@ export function normalizeInbound(value) {
       since: Number.isInteger(r.since) && r.since >= 0 ? r.since : 0,
     };
     if (!LOCAL_ID_RE.test(rule.id) || rule.id.length > INBOUND_RULE_ID_MAX) continue;
-    const autoSend = ['slack', 'agent'].includes(rule.source) ? normalizeAutoSend(r.autoSend) : null;
+    const autoSend = ['slack', 'agent', 'local'].includes(rule.source) ? normalizeAutoSend(r.autoSend) : null;
     if (autoSend) rule.autoSend = autoSend;
     /* a Slack badge or clock rule's first-send readiness override (automation-model.js
        `withFirstSend`); anything but an explicit true reads as off */
-    if (['slack', 'clock', 'agent'].includes(rule.source) && r.firstSendWithoutReadiness === true) rule.firstSendWithoutReadiness = true;
+    if (['slack', 'clock', 'agent', 'local'].includes(rule.source) && r.firstSendWithoutReadiness === true) rule.firstSendWithoutReadiness = true;
+    /* a local notification rule: its badge is its id and its match is
+       required (twin of inbound.rs `LocalMatch::validate`) */
+    if (rule.source === 'local') {
+      rule.badge = rule.id;
+      rule.localMatch = normalizeLocalMatch(r.localMatch);
+      if (!rule.localMatch) continue;
+    }
     if (rule.source === 'clock') {
       rule.badge = rule.id;
       rule.schedule = normalizeSchedule(r.schedule);

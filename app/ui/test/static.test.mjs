@@ -417,7 +417,7 @@ test('forensic reasons and movement sources are closed at the Rust log boundary'
   assert.doesNotMatch(read('app/ui/js/selection-forensics.js'), /getSelection\(|terminal_selection_copy|clipboard|session/);
 });
 
-test('the first-send option is a separate, unticked box for Slack badge, clock and Agent rules, shown with its warning', () => {
+test('the first-send option is a separate, unticked box for Slack badge, clock, Agent and local notification rules, shown with its warning', () => {
   const html = read('app/ui/index.html');
   // every trigger-bound control of the editor carries a `q-p-<trigger>` class
   const triggers = classes => classes.split(' ').filter(name => name.startsWith('q-p-')).sort();
@@ -425,7 +425,7 @@ test('the first-send option is a separate, unticked box for Slack badge, clock a
   assert.ok(box, 'the box exists');
   // the override exists for a Slack badge run, a clock run and an Agent
   // handover run (scheduler/first_send.rs), nothing else
-  assert.deepEqual(triggers(box[1]), ['q-p-agent', 'q-p-clock', 'q-p-slack'], 'shown for exactly the Slack badge, clock and Agent triggers');
+  assert.deepEqual(triggers(box[1]), ['q-p-agent', 'q-p-clock', 'q-p-local', 'q-p-slack'], 'shown for exactly the Slack badge, clock, Agent and local notification triggers');
   assert.equal(/checked/.test(box[2]), false, 'unticked by default');
   const hint = /<p\b[^>]*\bid="auto-first-send-hint"[^>]*>/.exec(html);
   assert.ok(hint, 'the warning exists');
@@ -450,7 +450,7 @@ test('every view change leaves the session view first, and the tool slot closes 
       assert.match(lines.slice(Math.max(0, n - 6), n).join('\n'), /leaveSessionView\(/, `${file}:${n + 1}`);
     });
   }
-  assert.deepEqual(sites.sort(), ['app.js', 'attention.js', 'board.js', 'layout.js', 'layout.js', 'slack-mentions.js']);
+  assert.deepEqual(sites.sort(), ['app.js', 'attention.js', 'board.js', 'layout.js', 'layout.js', 'notices.js', 'slack-mentions.js']);
   const layout = read('app/ui/js/layout.js');
   assert.match(layout, /export function leaveSessionView\([^)]*\) \{\n  closeSessionTools\('leave'\);/);
   for (const file of ['board.js', 'translation-lens.js', 'layout.js', 'app.js'])

@@ -29,6 +29,7 @@ BUILT = {
     "deck-lifecycle-helper": "lifecycle-helper",
     "deck-mcp-runner": "mcp-runner",
     "deck-mcp": "mcp-adapter",
+    "deck-notify": "notify-cli",
 }
 
 
@@ -199,7 +200,7 @@ class CheckTests(unittest.TestCase):
                 status, out, err = self.check(*argv, "--binaries")
                 self.assertEqual(status, 0 if context == placed else 1, (placed, context, err))
                 if context == placed:
-                    self.assertIn("4 files", out)
+                    self.assertIn("5 files", out)
 
     def test_one_foreign_sidecar_is_named(self):
         self.tree.place("debug")
@@ -241,7 +242,7 @@ class CheckTests(unittest.TestCase):
             app = self.tree.bundle("release", signed=signed)
             status, out, err = self.check("--profile", "release", "--bundle", str(app))
             self.assertEqual(status, 0, err)
-            self.assertIn("6 files", out)
+            self.assertIn("7 files", out)
         # a debug sidecar inside the release bundle
         macos = app / "Contents" / "MacOS"
         (macos / "deck-mcp").write_bytes(self.tree.product("deck-mcp", "debug").read_bytes())
@@ -286,7 +287,7 @@ class CheckTests(unittest.TestCase):
         product = self.tree.tauri / "target" / "debug" / "deck-app"
         status, out, err = self.check("--profile", "debug", "--binaries", "--main-product", str(product))
         self.assertEqual(status, 0, err)
-        self.assertIn("5 files", out)
+        self.assertIn("6 files", out)
         product.unlink()
         status, _, err = self.check("--profile", "debug", "--binaries", "--main-product", str(product))
         self.assertEqual(status, 1)
@@ -449,9 +450,9 @@ class PackagedTests(unittest.TestCase):
         self.finish(app)
         done = self.step("deck_bundle_postcheck", ROOT, self.tauri, app)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("6 files", done.stdout)
+        self.assertIn("7 files", done.stdout)
         self.assertEqual(sorted(path.name for path in (app / "Contents/MacOS").iterdir()),
-                         ["deck", "deck-lifecycle-helper", "deck-mcp", "deck-mcp-runner", "deck-status-helper", "tmux"])
+                         ["deck", "deck-lifecycle-helper", "deck-mcp", "deck-mcp-runner", "deck-notify", "deck-status-helper", "tmux"])
 
     def test_the_dev_bundle_carries_the_pi_observers_files_and_nothing_else_there(self):
         app = self.tauri / "target/debug/deck-dev.app"

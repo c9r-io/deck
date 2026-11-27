@@ -14,7 +14,7 @@
 # bundle. The triple is the one this repository builds for.
 
 DECK_BUNDLE_TRIPLE=aarch64-apple-darwin
-DECK_BUNDLE_SIDECARS="deck-status-helper deck-lifecycle-helper deck-mcp deck-mcp-runner"
+DECK_BUNDLE_SIDECARS="deck-status-helper deck-lifecycle-helper deck-mcp deck-mcp-runner deck-notify"
 # The Pi observer's files (app/src-tauri/resources/pi, the same closed list as
 # tauri.conf.json `bundle.resources` and agent_pi/config.rs RESOURCES): text
 # the Pi process loads from the bundle, never an executable of deck's own.
@@ -28,7 +28,7 @@ deck_bundle_precheck() { # REPO TAURI
     && python3 "$1/scripts/sidecar_provenance.py" staged --profile debug --tauri "$2"
 }
 
-# The executable (as `deck`), the bundled tmux and the four built sidecars
+# The executable (as `deck`), the bundled tmux and the five built sidecars
 # into APP/Contents/MacOS, and the Pi observer's files into
 # APP/Contents/Resources/pi.
 deck_bundle_copy() { # TAURI APP

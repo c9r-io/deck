@@ -38,6 +38,7 @@ mod ledger;
 #[cfg(test)]
 mod limits_mirror;
 mod links;
+mod local_notify;
 mod main_watch;
 mod mcp;
 mod mcp_fs;
@@ -200,6 +201,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("channel-live", "m.verifyChannelLive()"),
     ("channel-live-replay", "m.verifyChannelLiveReplay()"),
     ("mentions-live", "m.verifyMentionsLive()"),
+    ("local-notify", "m.verifyLocalNotify()"),
+    ("local-notify-relaunch", "m.verifyLocalNotifyRelaunch()"),
     ("hooks-live", "m.verifyHooksLive()"),
     ("pi-live", "m.verifyPiLive()"),
     ("pi-layout", "m.verifyPiLayout()"),
@@ -332,6 +335,7 @@ fn main() {
                 reminder::defer_automatic_work(app.handle().clone(), move || {
                     scheduler::spawn_scheduler(handle.clone());
                     inbound::spawn_inbound(handle.clone());
+                    local_notify::spawn(handle.clone());
                     extensions::start_services(&handle);
                     extensions::start_access_integrations(&handle);
                 });
@@ -494,6 +498,9 @@ fn main() {
             intelligence::pasteboard::translation_clipboard_write,
             input_source::input_source_snapshot,
             notify::notify_configure,
+            local_notify::local_notifications,
+            local_notify::local_notification_dismiss,
+            local_notify::local_notification_route,
             reminder::reminder_launch_visible,
             reminder::reminder_response_finish,
             reminder::reminder_status,

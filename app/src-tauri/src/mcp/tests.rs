@@ -5492,6 +5492,7 @@ fn automation_delegation_lists_triggers_replays_and_withdraws() {
     .unwrap();
     let config = crate::inbound::Config {
         slack_enabled: false,
+        local_enabled: false,
         rules: vec![rule, blocked],
     };
     CONFIG_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(config)));
@@ -6864,6 +6865,7 @@ fn a_clock_draft_registers_later_work_and_changes_only_its_own_rule() {
         CONFIG_FOR_TESTS.with(|cell| {
             *cell.borrow_mut() = Some(Some(crate::inbound::Config {
                 slack_enabled: false,
+                local_enabled: false,
                 rules,
             }))
         })
@@ -7054,6 +7056,7 @@ fn drafted_configuration_is_checked_recorded_and_decided_by_the_user() {
     CONFIG_FOR_TESTS.with(|cell| {
         *cell.borrow_mut() = Some(Some(crate::inbound::Config {
             slack_enabled: false,
+            local_enabled: false,
             rules: vec![existing],
         }))
     });
@@ -7257,6 +7260,7 @@ fn revoking_a_drafting_client_withdraws_its_drafts() {
     CONFIG_FOR_TESTS.with(|cell| {
         *cell.borrow_mut() = Some(Some(crate::inbound::Config {
             slack_enabled: false,
+            local_enabled: false,
             rules: vec![],
         }))
     });
@@ -8731,6 +8735,7 @@ fn settings_summary_is_content_free_permitted_and_never_guesses() {
     CONFIG_FOR_TESTS.with(|cell| {
         *cell.borrow_mut() = Some(Some(crate::inbound::Config {
             slack_enabled: true,
+            local_enabled: false,
             rules: vec![
                 rule("eyes", "slack", json!({})),
                 rule("a1", "agent", json!({})),

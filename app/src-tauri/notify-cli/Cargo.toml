@@ -1,0 +1,18 @@
+[package]
+name = "deck-notify"
+version = "0.1.0"
+edition = "2021"
+description = "deck — submit a notification to the running Deck over its local socket"
+license = "MIT"
+
+# Minimal on purpose: other programs on this Mac run it to hand Deck a
+# notification. It reads JSON from stdin, writes one request line to
+# ~/.deck/notify.sock and prints Deck's receipt; it never links the deck app,
+# opens no network connection and starts nothing. A member of the
+# app/src-tauri workspace only to share the lock file and the CI gates; the
+# release profile comes from that workspace root, and build.rs there builds
+# it as a sidecar with its own --target-dir. Contract: src/main.rs header and
+# docs/local-notifications.md.
+
+[dependencies]
+serde_json = "1"

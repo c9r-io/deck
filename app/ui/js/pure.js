@@ -981,7 +981,7 @@ export function planInbound(item, { cards, projects, home }) {
   const steps = template ? template.steps.map(s => fillInboundTemplate(s, msg)).filter(Boolean) : [];
   if (!steps.length) return { outcome: 'no-template', template: rule.template };
   const dir = expandHome(rule.dir, home);
-  const name = clock ? (rule.name || rule.id) : inboundTitle(event.text) || `:${event.badge}:`;
+  const name = clock ? (rule.name || rule.id) : inboundTitle(event.text) || (rule.name || `:${event.badge}:`);
   return {
     outcome: 'create',
     card: {
@@ -989,7 +989,8 @@ export function planInbound(item, { cards, projects, home }) {
       title: clock ? `${name} · ${runDateLabel(Number(event.key))}` : name,
       cmd: rule.cmd || '',
       dir,
-      desc: clock ? template.name : [`:${event.badge}:`, event.where, event.from].filter(Boolean).join(' · '),
+      desc: clock ? template.name : event.source === 'local' ? [rule.name, event.where, event.from].filter(Boolean).join(' · ')
+        : [`:${event.badge}:`, event.where, event.from].filter(Boolean).join(' · '),
       origin: { source: event.source, key: event.key, badge: event.badge, ...(rule.reviewEach ? { reviewEach: true } : {}) },
     },
     steps,

@@ -326,7 +326,7 @@ export function renderAutomations() {
    computed from rules as they were, and is dropped unpublished. */
 async function refreshApprovals(seq) {
   const next = new Map();
-  for (const rule of rulesOf().filter(r => ['slack', 'agent'].includes(r.source))) {
+  for (const rule of rulesOf().filter(r => ['slack', 'agent', 'local'].includes(r.source))) {
     const key = approvalKey(rule);
     next.set(rule.id, { key, detail: await grantDetail(rule, ruleTemplate(rule)).catch(() => 'unknown') });
   }
@@ -516,7 +516,7 @@ function syncFirstSendState() {
 function syncApproval() {
   const project = activeProject();
   const template = (project?.templates || []).find(tp => tp.name === $('auto-template').value);
-  const slack = ['slack', 'agent'].includes(segGet('auto-trigger'));
+  const slack = ['slack', 'agent', 'local'].includes(segGet('auto-trigger'));
   $('auto-send-external-row').hidden = !slack || !templateCarriesMessage(template);
   $('auto-send-external').disabled = !$('auto-send').checked;
   if (!$('auto-send').checked) $('auto-send-external').checked = false;
@@ -626,9 +626,16 @@ export function openEditor(rule) {
   const clock = !rule || rule.source === 'clock';
   const channel = rule?.source === 'channel';
   const schedule = clock && rule ? rule.schedule : { unit: 'day', days: [], minute: 540 };
-  segSet('auto-trigger', channel ? 'channel' : clock ? 'clock' : rule.source === 'agent' ? 'agent' : 'slack');
+  segSet('auto-trigger', channel ? 'channel' : clock ? 'clock' : ['agent', 'local'].includes(rule.source) ? rule.source : 'slack');
   $('auto-name').value = rule ? rule.name : '';
   $('auto-badge').value = ['slack', 'agent'].includes(rule?.source) ? rule.badge : '';
+  /* a local notification rule's match (automation-model.js `localMatchFromFields`) */
+  const match = rule?.source === 'local' ? rule.localMatch : null;
+  $('auto-local-producer').value = match ? match.producer : '';
+  $('auto-local-types').value = match ? (match.types || []).join(', ') : '';
+  $('auto-local-labels').value = match ? Object.entries(match.labels || {}).map(([k, v]) => `${k}=${v}`).join(', ') : '';
+  /* off for a new rule: taking notifications without a click is the user's own choice */
+  $('auto-local-auto').checked = match ? match.auto === true : false;
   $('auto-channel-ids').value = channel ? rule.channelIds.join(', ') : '';
   $('auto-sender-users').value = channel ? rule.senderUserIds.join(', ') : '';
   $('auto-sender-bots').value = channel ? rule.senderBotIds.join(', ') : '';
@@ -658,7 +665,7 @@ export function openEditor(rule) {
   fillTargets(rule);
   $('auto-review').checked = rule?.reviewEach === true;
   segSet('auto-finish', rule ? (rule.finish === 'close' ? 'close' : 'keep') : 'close');
-  const approval = ['slack', 'agent'].includes(rule?.source) ? approvalOf(rule) : 'none';
+  const approval = ['slack', 'agent', 'local'].includes(rule?.source) ? approvalOf(rule) : 'none';
   /* an approval nothing was computed for yet is the rule's own until it is
      checked: shown as held and waiting, not as on and not as taken away */
   const unchecked = approval === 'checking' || approval === 'unknown';
@@ -669,7 +676,7 @@ export function openEditor(rule) {
   approvalNote(unchecked ? 'automation.autoSend.checking' : null);
   editing.approval = unchecked ? checkApproval(editing, rule) : null;
   editing.tick = approval === 'valid' ? tickNow(rule.autoSend) : null;
-  $('auto-first-send').checked = ['slack', 'clock', 'agent'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
+  $('auto-first-send').checked = ['slack', 'clock', 'agent', 'local'].includes(rule?.source) && rule.firstSendWithoutReadiness === true;
   $('auto-channel-first-send').checked = channel && rule.firstSend === true && !!rule.firstSendGrant;
   channelVerifyStatus(null);
   syncEditor();
@@ -730,6 +737,8 @@ function readEditor() {
     cmd: $('auto-cmd').value, dir: $('auto-dir').value,
     finish: segGet('auto-finish'), reviewEach: $('auto-review').checked,
     badge: $('auto-badge').value,
+    localProducer: $('auto-local-producer').value, localTypes: $('auto-local-types').value,
+    localLabels: $('auto-local-labels').value, localAuto: $('auto-local-auto').checked,
     ...scheduleFields(), graceMin: $('auto-grace').value,
   };
   const read = composeRule(fields, { previous, rules: allRules(), projectId: project.id, genId });
@@ -738,7 +747,7 @@ function readEditor() {
     if (read.focus) $(read.focus).focus();
     return null;
   }
-  const blocked = ['slack', 'agent'].includes(read.rule.source) && channelBlockReason(read.rule, project);
+  const blocked = ['slack', 'agent', 'local'].includes(read.rule.source) && channelBlockReason(read.rule, project);
   if (blocked) {
     toast(t(blocked === 'command' ? 'automation.invalidChannelCommand' : 'automation.invalidChannelTemplate'));
     $(blocked === 'command' ? 'auto-cmd' : 'auto-template').focus();
@@ -755,7 +764,7 @@ function readEditor() {
    withdrawn first, so it is never signed for steps the user did not see. */
 function approvalIntent(rule) {
   withdrawDrifted();
-  if (!['slack', 'agent'].includes(rule.source) || !$('auto-send').checked || !editing?.tick) return null;
+  if (!['slack', 'agent', 'local'].includes(rule.source) || !$('auto-send').checked || !editing?.tick) return null;
   const template = ruleTemplate(rule);
   if (!template) return null;
   return { template: structuredClone(template), stored: editing.tick.stored, external: $('auto-send-external').checked };
@@ -959,6 +968,7 @@ export function showNewSessionMenu(anchor) {
     menuItem('◇ ' + t('menu.autoSlack'), { run: go(() => openAutomations({ from: anchor, trigger: 'slack' })) }),
     menuItem('▤ ' + t('menu.autoChannel'), { run: go(() => openAutomations({ from: anchor, trigger: 'channel' })) }),
     menuItem('◆ ' + t('menu.autoAgent'), { run: go(() => openAutomations({ from: anchor, trigger: 'agent' })) }),
+    menuItem('✉ ' + t('menu.autoLocal'), { run: go(() => openAutomations({ from: anchor, trigger: 'local' })) }),
     document.createElement('hr'),
     menuLabel(t('menu.manageHeading')),
     menuItem('⚑ ' + t('menu.projectDefaults'), { sub: p ? projectDefaultsSummary(p) : '', run: go(() => openProjectDefaults(p && p.id, anchor)) }),

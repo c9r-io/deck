@@ -3743,6 +3743,20 @@ export async function verifyMentionsLive() {
   await runMentionsLiveSmoke();
 }
 
+// Local notifications end to end: rules through the editor, the entry
+// through its box, the operator's real deck-notify, real Claude Code cards
+// (local-notify-smoke.mjs).
+export async function verifyLocalNotify() {
+  const { runLocalNotifySmoke } = await import('./local-notify-smoke.mjs');
+  await runLocalNotifySmoke();
+}
+
+// The launch after a kill on the same root (local-notify-smoke.mjs).
+export async function verifyLocalNotifyRelaunch() {
+  const { runLocalNotifyRelaunchSmoke } = await import('./local-notify-smoke.mjs');
+  await runLocalNotifyRelaunchSmoke();
+}
+
 export async function verifyChannelLiveReplay() {
   const { runChannelLiveReplaySmoke } = await import('./channel-live-smoke.mjs');
   await runChannelLiveReplaySmoke();

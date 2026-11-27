@@ -32,6 +32,12 @@ once; past that the next request is refused `terminal-busy` at once. Reaper
 threads that cannot reap their client are counted and logged
 (`client not reaped … (reapers=N)`).
 
+The Notifications page's commands (`local_notify.rs`: `local_notifications`,
+`local_notification_dismiss`, `local_notification_route`) are
+`#[tauri::command(async)]`: they take the notification inbox's lock, which
+the socket thread holds across its atomic write (fsync) of an accepted
+notification.
+
 ## Budgets and why
 
 | Command | Budget | Basis |

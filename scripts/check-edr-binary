@@ -69,6 +69,11 @@ else
     exit 1
   fi
   targets+=("$macos/deck-mcp" "$macos/deck-mcp-runner")
+  # The local notification client (deck-notify): scanned like every
+  # sidecar when the bundle carries it; a bundle from before it has none.
+  if [ -e "$macos/deck-notify" ] || [ -L "$macos/deck-notify" ]; then
+    targets+=("$macos/deck-notify")
+  fi
   # The Pi observer: text the Pi process loads from the bundle
   # (Contents/Resources/pi, agent_pi/config.rs). The same rule as for the
   # lifecycle helper decides whether THIS bundle must carry it: the

@@ -4109,6 +4109,7 @@ fn granted_rule() -> crate::inbound::Rule {
 fn config_with(rules: Vec<crate::inbound::Rule>) -> crate::inbound::Config {
     crate::inbound::Config {
         slack_enabled: true,
+        local_enabled: false,
         rules,
     }
 }
@@ -10358,6 +10359,7 @@ fn delegated_rows_stand_on_the_worker_delegation_and_hold_for_the_human() {
     row.authority = Some(delegated.clone());
     let config = crate::inbound::Config {
         slack_enabled: false,
+        local_enabled: false,
         rules: Vec::new(),
     };
     let only_automations: HashSet<String> = ["client_a".to_string()].into();
@@ -10462,6 +10464,7 @@ fn a_worker_types_first_line_override_rests_on_the_clients_choice() {
     });
     let config = crate::inbound::Config {
         slack_enabled: false,
+        local_enabled: false,
         rules: Vec::new(),
     };
     let with_first: HashSet<String> = [
@@ -10702,6 +10705,7 @@ fn a_worker_cards_later_line_is_not_stuck_after_a_restart() {
     );
     let config = crate::inbound::Config {
         slack_enabled: false,
+        local_enabled: false,
         rules: Vec::new(),
     };
     let with_first: HashSet<String> = [
@@ -11216,6 +11220,7 @@ fn an_interjected_line_rests_on_its_orchestrator_binding() {
     let row = worker_line("b", 2, NOW - 5, Some("OA"));
     let config = crate::inbound::Config {
         slack_enabled: false,
+        local_enabled: false,
         rules: Vec::new(),
     };
     let workers: HashSet<String> = [crate::mcp::worker_delegation_key("client_a")].into();
@@ -11270,6 +11275,7 @@ fn the_pre_fire_reads_the_agent_s_word_again_for_an_interjected_line() {
     let config = || {
         Some(crate::inbound::Config {
             slack_enabled: false,
+            local_enabled: false,
             rules: Vec::new(),
         })
     };
@@ -11372,5 +11378,174 @@ fn unreadable_bindings_hold_interjected_lines_only() {
         hold_reason(&pi, Some(&observed)),
         Some(Hold::AuthorityUnverified),
         "a Pi's interjected line too"
+    );
+}
+
+// ---------- local notification rules (local_notify.rs) ----------------------
+
+/// The shared local-rule vector (`ui/test/fixtures/local-grant.json`).
+fn local_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../ui/test/fixtures/local-grant.json")).unwrap()
+}
+
+fn local_rule() -> crate::inbound::Rule {
+    serde_json::from_value(local_fixture()["rule"].clone()).unwrap()
+}
+
+/// A local rule's approval is its own trigger, over the same bounded proof
+/// as a badge rule: the digest is the webview's (one fixture pins both) and
+/// covers the match, the claim mints `TriggerClass::Local`, a Slack event
+/// is not its event, and widening the match or deleting the rule revokes
+/// it at the fence and in the sweep. Its first-send choice is
+/// `FirstSendOrigin::Local`.
+#[test]
+fn a_local_rule_s_approval_is_its_own_trigger_and_covers_its_match() {
+    let fixture = local_fixture();
+    let rule = local_rule();
+    let grant = rule.auto_send.clone().unwrap();
+    assert_eq!(
+        grant_digest(&rule, &grant),
+        grant.digest,
+        "the shared vector"
+    );
+    assert!(valid_grant(&rule).is_some());
+    let mut widened = rule.clone();
+    widened.local_match = serde_json::from_value(fixture["widened"]["localMatch"].clone()).unwrap();
+    assert!(
+        valid_grant(&widened).is_none(),
+        "a wider match voids the approval"
+    );
+    let mut manual = rule.clone();
+    manual.local_match.as_mut().unwrap().auto = false;
+    assert!(
+        valid_grant(&manual).is_none(),
+        "so does turning auto off or on"
+    );
+
+    let config = config_with(vec![rule.clone()]);
+    let steps: Vec<String> = fixture["templateSteps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| normalize_template_step(s.as_str().unwrap()))
+        .collect();
+    let event = slack_event("ln-1", &rule.badge, "local");
+    let claim = |step: u32, skeletons: Vec<Option<String>>| AuthorityClaim {
+        rule: rule.id.clone(),
+        grant: grant.digest.clone(),
+        step,
+        event: Some("ln-1".into()),
+        skeletons,
+        preset_project: None,
+    };
+    let fixed = verify_claim(
+        Some(&config),
+        &claim(0, vec![]),
+        &rule.cmd,
+        &normalize_prompt(&steps[0]),
+        false,
+        Proof {
+            skeleton: None,
+            event: Some(&event),
+            client: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(fixed.trigger, TriggerClass::Local);
+    assert_eq!(fixed.delegation, None);
+    let expanded = normalize_prompt(&expand_bounded(&steps[1], &event));
+    let bounded = |event: &crate::inbound::Event| {
+        verify_claim(
+            Some(&config),
+            &claim(1, vec![Some(steps[1].clone())]),
+            &rule.cmd,
+            &expanded,
+            false,
+            Proof {
+                skeleton: Some(&steps[1]),
+                event: Some(event),
+                client: None,
+            },
+        )
+    };
+    assert_eq!(bounded(&event).unwrap().class, ContentClass::Bounded);
+    assert_eq!(
+        bounded(&slack_event("ln-1", &rule.badge, "slack")),
+        Err("event"),
+        "a Slack event never stands in for a local one"
+    );
+    // a verbatim external text is never approved content
+    assert_eq!(
+        verify_claim(
+            Some(&config),
+            &claim(0, vec![]),
+            &rule.cmd,
+            &normalize_prompt(&steps[0]),
+            true,
+            Proof::default()
+        ),
+        Err("verbatim")
+    );
+
+    let row = external_step("l", Some(fixed.clone()));
+    assert_eq!(fence(&row, (&config).into()), Fence::Clear);
+    // the settings right after the match was widened in place: the stored
+    // digest is the old rule's
+    let widened_config = config_with(vec![widened]);
+    assert_eq!(fence(&row, (&widened_config).into()), Fence::Revoked);
+    assert_eq!(
+        fence(&row, first_send::Sources::default()),
+        Fence::Unverified
+    );
+    let mut q = qs(vec![row]);
+    assert_eq!(revoke_stale(&mut q, &config_with(vec![])), 1);
+    assert!(q.items[0].authority.is_none());
+
+    // the first-send choice: its own origin, the local event only
+    let mut first = rule.clone();
+    first.first_send_without_readiness = true;
+    let config = config_with(vec![first]);
+    let fs = FirstSendClaim {
+        rule: rule.id.clone(),
+        event: "ln-1".into(),
+        preset_project: None,
+    };
+    let ok = first_send::verify(
+        Some(&config),
+        &fs,
+        &rule.cmd,
+        "at",
+        false,
+        Some(&event),
+        None,
+    )
+    .unwrap();
+    assert_eq!(ok.trigger, first_send::FirstSendOrigin::Local);
+    let slack = slack_event("ln-1", &rule.badge, "slack");
+    assert_eq!(
+        first_send::verify(
+            Some(&config),
+            &fs,
+            &rule.cmd,
+            "at",
+            false,
+            Some(&slack),
+            None
+        ),
+        Err("event")
+    );
+    let mut disabled = config.clone();
+    disabled.rules[0].enabled = false;
+    assert_eq!(
+        first_send::verify(
+            Some(&disabled),
+            &fs,
+            &rule.cmd,
+            "at",
+            false,
+            Some(&event),
+            None
+        ),
+        Err("trigger")
     );
 }

@@ -118,9 +118,33 @@ use std::sync::Mutex;
 // trigger word); v10 protects a worker card's delegated queue rows (queue
 // only); v11 protects a clock rule's one-time schedule (settings only); v12
 // protects an Agent's note in a card's scratchpad (deck.json only); v13
-// protects an interjected worker line (queue only).
+// protects an interjected worker line (queue only); v14 protects a local
+// notification rule or switch (settings.json) and the queue origins it
+// admits (a row's or a delivery's authority or override with the local
+// trigger word).
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 13;
+pub const SCHEMA_VERSION: u64 = 14;
+
+// v14: local notifications (`local_notify.rs`). A v13 reader's settings
+// validation refuses the unknown source word — in a rule or as
+// `sources.local` — which would quarantine the file, and its queue decodes
+// the closed `local` trigger as damage. Refuse both files untouched instead.
+fn uses_local_source(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("source").and_then(|v| v.as_str()) == Some("local")
+                || o.get("sources")
+                    .and_then(|v| v.as_object())
+                    .is_some_and(|sources| sources.contains_key("local"))
+                || ["readiness_override", "authority"]
+                    .iter()
+                    .any(|key| o.get(*key).is_some_and(|v| v["trigger"] == "local"))
+                || o.values().any(uses_local_source)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_local_source),
+        _ => false,
+    }
+}
 
 // v13: an interjected worker line (`scheduler::QueueItem.interject`,
 // `deck_worker_interject`). A v12 reader ignores the marker: it would send
@@ -880,7 +904,11 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if name == "queue.json" && uses_worker_interject(&data) {
+    let feature_version = if matches!(name.as_ref(), "queue.json" | "settings.json")
+        && uses_local_source(&data)
+    {
+        14
+    } else if name == "queue.json" && uses_worker_interject(&data) {
         13
     } else if name == "deck.json" && uses_agent_note(&data) {
         12
@@ -2583,6 +2611,60 @@ mod agent_trigger_version_tests {
         save_typed::<serde_json::Value>(&p, &board("agent").to_string()).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert!(raw["schema_version"].as_u64().unwrap() < 12);
+    }
+
+    /// v14 on settings.json (a local rule, or the local switch in any
+    /// state) and queue.json (a row or record with the local trigger), sticky
+    /// and refused by a v13 reader; deck.json keeps its own version.
+    #[test]
+    fn local_notification_documents_upgrade_to_sticky_v14_only_when_used() {
+        let dir = TestDir::new("local-source-version");
+        let settings = |source: &str| serde_json::json!({"inbound":{"rules":[{"id":"g1","source":source,"badge":"g1","projectId":"P1","columnId":"C1","cmd":"claude","template":"t"}]}});
+        let queue = |trigger: &str| serde_json::json!({"items":[{"id":"q1","authority":{"rule":"g1","grant":"a","step":0,"class":"fixed","trigger":trigger}}]});
+        for (name, plain, used) in [
+            ("settings.json", settings("slack"), settings("local")),
+            (
+                "settings.json",
+                serde_json::json!({"inbound":{"sources":{"slack":{"enabled":true}}}}),
+                serde_json::json!({"inbound":{"sources":{"local":{"enabled":false}}}}),
+            ),
+            ("queue.json", queue("slack-badge"), queue("local")),
+            (
+                "queue.json",
+                serde_json::json!({"items":[{"id":"q1","readiness_override":{"rule":"g1","trigger":"clock"}}]}),
+                serde_json::json!({"items":[{"id":"q1","readiness_override":{"rule":"g1","trigger":"local"}}]}),
+            ),
+        ] {
+            let case = dir.join(format!("{name}-{}", used.to_string().len()));
+            std::fs::create_dir_all(&case).unwrap();
+            let p = case.join(name);
+            save_typed::<serde_json::Value>(&p, &plain.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert!(raw["schema_version"].as_u64().unwrap() < 14, "{name}");
+            save_typed::<serde_json::Value>(&p, &used.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 14, "{name}");
+            assert!(
+                envelope_payload_for(&raw, 13).is_err(),
+                "{name}: a v13 reader refuses it"
+            );
+            save_typed::<serde_json::Value>(&p, &plain.to_string()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            assert_eq!(raw["schema_version"], 14, "{name}: sticky");
+        }
+        let p = dir.join("deck.json");
+        save_typed::<serde_json::Value>(
+            &p,
+            &serde_json::json!({"cards":[{"id":"S1","origin":{"source":"local","key":"ln-1","badge":"g1"},
+                "inboundPlan":{"operationId":"B1","initialSteps":[],"initialQueued":true,"authority":{"trigger":"local"}}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 14);
     }
 
     /// v9 on settings.json and queue.json only; deck.json keeps its own

@@ -350,7 +350,8 @@ test('the clock first-send fixture is what the dispatcher persists and queues', 
     for (const source of [...INBOUND_SOURCES, 'channel', 'connector']) {
       const listed = fixture.firstSendSources.includes(source);
       assert.equal(withFirstSend({ source }, true).firstSendWithoutReadiness === true, listed, source);
-      const saved = normalizeInbound({ rules: [source === 'clock' ? fixture.runs.plain.rule : { ...slack, source }] }).rules[0];
+      const saved = normalizeInbound({ rules: [source === 'clock' ? fixture.runs.plain.rule
+        : { ...slack, source, ...(source === 'local' ? { badge: slack.id, localMatch: { producer: 'ci' } } : {}) }] }).rules[0];
       assert.equal(saved?.firstSendWithoutReadiness === true, listed, `${source}: kept by the settings reader`);
     }
   } finally {

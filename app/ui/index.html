@@ -21,6 +21,7 @@
       <span class="label" data-i18n="app.board">Board</span>
     </button>
     <button class="side-home" id="attention-btn" type="button"><span aria-hidden="true">◇</span><span class="label" data-i18n="attention.title">Needs attention</span><span id="attention-count"></span></button>
+    <button class="side-home" id="notices-btn" type="button"><span aria-hidden="true">✉</span><span class="label" data-i18n="notices.title">Notifications</span><span id="notices-count"></span></button>
     <button class="side-home" id="mentions-btn" type="button" hidden><span aria-hidden="true">@</span><span class="label" data-i18n="mentions.title">Slack mentions</span><span id="mentions-count"></span></button>
     <div class="side-group"><span data-i18n="app.sessions">Sessions</span><span id="side-count"></span></div>
     <div class="side-list" id="side-list"></div>
@@ -75,7 +76,7 @@
         </details>
         <div id="auto-list"></div>
         <div id="auto-editor" hidden>
-          <div class="set-row q-p q-p-clock q-p-slack q-p-agent">
+          <div class="set-row q-p q-p-clock q-p-slack q-p-agent q-p-local">
             <label for="auto-name" data-i18n="automation.name">Name</label>
             <input id="auto-name" autocomplete="off" spellcheck="false" maxlength="120" placeholder="morning tests" data-i18n-placeholder="automation.namePlaceholder">
           </div>
@@ -87,6 +88,7 @@
               <button type="button" data-v="slack" aria-pressed="false" data-i18n="automation.trigger.slack">Slack badge</button>
               <button type="button" data-v="channel" aria-pressed="false" data-i18n="automation.trigger.channel">Slack channel</button>
               <button type="button" data-v="agent" aria-pressed="false" data-i18n="automation.trigger.agent">Agent handover</button>
+              <button type="button" data-v="local" aria-pressed="false" data-i18n="automation.trigger.local">Local notification</button>
             </div>
           </div>
           <div class="set-row q-p q-p-slack q-p-agent">
@@ -95,6 +97,14 @@
           </div>
           <div class="set-hint auto-editor-hint q-p q-p-slack" id="auto-slack-state"></div>
           <div class="set-hint auto-editor-hint q-p q-p-agent" id="auto-agent-hint" data-i18n="automation.agentHint">An MCP client you delegated under Settings → MCP names this id and hands over one classified item. Deck creates a fresh card and sends this rule's template with the item filled in, under the choices below; the client never types into a session.</div>
+          <div class="q-p q-p-local auto-channel-fields">
+            <div class="set-row"><label for="auto-local-producer" data-i18n="automation.local.producer">Producer</label><input id="auto-local-producer" autocomplete="off" spellcheck="false" maxlength="65" placeholder="ci-monitor"></div>
+            <div class="set-row"><label for="auto-local-types" data-i18n="automation.local.types">Types</label><input id="auto-local-types" autocomplete="off" spellcheck="false" placeholder="build.failed, deploy.*" data-i18n-placeholder="automation.local.typesPlaceholder"></div>
+            <div class="set-row"><label for="auto-local-labels" data-i18n="automation.local.labels">Labels</label><input id="auto-local-labels" autocomplete="off" spellcheck="false" placeholder="project=deck, env=prod"></div>
+            <div class="set-hint" data-i18n="automation.local.matchHint">A producer, and optionally types and labels; a value ending in * matches by prefix, * alone matches anything. Producers name themselves: a name is not proof of which program sent it.</div>
+            <label class="q-review-option"><input type="checkbox" id="auto-local-auto" aria-describedby="auto-local-auto-hint"><span data-i18n="automation.local.auto">Handle matching local notifications automatically</span></label>
+            <p class="q-hint opt-note" id="auto-local-auto-hint" data-i18n="automation.local.autoHint">Starts a card for each matching notification Deck receives from now on, without a click; ones received earlier stay in Notifications for you. Off: this rule is only a choice in a notification's Route menu. The first rule in the list that matches takes a notification, once.</p>
+          </div>
           <div class="q-p q-p-channel auto-channel-fields">
             <div class="set-row"><label for="auto-channel-ids" data-i18n="automation.channelIds">Channel IDs</label><input id="auto-channel-ids" autocomplete="off" spellcheck="false" placeholder="C0123, G0456"></div>
             <div class="set-row"><label for="auto-sender-users" data-i18n="automation.senderUsers">Allowed user IDs</label><input id="auto-sender-users" autocomplete="off" spellcheck="false" placeholder="U0123, W0456"></div>
@@ -151,21 +161,22 @@
             <button class="btn" id="auto-tpl-manage" type="button" data-i18n="automation.manageTemplates">Templates…</button>
           </div>
           <h3 class="auto-section" data-i18n="automation.section.send">Sending and inspection</h3>
-          <label class="q-review-option q-p q-p-slack q-p-agent"><input type="checkbox" id="auto-send" aria-describedby="auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
+          <label class="q-review-option q-p q-p-slack q-p-agent q-p-local"><input type="checkbox" id="auto-send" aria-describedby="auto-send-hint"><span data-i18n="automation.autoSend.option">Automatically continue approved follow-up steps</span></label>
           <p class="q-hint opt-note" id="auto-send-check" role="status" hidden></p>
+          <p class="q-hint opt-note q-p q-p-local" id="auto-send-hint-local" data-i18n="automation.autoSend.hintLocal">A matching notification starts the run and its first step (with this rule's automatic handling on, or your Route click). With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. Editing the rule, its match or its template turns this off until you approve again.</p>
           <p class="q-hint opt-note q-p q-p-slack q-p-agent" id="auto-send-hint" data-i18n="automation.autoSend.hint">Your reaction approves the run and its first step for that message. The text is read when Deck handles the reaction, so an edit made after you reacted may be what gets sent. With this on, the later steps of this version of the template continue once the agent is safely ready, without a Send now for each. Editing the rule or its template turns this off until you approve again.</p>
-          <details class="set-details opt-note q-p q-p-slack q-p-agent">
+          <details class="set-details opt-note q-p q-p-slack q-p-agent q-p-local">
             <summary data-i18n="automation.autoSend.scope">What this approval covers</summary>
             <ul class="help-list">
               <li data-i18n="automation.autoSend.scope.pauses">An agent asking for input or permission, and inspection checkpoints, still pause the automation; this approval never answers them for you.</li>
               <li data-i18n="automation.autoSend.scope.first">The first step is not covered: how it reaches a newly started agent is decided by the separate first-step option.</li>
             </ul>
           </details>
-          <label class="q-review-option opt-note q-p q-p-slack q-p-agent" id="auto-send-external-row"><input type="checkbox" id="auto-send-external"><span data-i18n="automation.autoSend.external">Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.</span></label>
-          <label class="q-review-option q-p q-p-slack q-p-clock q-p-agent"><input type="checkbox" id="auto-first-send" aria-describedby="auto-first-send-hint auto-first-send-state"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
-          <p class="q-hint opt-note opt-risk q-p q-p-slack q-p-clock q-p-agent" id="auto-first-send-hint" data-i18n="automation.firstSend.hint">With this on, Deck starts the agent and sends the first step after a short compatibility wait; later runs no longer wait for you. The wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Works with Claude, or Codex with --no-daemon.</p>
-          <p class="q-hint opt-note opt-state q-p q-p-slack q-p-clock q-p-agent" id="auto-first-send-state" role="status"></p>
-          <details class="set-details opt-note q-p q-p-slack q-p-clock q-p-agent">
+          <label class="q-review-option opt-note q-p q-p-slack q-p-agent q-p-local" id="auto-send-external-row"><input type="checkbox" id="auto-send-external"><span data-i18n="automation.autoSend.external">Also send steps that contain Slack message content. External messages are untrusted input and may influence the agent.</span></label>
+          <label class="q-review-option q-p q-p-slack q-p-clock q-p-agent q-p-local"><input type="checkbox" id="auto-first-send" aria-describedby="auto-first-send-hint auto-first-send-state"><span data-i18n="automation.firstSend.option">Send the first step to a newly started agent without waiting for readiness</span></label>
+          <p class="q-hint opt-note opt-risk q-p q-p-slack q-p-clock q-p-agent q-p-local" id="auto-first-send-hint" data-i18n="automation.firstSend.hint">With this on, Deck starts the agent and sends the first step after a short compatibility wait; later runs no longer wait for you. The wait is not readiness proof: a Trust, Update, sign-in, permission or other startup dialog may receive the text and Enter. Works with Claude, or Codex with --no-daemon.</p>
+          <p class="q-hint opt-note opt-state q-p q-p-slack q-p-clock q-p-agent q-p-local" id="auto-first-send-state" role="status"></p>
+          <details class="set-details opt-note q-p q-p-slack q-p-clock q-p-agent q-p-local">
             <summary data-i18n="automation.firstSend.kept">Checks that still apply</summary>
             <p data-i18n="automation.firstSend.kept.body">Real blocking conditions and configured inspection checkpoints still apply, and later steps keep their normal checks. This option covers only a newly started agent’s first step; Deck starts the agent with no prompt bytes.</p>
           </details>
@@ -178,10 +189,10 @@
             <li data-i18n="automation.channelFirstSend.fact.excludes">Not included: Agent tool permissions, or automatic sending of later template steps.</li>
             <li data-i18n="automation.channelFirstSend.fact.revoke">After turning it off: only unsent first steps covered by this permission are stopped; Agents keep running and typed text is not retracted.</li>
           </ul>
-          <label class="q-review-option q-p q-p-clock q-p-slack q-p-agent"><input type="checkbox" id="auto-review" aria-describedby="auto-review-hint"><span data-i18n="queue.review.option">Inspect after every sent step, including the last</span></label>
-          <p class="q-hint opt-note q-p q-p-clock q-p-slack q-p-agent" id="auto-review-hint" data-i18n="automation.review.hint">Applies to runs created from now on, not to existing cards.</p>
-          <h3 class="auto-section q-p q-p-clock q-p-slack q-p-agent" data-i18n="automation.section.card">Keeping the card</h3>
-          <div class="set-row q-p q-p-clock q-p-slack q-p-agent">
+          <label class="q-review-option q-p q-p-clock q-p-slack q-p-agent q-p-local"><input type="checkbox" id="auto-review" aria-describedby="auto-review-hint"><span data-i18n="queue.review.option">Inspect after every sent step, including the last</span></label>
+          <p class="q-hint opt-note q-p q-p-clock q-p-slack q-p-agent q-p-local" id="auto-review-hint" data-i18n="automation.review.hint">Applies to runs created from now on, not to existing cards.</p>
+          <h3 class="auto-section q-p q-p-clock q-p-slack q-p-agent q-p-local" data-i18n="automation.section.card">Keeping the card</h3>
+          <div class="set-row q-p q-p-clock q-p-slack q-p-agent q-p-local">
             <label data-i18n="automation.finish">When done</label>
             <div class="seg" id="auto-finish" role="radiogroup" aria-label="When done" data-i18n-aria-label="automation.finish">
               <button type="button" data-v="close" aria-pressed="true" data-i18n="automation.finish.close">close the card</button>
@@ -215,6 +226,22 @@
       <div class="mentions-panes">
         <div id="mentions-list" role="listbox" tabindex="0" data-i18n-aria-label="mentions.listLabel" aria-label="Mentions"></div>
         <section id="mentions-detail" aria-live="polite"></section>
+      </div>
+    </section>
+    <section id="notices-view" aria-labelledby="notices-title" hidden>
+      <div class="attention-head"><h1 id="notices-title" tabindex="-1" data-i18n="notices.title">Notifications</h1><div class="mentions-head-actions"><button class="btn" id="notices-back" type="button"></button></div></div>
+      <p class="attention-hint" data-i18n="notices.hint">Notifications from programs on this Mac and your Slack mentions, in one place. Deck shows them and routes them through your automations; it never answers the program or Slack.</p>
+      <div class="notices-intake">
+        <label class="q-review-option"><input type="checkbox" id="notices-accept" aria-describedby="notices-intake-status"><span data-i18n="notices.accept">Accept local notifications from programs on this Mac</span></label>
+        <p class="mentions-status" id="notices-intake-status" role="status"></p>
+        <div class="notices-cli" id="notices-cli" hidden><span data-i18n="notices.cli">Command</span><code id="notices-cli-path"></code><button class="btn" id="notices-cli-copy" type="button" data-i18n="notices.copyPath">Copy path</button></div>
+        <p class="mentions-status" id="notices-recent"></p>
+      </div>
+      <div class="mentions-bar"><div class="seg" id="notices-filter" role="radiogroup" aria-label="Source" data-i18n-aria-label="notices.filter"></div></div>
+      <p class="mentions-no-routes" id="notices-no-routes" data-i18n="notices.noRoutes" hidden>No local notification automation yet. Add one in a project's Automations drawer (trigger: Local notification) to route these.</p>
+      <div class="mentions-panes">
+        <div id="notices-list" role="listbox" tabindex="0" data-i18n-aria-label="notices.listLabel" aria-label="Notifications"></div>
+        <section id="notices-detail" aria-live="polite"></section>
       </div>
     </section>
     <section id="attention-view" aria-labelledby="attention-title" hidden>

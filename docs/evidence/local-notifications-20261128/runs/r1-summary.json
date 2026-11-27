@@ -1,0 +1,266 @@
+{
+ "run": "vee3c322a",
+ "host": "air2",
+ "mode": "local-notify",
+ "head": "1941820a",
+ "dirtyFiles": 55,
+ "verdict": "FAIL (exit 1)",
+ "verdictDetail": [
+  "smoke-verdict local-notify: FAIL (14/19 expected checkpoints, 19 lines)",
+  "  FAIL local-want: a=1,2,3 (expected 1,2,3,4,5)",
+  "  FAIL local-frozen: a=-2",
+  "  FAIL local-unacked: missing",
+  "  FAIL local-held: missing",
+  "  FAIL done: a=-1 b=0"
+ ],
+ "checks": [
+  "smoke-check local-clean a=1 b=0\n",
+  "smoke-check local-rules a=2 b=0\n",
+  "smoke-check local-accept a=1 b=0\n",
+  "smoke-check local-armed a=1 b=0\n",
+  "smoke-check local-want a=1 b=0\n",
+  "smoke-check local-unmatched a=4 b=0\n",
+  "smoke-check local-auto-card a=2 b=0\n",
+  "smoke-check local-auto-first a=1 b=0\n",
+  "smoke-check local-auto-chain a=1 b=0\n",
+  "smoke-check local-manual a=1 b=0\n",
+  "smoke-check local-taken a=2 b=0\n",
+  "smoke-check local-want a=2 b=0\n",
+  "smoke-check local-frozen a=-2 b=41\n",
+  "smoke-check local-reoccur a=1 b=0\n",
+  "smoke-check local-revoked a=2 b=0\n",
+  "smoke-check local-deleted a=1 b=0\n",
+  "smoke-check local-disabled a=1 b=0\n",
+  "smoke-check local-want a=3 b=0\n",
+  "smoke-check done a=-1 b=0\n"
+ ],
+ "cli": {
+  "accepted": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "duplicate": {
+   "exit": 0,
+   "status": "duplicate",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "conflict": {
+   "exit": 4,
+   "status": "error",
+   "code": "CONFLICT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "unknownField": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "version2": {
+   "exit": 3,
+   "status": "error",
+   "code": "UNSUPPORTED_VERSION",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "badJson": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "tooLarge": {
+   "exit": 3,
+   "status": "error",
+   "code": "TOO_LARGE",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "slackImpersonation": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "status": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "statusMissing": {
+   "exit": 1,
+   "status": "not-found",
+   "code": null,
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "hello2": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "hello3": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "ciFail1": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "ciFail1Retry": {
+   "exit": 0,
+   "status": "duplicate",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "ciFail2": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "late": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": false,
+   "reason": "stale-revision",
+   "routing": "done"
+  },
+  "statusRouted": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "ciPass3": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "ciFail4": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "disabled": {
+   "exit": 5,
+   "status": "error",
+   "code": "UNAVAILABLE",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  }
+ },
+ "socketMode": "600 owner\n700 owner",
+ "inboxMode": "600",
+ "socketAfterOff": "absent",
+ "inbox": [
+  [
+   "misc-tool",
+   "hello-1",
+   0,
+   1,
+   "active",
+   [
+    [
+     "manual",
+     "done",
+     null
+    ]
+   ]
+  ],
+  [
+   "misc-tool",
+   "hello-2",
+   0,
+   1,
+   "active",
+   [
+    [
+     "manual",
+     "done",
+     null
+    ]
+   ]
+  ],
+  [
+   "misc-tool",
+   "hello-3",
+   0,
+   1,
+   "active",
+   []
+  ],
+  [
+   "ci-example",
+   "build-1842",
+   41,
+   2,
+   "active",
+   [
+    [
+     "auto",
+     "done",
+     null
+    ],
+    [
+     "auto",
+     "done",
+     null
+    ]
+   ]
+  ]
+ ],
+ "claudeMarkers": {
+  "step1": 1,
+  "step2": 2,
+  "attempt4Sent": 0
+ },
+ "machineSame": true,
+ "note": "r1 ran the page script before the local-frozen fix; superseded by r2"
+}

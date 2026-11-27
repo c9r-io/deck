@@ -187,6 +187,20 @@
 //!   that was withdrawn before it. A row never regains authority here
 //!   either. The trigger word and the client field are closed persisted
 //!   words: queue.json takes sticky v9 for them (`storage.rs`).
+//! - A local notification rule (`TriggerClass::Local`, `local_notify.rs`):
+//!   the same content-addressed grant and bounded proof as a badge rule,
+//!   over the dispatcher's own copy of the claimed notification
+//!   (`inbound::pending_event`, source `local`). What replaces the per-message
+//!   reaction is the claim: the user's Route click on that notification, or
+//!   the rule's own "handle automatically" choice, which the grant covers —
+//!   `grant_digest` appends the rule's match (producer, types, labels, auto)
+//!   so widening what the rule takes BY ITSELF, or turning `auto` on, voids
+//!   it. A click may route one notification to any enabled local rule,
+//!   whether or not its match fits: that is the user's own act on that one
+//!   notification, as routing a Slack mention to any badge rule is. It is
+//!   backed by settings alone and revoked like a badge rule's. Being local is
+//!   never content authority: a producer names itself, and its rows stay
+//!   external. queue.json takes sticky v14 for the word (`storage.rs`).
 
 use serde::{Deserialize, Serialize};
 
@@ -241,6 +255,9 @@ pub(crate) enum TriggerClass {
     /// an Agent rule's approval, admitted for an item a delegated MCP
     /// client handed over (`agent` names the client)
     Agent,
+    /// a local notification rule's approval, admitted for a notification
+    /// the rule or the user's click claimed (`local_notify.rs`)
+    Local,
 }
 
 /// The delegated client whose item an Agent rule's run was made from.
@@ -323,7 +340,7 @@ fn finish_word(rule: &Rule) -> &'static str {
 /// SHA-256 of the canonical authority manifest (module header). The
 /// webview's `grantDigest` builds the identical compact JSON array.
 pub(crate) fn grant_digest(rule: &Rule, grant: &AutoSend) -> String {
-    let manifest = serde_json::json!([
+    let mut manifest = serde_json::json!([
         "deck-automation-grant",
         1,
         rule.id,
@@ -339,6 +356,18 @@ pub(crate) fn grant_digest(rule: &Rule, grant: &AutoSend) -> String {
         grant.classes,
         grant.external,
     ]);
+    // a local rule's match is part of what the approval covers: widening
+    // which notifications it takes, or turning `auto` on, needs a fresh one
+    if let (Some(m), Some(list)) = (rule.local_match.as_ref(), manifest.as_array_mut()) {
+        let labels: Vec<[&String; 2]> = m.labels.iter().map(|(k, v)| [k, v]).collect();
+        list.push(serde_json::json!([
+            "local-match",
+            m.producer,
+            m.types,
+            labels,
+            m.auto
+        ]));
+    }
     crate::ledger::sha(manifest.to_string().as_bytes())
 }
 
@@ -346,8 +375,9 @@ pub(crate) fn grant_digest(rule: &Rule, grant: &AutoSend) -> String {
 /// matches the rule (an approval for another version of the rule is void).
 pub(crate) fn valid_grant(rule: &Rule) -> Option<&AutoSend> {
     let grant = rule.auto_send.as_ref()?;
-    (matches!(rule.source.as_str(), "slack" | "agent") && grant.digest == grant_digest(rule, grant))
-        .then_some(grant)
+    (matches!(rule.source.as_str(), "slack" | "agent" | "local")
+        && grant.digest == grant_digest(rule, grant))
+    .then_some(grant)
 }
 
 /// Why a claim was not admitted: closed codes for the log.
@@ -436,6 +466,8 @@ pub(crate) fn verify_claim(
         class,
         trigger: if agent.is_some() {
             TriggerClass::Agent
+        } else if rule.source == "local" {
+            TriggerClass::Local
         } else {
             TriggerClass::SlackBadge
         },
@@ -693,7 +725,9 @@ pub(crate) enum Fence {
 /// Which document backs an approval (`first_send::Backing`).
 pub(crate) fn backing(authority: &StepAuthority) -> first_send::Backing {
     match authority.trigger {
-        TriggerClass::SlackBadge | TriggerClass::Agent => first_send::Backing::Settings,
+        TriggerClass::SlackBadge | TriggerClass::Agent | TriggerClass::Local => {
+            first_send::Backing::Settings
+        }
         TriggerClass::Connector => first_send::Backing::Board,
     }
 }

@@ -127,7 +127,7 @@
 //!    bootstrap (`commands::restore_start_args` pins the positive shape).
 //! 6. the disabled-by-default Connector owns the only production TCP bind,
 //!    and its enable path must call the private/local IPv4 validator first;
-//!    every Unix listener bind is a reviewed file and function — two in the
+//!    every Unix listener bind is a reviewed file and function — three in the
 //!    app, one in the MCP runner — and nothing binds a UDP or Unix datagram
 //!    socket or calls the `libc` socket functions directly;
 //! 7. updates are installed by deck, never by the plugin (no
@@ -787,6 +787,7 @@ fn connector_owns_the_only_production_tcp_listener() {
         "mcp-runner/src/main.rs",
         "status-helper/src/main.rs",
         "lifecycle-helper/src/main.rs",
+        "notify-cli/src/main.rs",
     ] {
         let source = std::fs::read_to_string(manifest(sidecar)).unwrap();
         assert_eq!(
@@ -833,6 +834,11 @@ const UNIX_LISTENERS: &[(&str, &str, &str)] = &[
         "mcp/control.rs",
         "bind_private_socket",
         "the MCP control socket the bundled adapter connects to",
+    ),
+    (
+        "local_notify.rs",
+        "bind_notify_socket",
+        "the local notification socket the bundled deck-notify connects to",
     ),
 ];
 const SIDECAR_UNIX_LISTENERS: &[(&str, &str, &str)] = &[(
@@ -908,6 +914,7 @@ fn local_sockets_are_a_reviewed_list_and_nothing_binds_a_datagram() {
         "mcp-runner/src/main.rs",
         "status-helper/src/main.rs",
         "lifecycle-helper/src/main.rs",
+        "notify-cli/src/main.rs",
     ] {
         let source = std::fs::read_to_string(manifest(sidecar)).unwrap();
         check(sidecar, production_region(&source), SIDECAR_UNIX_LISTENERS);

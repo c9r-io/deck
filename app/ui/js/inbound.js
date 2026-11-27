@@ -21,6 +21,9 @@
 // created run's ack carries the card id so the backend's run ledger can be
 // closed later by `inbound_run_ended`. A badge item's ack carries the card
 // id too, so a badge-started run is finished (and listed) like a clock one.
+// A local notification (local_notify.rs) is a badge item in all of this:
+// its text is a program's, external like a Slack message; its rule's
+// approval is `trigger: 'local'`; its skip reason goes back to the inbox.
 // A badge item's text is someone else's Slack message, so it passes the
 // channel admission (`channelBlockReason`, acked `blocked` before any card
 // exists) and is queued through the native agent-only gate
@@ -222,7 +225,7 @@ async function ack(id, outcome, code, extra = {}) {
    template step became one queued step (so step k is template step k) */
 async function frozenApproval(item, plan) {
   const rule = item.rule;
-  if (!['slack', 'agent'].includes(rule?.source) || !rule.autoSend) return null;
+  if (!['slack', 'agent', 'local'].includes(rule?.source) || !rule.autoSend) return null;
   const project = store.projects.find(value => value.id === rule.projectId);
   const template = (project?.templates || []).find(value => value.name === plan.template);
   if (!template || template.steps.length !== plan.steps.length) return null;
@@ -231,21 +234,25 @@ async function frozenApproval(item, plan) {
      each such step's approved skeleton; the backend re-expands the skeleton
      over its own copy of the event and compares bytes */
   const skeletons = rule.autoSend.classes.map((cls, k) => (cls === 'bounded' ? normalizeTemplateStep(template.steps[k]) : null));
-  return { rule: rule.id, grant: rule.autoSend.digest, trigger: rule.source === 'agent' ? 'agent' : 'slack-badge',
+  return { rule: rule.id, grant: rule.autoSend.digest,
+    trigger: rule.source === 'agent' ? 'agent' : rule.source === 'local' ? 'local' : 'slack-badge',
     classes: [...rule.autoSend.classes], event: item.event.key, skeletons };
 }
 
 const ruleLabel = item => (item.event.source === 'clock' ? (item.rule.name || item.rule.id)
-  : item.event.source === 'agent' ? (item.rule.name || item.event.badge) : `:${item.event.badge}:`);
+  : item.event.source === 'agent' ? (item.rule.name || item.event.badge)
+    : item.event.source === 'local' ? (item.rule.name || item.rule.localMatch?.producer || item.event.badge) : `:${item.event.badge}:`);
 
 async function handleInbound(item) {
   const plan = planInbound(item, { cards: store.cards, projects: store.projects, home: ctx.HOME });
   const badge = item.event.badge;
   const clock = item.event.source === 'clock';
   const agent = item.event.source === 'agent';
-  /* a clock slot and an Agent item record why they were skipped (the
-     drawer's history, the client's operation); a badge records nothing */
-  const skip = reason => ack(item.id, 'skipped', reason, clock || agent ? { reason } : {});
+  const local = item.event.source === 'local';
+  /* a clock slot, an Agent item and a local notification record why they
+     were skipped (the drawer's history, the client's operation, the
+     notification's routing); a badge records nothing */
+  const skip = reason => ack(item.id, 'skipped', reason, clock || agent || local ? { reason } : {});
   /* the dispatcher says the rule or its template is no longer the
      revision the client was promised: no card under another version */
   if (item.blocked) {
@@ -272,12 +279,12 @@ async function handleInbound(item) {
      applies (an agent command, no line led by a placeholder) */
   const blocked = !clock && channelBlockReason(item.rule, store.projects.find(p => p.id === item.rule.projectId));
   if (blocked) {
-    toast(t(blocked === 'command' ? 'inbound.blockedCommand' : 'inbound.blockedTemplate', { badge }));
+    toast(t(blocked === 'command' ? 'inbound.blockedCommand' : 'inbound.blockedTemplate', { badge: local ? ruleLabel(item) : badge }));
     return skip('blocked');
   }
   const now = Math.floor(Date.now() / 1000);
   const authority = clock ? null : await frozenApproval(item, plan);
-  const firstSend = ['clock', 'slack', 'agent'].includes(item.rule?.source) && item.rule.firstSendWithoutReadiness === true
+  const firstSend = ['clock', 'slack', 'agent', 'local'].includes(item.rule?.source) && item.rule.firstSendWithoutReadiness === true
     ? { rule: item.rule.id } : null;
   const cardId = genId('S');
   const operationId = await channelDigestId('B', `${cardId}/list`);
@@ -299,12 +306,14 @@ async function handleInbound(item) {
       ...(plan.followUps.length ? { followUps: plan.followUps } : {}),
     } });
   } catch (e) {
-    toast(t('inbound.createFailed', { badge }));
+    toast(t('inbound.createFailed', { badge: local ? ruleLabel(item) : badge }));
     uev('inbound', 'create-fail');
     return;   // stays pending; the backend announces it again
   }
   if (!(await reconcileInboundCard(card))) return;
-  toast(clock ? t('automation.created', { name: card.title }) : t('inbound.created', { badge, where: item.event.where }));
+  toast(clock ? t('automation.created', { name: card.title })
+    : local ? t('inbound.createdLocal', { rule: ruleLabel(item), title: card.title })
+      : t('inbound.created', { badge, where: item.event.where }));
   await ack(item.id, 'done', 'created', { card: card.id });
   if (clock) await recordOnceRun(item.rule.id);
 }

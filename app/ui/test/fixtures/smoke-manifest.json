@@ -317,6 +317,40 @@
         "live-authority": {"a": 1, "b": 2}
       }
     },
+    "local-notify": {
+      "terminal": "done",
+      "checks": {
+        "local-clean": {},
+        "local-rules": {},
+        "local-accept": {},
+        "local-armed": {},
+        "local-want": {"a": [1, 2, 3, 4, 5]},
+        "local-unmatched": {},
+        "local-auto-card": {},
+        "local-auto-first": {},
+        "local-auto-chain": {},
+        "local-manual": {},
+        "local-taken": {},
+        "local-frozen": {},
+        "local-reoccur": {},
+        "local-revoked": {},
+        "local-deleted": {},
+        "local-disabled": {},
+        "local-unacked": {},
+        "local-held": {},
+        "local-exception": {"failureOnly": true}
+      }
+    },
+    "local-notify-relaunch": {
+      "terminal": "done",
+      "checks": {
+        "relaunch-kept": {},
+        "relaunch-acked": {},
+        "relaunch-claimed": {},
+        "relaunch-settled": {},
+        "relaunch-exception": {"failureOnly": true}
+      }
+    },
     "mentions-live": {
       "terminal": "done",
       "checks": {

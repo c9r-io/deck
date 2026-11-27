@@ -3,7 +3,8 @@
   "firstSendSources": [
     "slack",
     "clock",
-    "agent"
+    "agent",
+    "local"
   ],
   "now": 1790000100,
   "event": {

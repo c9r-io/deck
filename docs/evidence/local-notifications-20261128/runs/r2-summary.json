@@ -1,0 +1,211 @@
+{
+ "run": "v3cb2bb79",
+ "host": "air2",
+ "verdictPhase1": [
+  "FAIL (exit 1)",
+  [
+   "  FAIL local-frozen: a=-2",
+   "  FAIL local-disabled: missing",
+   "  FAIL local-unacked: missing",
+   "  FAIL local-held: missing",
+   "  FAIL local-exception: reported (its carrier's exception path ran)",
+   "  FAIL done: a=-1 b=31"
+  ]
+ ],
+ "verdictPhase2": [
+  "FAIL (exit 1)",
+  [
+   "smoke-verdict local-notify-relaunch: FAIL (0/5 expected checkpoints, 5 lines)",
+   "  FAIL relaunch-kept: a=-5",
+   "  FAIL relaunch-acked: a=-1",
+   "  FAIL relaunch-claimed: a=-1",
+   "  FAIL relaunch-settled: a=-3",
+   "  FAIL done: a=-1 b=0"
+  ]
+ ],
+ "checks": [
+  "smoke-check local-clean a=1 b=0\n",
+  "smoke-check local-rules a=2 b=0\n",
+  "smoke-check local-accept a=1 b=0\n",
+  "smoke-check local-armed a=1 b=0\n",
+  "smoke-check local-want a=1 b=0\n",
+  "smoke-check local-unmatched a=4 b=0\n",
+  "smoke-check local-auto-card a=2 b=0\n",
+  "smoke-check local-auto-first a=1 b=0\n",
+  "smoke-check local-auto-chain a=1 b=0\n",
+  "smoke-check local-manual a=1 b=0\n",
+  "smoke-check local-taken a=2 b=0\n",
+  "smoke-check local-want a=2 b=0\n",
+  "smoke-check local-frozen a=-2 b=41\n",
+  "smoke-check local-reoccur a=1 b=0\n",
+  "smoke-check local-revoked a=2 b=0\n",
+  "smoke-check local-deleted a=1 b=0\n",
+  "smoke-check local-exception a=-1 b=0\n",
+  "smoke-check done a=-1 b=31\n",
+  "smoke-check relaunch-kept a=-5 b=3\n",
+  "smoke-check relaunch-acked a=-1 b=0\n",
+  "smoke-check relaunch-claimed a=-1 b=0\n",
+  "smoke-check relaunch-settled a=-3 b=3\n",
+  "smoke-check done a=-1 b=0\n"
+ ],
+ "cli": {
+  "lostReceipt": {
+   "exit": 6,
+   "status": "error",
+   "code": "NO_RECEIPT",
+   "applied": null,
+   "reason": null
+  },
+  "lostRetry": {
+   "exit": 0,
+   "status": "duplicate",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "lostStatus": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "accepted": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "duplicate": {
+   "exit": 0,
+   "status": "duplicate",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "conflict": {
+   "exit": 4,
+   "status": "error",
+   "code": "CONFLICT",
+   "applied": null,
+   "reason": null
+  },
+  "unknownField": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null
+  },
+  "version2": {
+   "exit": 3,
+   "status": "error",
+   "code": "UNSUPPORTED_VERSION",
+   "applied": null,
+   "reason": null
+  },
+  "badJson": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null
+  },
+  "tooLarge": {
+   "exit": 3,
+   "status": "error",
+   "code": "TOO_LARGE",
+   "applied": null,
+   "reason": null
+  },
+  "slackImpersonation": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null
+  },
+  "status": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "statusMissing": {
+   "exit": 1,
+   "status": "not-found",
+   "code": null,
+   "applied": null,
+   "reason": null
+  },
+  "hello2": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "hello3": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "ciFail1": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "ciFail1Retry": {
+   "exit": 1,
+   "status": null,
+   "code": null,
+   "applied": null,
+   "reason": null
+  },
+  "ciFail2": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "late": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": false,
+   "reason": "stale-revision"
+  },
+  "statusRouted": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "ciPass3": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null
+  },
+  "ciFail4": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null
+  }
+ },
+ "adapterRetryConflict": "deck-notify: CONFLICT: this producer already used this event_id for different content\ndeck-notify exited 4: CONFLICT this producer already used this event_id for different content",
+ "machineSame": true,
+ "rootTrashed": true,
+ "note": "page threw after local-revoked (stage unknown); superseded by r3. Real NO_RECEIPT path and the adapter's occurred_at conflict found here."
+}

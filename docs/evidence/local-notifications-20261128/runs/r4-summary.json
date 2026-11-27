@@ -1,0 +1,386 @@
+{
+ "run": "v39151125",
+ "host": "air2",
+ "head": "1941820a",
+ "verdict": "PASS",
+ "verdictPhase1": [
+  "PASS",
+  [
+   "smoke-verdict local-notify: PASS (19/19 expected checkpoints, 23 lines)"
+  ]
+ ],
+ "verdictPhase2": [
+  "PASS",
+  [
+   "smoke-verdict local-notify-relaunch: PASS (5/5 expected checkpoints, 5 lines)"
+  ]
+ ],
+ "checks": [
+  "smoke-check local-clean a=1 b=0\n",
+  "smoke-check local-rules a=2 b=0\n",
+  "smoke-check local-accept a=1 b=0\n",
+  "smoke-check local-armed a=1 b=0\n",
+  "smoke-check local-want a=1 b=0\n",
+  "smoke-check local-unmatched a=4 b=0\n",
+  "smoke-check local-auto-card a=2 b=0\n",
+  "smoke-check local-auto-first a=1 b=0\n",
+  "smoke-check local-auto-chain a=1 b=0\n",
+  "smoke-check local-manual a=1 b=0\n",
+  "smoke-check local-taken a=2 b=0\n",
+  "smoke-check local-want a=2 b=0\n",
+  "smoke-check local-frozen a=2 b=41\n",
+  "smoke-check local-reoccur a=1 b=0\n",
+  "smoke-check local-revoked a=2 b=0\n",
+  "smoke-check local-deleted a=1 b=0\n",
+  "smoke-check local-want a=3 b=0\n",
+  "smoke-check local-unacked a=1 b=0\n",
+  "smoke-check local-want a=4 b=0\n",
+  "smoke-check local-held a=1 b=0\n",
+  "smoke-check local-disabled a=1 b=0\n",
+  "smoke-check local-want a=5 b=0\n",
+  "smoke-check done a=1 b=0\n",
+  "smoke-check relaunch-kept a=7 b=4\n",
+  "smoke-check relaunch-acked a=1 b=0\n",
+  "smoke-check relaunch-claimed a=1 b=0\n",
+  "smoke-check relaunch-settled a=5 b=4\n",
+  "smoke-check done a=1 b=0\n"
+ ],
+ "cli": {
+  "lostReceipt": {
+   "exit": 6,
+   "status": "error",
+   "code": "NO_RECEIPT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "lostRetry": {
+   "exit": 0,
+   "status": "duplicate",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "lostStatus": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "accepted": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "duplicate": {
+   "exit": 0,
+   "status": "duplicate",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "conflict": {
+   "exit": 4,
+   "status": "error",
+   "code": "CONFLICT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "unknownField": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "version2": {
+   "exit": 3,
+   "status": "error",
+   "code": "UNSUPPORTED_VERSION",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "badJson": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "tooLarge": {
+   "exit": 3,
+   "status": "error",
+   "code": "TOO_LARGE",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "slackImpersonation": {
+   "exit": 3,
+   "status": "error",
+   "code": "INVALID_INPUT",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "status": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "statusMissing": {
+   "exit": 1,
+   "status": "not-found",
+   "code": null,
+   "applied": null,
+   "reason": null,
+   "routing": null
+  },
+  "hello2": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "hello3": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "ciFail1": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "ciFail1Retry": {
+   "exit": 0,
+   "status": "duplicate",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "ciFail2": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "late": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": false,
+   "reason": "stale-revision",
+   "routing": "done"
+  },
+  "statusRouted": {
+   "exit": 0,
+   "status": "found",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "ciPass3": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": "done"
+  },
+  "ciFail4": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "crashAck": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "crashClaim": {
+   "exit": 0,
+   "status": "accepted",
+   "code": null,
+   "applied": true,
+   "reason": null,
+   "routing": null
+  },
+  "disabled": {
+   "exit": 5,
+   "status": "error",
+   "code": "UNAVAILABLE",
+   "applied": null,
+   "reason": null,
+   "routing": null
+  }
+ },
+ "relaunchStatus": {
+  "claim": {
+   "exit": 5,
+   "status": "error",
+   "routing": {}
+  },
+  "ack": {
+   "exit": 5,
+   "status": "error",
+   "routing": {}
+  },
+  "hello3": {
+   "exit": 5,
+   "status": "error",
+   "routing": {}
+  }
+ },
+ "socketMode": "600 owner\n700 owner",
+ "inboxMode": "600",
+ "socketAfterOff": "absent",
+ "inbox": [
+  [
+   "misc-tool",
+   "lost-1",
+   0,
+   1,
+   "active",
+   [],
+   "Receipt lost on the way"
+  ],
+  [
+   "misc-tool",
+   "hello-1",
+   0,
+   1,
+   "active",
+   [
+    [
+     "manual",
+     "done",
+     null,
+     "Hello from a script"
+    ]
+   ],
+   "Hello from a script"
+  ],
+  [
+   "misc-tool",
+   "hello-2",
+   0,
+   1,
+   "active",
+   [
+    [
+     "manual",
+     "done",
+     null,
+     "Second from a script"
+    ]
+   ],
+   "Second from a script"
+  ],
+  [
+   "misc-tool",
+   "hello-3",
+   0,
+   1,
+   "active",
+   [],
+   "Third from a script"
+  ],
+  [
+   "ci-example",
+   "build-1842",
+   41,
+   2,
+   "active",
+   [
+    [
+     "auto",
+     "done",
+     null,
+     "Build 1842 failed (attempt 1)"
+    ],
+    [
+     "auto",
+     "done",
+     null,
+     "Build 1842 failed (attempt 4)"
+    ]
+   ],
+   "Build 1842 failed (attempt 4)"
+  ],
+  [
+   "ci-example",
+   "crash-ack-1",
+   0,
+   1,
+   "active",
+   [
+    [
+     "auto",
+     "pending",
+     null,
+     "crash ack 1"
+    ]
+   ],
+   "crash ack 1"
+  ],
+  [
+   "ci-example",
+   "crash-claim-1",
+   0,
+   1,
+   "active",
+   [
+    [
+     "auto",
+     "pending",
+     null,
+     "crash claim 1"
+    ]
+   ],
+   "crash claim 1"
+  ]
+ ],
+ "claudeMarkers": {
+  "step1_attempt1": 1,
+  "step2": 2,
+  "attempt4_answered": 0
+ },
+ "killApp": 0,
+ "machineSame": true,
+ "rootTrashed": true,
+ "leftover": "",
+ "trustRemoved": "remove False"
+}

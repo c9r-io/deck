@@ -37,7 +37,8 @@ fn compose_extensions() {
 /// None is installed under the user's home directory: status-helper and
 /// lifecycle-helper are used by explicit agent hooks (two separate closed
 /// protocol families), deck-mcp is a user-launched STDIO adapter, and
-/// deck-mcp-runner exists only as an MCP-managed tmux pane process.
+/// deck-mcp-runner exists only as an MCP-managed tmux pane process, and
+/// deck-notify is a user-run client of the local notification socket.
 ///
 /// Each context builds its own sidecars in its own target directory and
 /// places them in the ONE `binaries/` directory (`build/shared_output.rs`):
@@ -84,6 +85,12 @@ fn build_sidecars(started: Option<std::time::SystemTime>) {
             "mcp-adapter/Cargo.toml",
             "deck-mcp",
             "mcp-adapter/target",
+        ),
+        (
+            "notify-cli",
+            "notify-cli/Cargo.toml",
+            "deck-notify",
+            "notify-cli/target",
         ),
     ] {
         println!("cargo:rerun-if-changed={package}/src");

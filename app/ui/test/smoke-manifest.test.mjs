@@ -26,6 +26,7 @@ const CARRIERS = {
   'channel-first-send-smoke.mjs': ['channel-first-send'],
   'channel-live-smoke.mjs': ['channel-live', 'channel-live-replay'],
   'mentions-live-smoke.mjs': ['mentions-live'],
+  'local-notify-smoke.mjs': ['local-notify', 'local-notify-relaunch'],
   'hooks-live-smoke.mjs': ['hooks-live'],
   'pi-live-smoke.mjs': ['pi-live'],
   'pi-layout-smoke.mjs': ['pi-layout'],

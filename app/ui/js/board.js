@@ -87,6 +87,7 @@ import { renderAutomations, ruleOf } from './automation.js';
 import { createDefaultColumns, migrateColumnSemantics } from './board-defaults.js';
 import { locateAttentionCard, refreshAttention, showAttention } from './attention.js';
 import { paintMentions } from './slack-mentions.js';
+import { paintNotices } from './notices.js';
 import { cardLabels, dismissKey, labelsKey, seenDismissals } from './notify-model.js';
 import { addManual, addQueueCopy, agentNoteChanged, bufferLimitError, copyEvidence, deleteEntry, editEntry, emptyBuffer, isAgentNote, markHandled, openAgentNote, putAgentNote, retainedBuffer } from './buffer-model.js';
 import { nextCollectedAt } from './channel-model.js';
@@ -687,7 +688,7 @@ export const provider = {
         skeletons: (approval.skeletons || []).slice(step, step + count) } } : {});
       /* the first-send readiness override belongs to the head row alone
          (scheduler/first_send.rs); re-checked by source-specific native admission */
-      const firstSend = ['slack', 'clock', 'agent'].includes(card.origin.source) && plan.firstSend?.rule
+      const firstSend = ['slack', 'clock', 'agent', 'local'].includes(card.origin.source) && plan.firstSend?.rule
         ? { firstSend: { rule: plan.firstSend.rule, event: card.origin.key } } : {};
       if (plan.reviewEach) {
         const first = plan.initialSteps[0];
@@ -2043,6 +2044,7 @@ export function render() {
   $('session-view').style.display = state.view === 'session' ? 'flex' : 'none';
   $('attention-view').hidden = state.view !== 'attention';
   paintMentions();
+  paintNotices();
   renderTabs();
   renderSidebar();
   if (state.view === 'board') renderBoard();

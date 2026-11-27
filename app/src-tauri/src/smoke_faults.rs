@@ -18,6 +18,12 @@ const KINDS: &[&str] = &[
     "channel-network",
     "channel-scope",
     "connector-after-accept",
+    // local notifications (local_notify.rs): the receipt lost after the
+    // publish was stored; a claim stored but not offered to the
+    // dispatcher; a local item's ack refused after its card exists
+    "local-no-receipt",
+    "local-hold-offer",
+    "local-ack-refused",
     "queue-cancel",
     "tmux-after-stop",
     "tmux-after-socket",
