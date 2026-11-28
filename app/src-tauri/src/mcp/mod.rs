@@ -421,6 +421,30 @@
 //! a scope change, revocation and disable reject what waits. A ledger
 //! holding the choice is written at `STATE_VERSION_CARD_EDITS` (sticky).
 //!
+//! Account quota (`quota.rs` in this folder, `docs/mcp.md` "Account
+//! quota", approved 2026-11-28): a client with the separate local choice
+//! `allow_quota` (off by default, saved with the other choices, never
+//! implied by another choice and implying none) reads the redacted usage
+//! windows of every agent account Deck observed in this run
+//! (`deck_quota_snapshot`), whether or not a card runs under it now — the
+//! store keeps an account after its last link ends (`crate::quota`
+//! `retain` drops links only) and the Codex home is found by the bounded,
+//! once-a-minute rollout scan. Without the choice the tool is
+//! `PERMISSION_DENIED`, the worker choice included (`deck_worker_list`
+//! `quota` keeps its card-linked projection); nothing is derived from
+//! `all_projects` or an account id. Each account's `cards` are only cards
+//! the caller already sees: under the worker choice its own worker cards
+//! (`origin::sees`) and its calling card, else none (`cardScope: none`).
+//! No email, raw account id, credential or absolute folder (labels are
+//! folder names). `sources` says per agent why an account may be missing
+//! (Codex scan `found` / `not-found` / `unreadable` / `no-home`; Claude Code
+//! and agy `observed` / `waiting` / `not-connected` / `unreadable` from
+//! the statusLine files' own state); `observedAt` is the observation's own
+//! time, `stale` and each window's `expired` are shown, never corrected.
+//! Read only and presentation only: Deck notifies, polls, schedules and
+//! switches nothing for it, and no hold, release or admission reads it. A
+//! ledger holding the choice is written at `STATE_VERSION_QUOTA` (sticky).
+//!
 //! Agent notes (`notes.rs`, approved 2026-11-23): any authorized client
 //! may leave, revise or withdraw a note for the user in the scratchpad of
 //! the card its call comes from (`origin.rs`, from the kernel; never
@@ -459,7 +483,7 @@
 //! delegation above; `workers` the worker cards; `origin` the orchestrator
 //! card of a call; `mentions` the Slack mentions reader and its marks;
 //! `cards` the card snapshot and its marks; `notes` the Agent notes in a
-//! card's scratchpad; `proposals` the drafted
+//! card's scratchpad; `quota` the account quota summary; `proposals` the drafted
 //! configuration; `jobs` exec, job reads and every
 //! job side effect; `control` request routing plus the socket thread; and
 //! `commands` the local Tauri commands and the guards other modules call
@@ -530,6 +554,7 @@ pub(crate) fn mcp_card_mark_clear(card_id: String) -> bool {
 }
 mod project;
 mod proposals;
+mod quota;
 mod reports;
 mod runner;
 mod session;
@@ -624,8 +649,12 @@ const STATE_VERSION_REPORT_ACKS: u32 = 22;
 /// switch on (`grants::uses_auto_worktrees`): a v22 build would refuse the
 /// member, never drop it and write the ledger back without it.
 const STATE_VERSION_AUTO_WORKTREES: u32 = 23;
+/// The sticky version a ledger takes once a client may read the account
+/// quota summary (`quota::uses_quota`): a v23 build would refuse the
+/// member, never drop it and write the ledger back without it.
+const STATE_VERSION_QUOTA: u32 = 24;
 /// The newest version this build reads and writes.
-const STATE_VERSION_LATEST: u32 = STATE_VERSION_AUTO_WORKTREES;
+const STATE_VERSION_LATEST: u32 = STATE_VERSION_QUOTA;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

@@ -33,6 +33,7 @@ fn client(id: &str, cards: bool) -> Client {
         all_projects: false,
         lanes: Default::default(),
         auto_worktrees: false,
+        allow_quota: false,
         send_epoch: 0,
     }
 }

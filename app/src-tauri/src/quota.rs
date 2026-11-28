@@ -4,8 +4,12 @@
 //! 7-day `rate_limits`, Codex's rate limits, agy's quota buckets) of each
 //! agent account the user's sessions run under, deduplicated by account,
 //! so a person sees each account once (the sidebar's Quota area, a card's
-//! chip) and an orchestrator sees the accounts of its own cards
-//! (`deck_worker_list` `quota`). Approved 2026-11-28
+//! chip), an orchestrator sees the accounts of its own cards
+//! (`deck_worker_list` `quota`), and a client with the quota choice sees
+//! every account observed this run, with or without a card under it
+//! (`deck_quota_snapshot`, `mcp_snapshot`: redacted like `projection`,
+//! with `sources` saying why an agent may be missing — the newest Codex
+//! scan's word, `CodexScan`, and the statusLine files' state). Approved 2026-11-28
 //! (`docs/design/quota-projection-20261128.md`).
 //!
 //! Sources, each read only for the windows and the account:
@@ -44,7 +48,14 @@
 //! **Nothing reads quota for a decision.** It is never a hold, a release,
 //! readiness, authority, a schedule input or a notification; no card moves
 //! or colours by it. Held in memory only (no ledger, no document version);
-//! a restart starts empty until the next statusLine run or Codex scan.
+//! a restart starts empty until the next statusLine run or Codex scan. An
+//! account stays once observed: a link ending (`retain`), a scan finding
+//! nothing or a scan that does not parse never deletes or zeroes it. Its
+//! id is stable within one Deck run only (the salt is drawn per run), so
+//! nothing matches accounts across restarts. `observed_ms` is the
+//! observation's own time — a statusLine line's arrival, a Codex event's
+//! `timestamp` — never the time a file was read; a window past its reset
+//! keeps its number and says `expired`.
 
 pub(crate) mod codex;
 pub(crate) mod install;
@@ -275,6 +286,23 @@ struct Store {
     codex_scanned_ms: u64,
     /// The default Codex home's account and whether its rollouts parsed.
     codex: Option<CodexState>,
+    /// What the newest Codex scan found and when it ran (epoch ms): the
+    /// one place a scan that found nothing is remembered.
+    codex_scan: Option<(CodexScan, u64)>,
+}
+
+/// What the newest Codex scan found (`deck_quota_snapshot` `sources.codex`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CodexScan {
+    /// A rollout in the bounded scan carried rate limits that parsed.
+    Found,
+    /// No rollout in the bounded scan carried any rate limits.
+    NotFound,
+    /// The newest rollout that seemed to carry them did not parse.
+    Unreadable,
+    /// Deck has no Codex home to read (no home folder).
+    NoHome,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -579,6 +607,10 @@ fn codex_home() -> Option<std::path::PathBuf> {
 
 /// Scan the Codex home when the last scan is older than a minute.
 pub(crate) fn refresh_codex() {
+    // tests never read the real Codex home: they record their own scans
+    if cfg!(test) {
+        return;
+    }
     let now = now_ms();
     let due = with_store(|store| {
         let due = now.saturating_sub(store.codex_scanned_ms) >= CODEX_SCAN_EVERY_MS;
@@ -591,18 +623,26 @@ pub(crate) fn refresh_codex() {
         return;
     }
     let Some(home) = codex_home() else {
+        with_store(|store| store.codex_scan = Some((CodexScan::NoHome, now)));
         return;
     };
     record_codex(&home, codex::latest(&home.join("sessions")));
 }
 
-/// Record what a Codex scan found (`None`: no rollout at all).
+/// Record what a Codex scan found (`None`: no rollout carries any limits).
+/// The accounts already observed stay: a scan that finds nothing or does
+/// not parse never deletes or zeroes an earlier observation.
 fn record_codex(home: &std::path::Path, found: Option<Result<codex::Rollout, ()>>) {
     let folder = home.to_string_lossy().into_owned();
+    let scanned = now_ms();
     with_store(|store| match found {
-        None => {}
-        Some(Err(())) => store.codex = Some(CodexState::Unreadable),
+        None => store.codex_scan = Some((CodexScan::NotFound, scanned)),
+        Some(Err(())) => {
+            store.codex = Some(CodexState::Unreadable);
+            store.codex_scan = Some((CodexScan::Unreadable, scanned));
+        }
         Some(Ok(rollout)) => {
+            store.codex_scan = Some((CodexScan::Found, scanned));
             let (by_account, raw) = match &rollout.account {
                 Some(id) => (true, format!("account:{id}")),
                 None => (false, format!("folder:{folder}")),
@@ -804,6 +844,174 @@ fn projection_at(cards: &HashMap<String, String>, now: u64) -> Vec<serde_json::V
             }))
         })
         .collect()
+}
+
+/// The 7-day window an alert reads: of the account's windows of 10 080
+/// minutes (Claude Code may report more than one, e.g. a model's own), the
+/// one closest to its limit among those not yet reset, else the first.
+fn seven_day(windows: &[WindowView]) -> Option<&WindowView> {
+    let weekly = || windows.iter().filter(|w| w.minutes == Some(10_080));
+    weekly()
+        .filter(|w| !w.expired)
+        .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
+        .or_else(|| weekly().next())
+}
+
+/// What a statusLine source says in `deck_quota_snapshot` `sources`:
+/// `observed` (an account of it was observed this run; each account's own
+/// `stale` says how old), `waiting` (Deck's statusLine entry is on but no
+/// line came since Deck started), `not-connected` (the entry is off, the
+/// slot holds another command, or the agent never ran here), `unreadable`
+/// (its settings file is not JSON).
+fn statusline_source(observed: usize, state: install::State) -> serde_json::Value {
+    let word = match state {
+        _ if observed > 0 => "observed",
+        install::State::On => "waiting",
+        install::State::Unreadable => "unreadable",
+        install::State::Off | install::State::User | install::State::Absent => "not-connected",
+    };
+    serde_json::json!({"state": word, "statusLine": state, "accounts": observed})
+}
+
+/// `deck_quota_snapshot` (`mcp/quota.rs`): every account observed in this
+/// Deck run, whether or not a card runs under it now, after the throttled
+/// Codex scan. `cards`: session name → card id of the cards the caller may
+/// see (`None`: it may see none, and each account's `cards` is empty).
+/// Redacted like `projection`: opaque ids, folder names, never a path.
+pub(crate) fn mcp_snapshot(cards: Option<&HashMap<String, String>>) -> serde_json::Value {
+    refresh_codex();
+    #[cfg(not(test))]
+    let (claude, agy) = install::status_now().states();
+    // tests never read the real home: the statusLine states are theirs
+    #[cfg(test)]
+    let (claude, agy) = test_installs();
+    mcp_snapshot_at(cards, claude, agy, now_ms())
+}
+
+fn mcp_snapshot_at(
+    cards: Option<&HashMap<String, String>>,
+    claude: install::State,
+    agy: install::State,
+    now: u64,
+) -> serde_json::Value {
+    let codex_scan = with_store(|store| store.codex_scan);
+    let snapshot = snapshot_at(now);
+    let count = |agent: Agent| snapshot.accounts.iter().filter(|a| a.kind == agent).count();
+    let window = |w: &WindowView| {
+        serde_json::json!({
+            "window": w.name,
+            "minutes": w.minutes,
+            "usedPercent": w.used_percent,
+            "resetsAt": w.resets_at,
+            "expired": w.expired,
+        })
+    };
+    let accounts: Vec<serde_json::Value> = snapshot
+        .accounts
+        .iter()
+        .map(|account| {
+            let mut mine: Vec<&String> = cards
+                .map(|cards| {
+                    account
+                        .sessions
+                        .iter()
+                        .filter_map(|s| cards.get(s))
+                        .collect()
+                })
+                .unwrap_or_default();
+            mine.sort();
+            mine.dedup();
+            serde_json::json!({
+                "account": account.id,
+                "agent": account.kind,
+                "byAccount": account.by_account,
+                "label": account.folders.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+                "plan": account.plan,
+                "source": account.source,
+                "observedAt": account.observed_at,
+                "ageMs": now.saturating_sub(account.observed_at),
+                "stale": account.stale,
+                "windows": account.windows.iter().map(window).collect::<Vec<_>>(),
+                "sevenDay": seven_day(&account.windows).map(window),
+                "cards": mine,
+            })
+        })
+        .collect();
+    let codex_state = codex_scan.map_or(serde_json::json!("not-scanned"), |(scan, _)| {
+        serde_json::json!(scan)
+    });
+    serde_json::json!({
+        "ok": true,
+        "now": now,
+        "staleAfterMs": STALE_MS,
+        "accounts": accounts,
+        "sources": {
+            "codex": {
+                "state": codex_state,
+                "scannedAt": codex_scan.map(|(_, at)| at),
+                "accounts": count(Agent::Codex),
+            },
+            "claude": statusline_source(count(Agent::Claude), claude),
+            "agy": statusline_source(count(Agent::Agy), agy),
+        },
+        "cardScope": if cards.is_some() { "workers" } else { "none" },
+        "accountIds": "this-run",
+    })
+}
+
+#[cfg(test)]
+static TEST_INSTALLS: Mutex<(install::State, install::State)> =
+    Mutex::new((install::State::Absent, install::State::Absent));
+
+#[cfg(test)]
+fn test_installs() -> (install::State, install::State) {
+    *TEST_INSTALLS.lock_or_recover()
+}
+
+/// Tests outside this module (`mcp/tests.rs`): the store's lock, a reset
+/// store, and the statusLine states `mcp_snapshot` reports.
+#[cfg(test)]
+pub(crate) fn lock_for_tests(
+    claude: install::State,
+    agy: install::State,
+) -> std::sync::MutexGuard<'static, ()> {
+    let guard = tests::LOCK.lock_or_recover();
+    reset_for_tests();
+    *TEST_INSTALLS.lock_or_recover() = (claude, agy);
+    guard
+}
+
+/// Tests outside this module: record a Codex scan of `sessions` as if it
+/// were the default home `home`.
+#[cfg(test)]
+pub(crate) fn record_codex_for_tests(home: &std::path::Path, sessions: &std::path::Path) {
+    record_codex(home, codex::latest(sessions));
+}
+
+/// Tests outside this module: the poll sees a Codex pane in each of
+/// `sessions` (and no other pane), linking them to the default Codex home's
+/// account.
+#[cfg(test)]
+pub(crate) fn link_codex_sessions_for_tests(sessions: &[&str]) {
+    let rows: Vec<crate::tmux::PaneRow> = sessions
+        .iter()
+        .map(|session| crate::tmux::PaneRow {
+            server_pid: 42,
+            session_id: "$1".into(),
+            session_name: (*session).into(),
+            window_id: "@1".into(),
+            pane_id: format!("%{session}"),
+            pane_pid: 1,
+            window_activity: 0,
+            in_mode: false,
+            window_active: true,
+            pane_active: true,
+            command: "codex".into(),
+            tty: "/dev/ttys001".into(),
+            path: "/tmp".into(),
+        })
+        .collect();
+    retain_with(&rows, &[]);
 }
 
 #[cfg(test)]

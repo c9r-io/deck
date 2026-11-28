@@ -332,6 +332,7 @@ fn client_record(root: &Path) -> Client {
         all_projects: false,
         lanes: Default::default(),
         auto_worktrees: false,
+        allow_quota: false,
         send_epoch: 0,
     }
 }
@@ -871,6 +872,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         all_projects: false,
         lanes: Default::default(),
         auto_worktrees: false,
+        allow_quota: false,
         send_epoch: 0,
     });
     let disabled = match client(&doc, "client_a") {
@@ -2234,6 +2236,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         all_projects: false,
         lanes: Default::default(),
         auto_worktrees: false,
+        allow_quota: false,
         send_epoch: 0,
     });
     assert!(validate_doc(&invalid).is_err());
@@ -5989,6 +5992,7 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             all_projects: false,
             projects: None,
             auto_worktrees: false,
+            allow_quota: false,
         },
     )
     .unwrap();
@@ -6143,6 +6147,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             all_projects: false,
             projects: None,
             auto_worktrees: false,
+            allow_quota: false,
         };
     assert!(client_permissions(
         &runtime,
@@ -6852,6 +6857,7 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         all_projects: false,
         projects: None,
         auto_worktrees: false,
+        allow_quota: false,
     }
 }
 
@@ -7557,6 +7563,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
         all_projects: false,
         projects: None,
         auto_worktrees: false,
+        allow_quota: false,
         allow_create: false,
         allow_automations: true,
         allow_workers: true,
@@ -10876,6 +10883,7 @@ fn the_worktree_switch_is_decided_again_at_the_launch() {
                 all_projects: all,
                 projects,
                 auto_worktrees: on,
+                allow_quota: false,
                 allow_create: true,
                 ..round2_workers_on(true)
             },
@@ -11089,6 +11097,7 @@ fn the_worktree_switch_is_decided_again_at_the_launch() {
         super::commands::PermissionsInput {
             all_projects: true,
             auto_worktrees: true,
+            allow_quota: false,
             allow_create: true,
             ..Default::default()
         },
@@ -11184,5 +11193,161 @@ fn a_project_keeps_every_directory_it_was_given() {
     save(vec![s(&one), s(&two)], true).unwrap();
     assert_eq!(roots()[0].roots, vec![s(&one), s(&two)]);
     assert!(save(vec![s(&one), s(&base.join("never"))], true).is_err());
+    drop(root);
+}
+
+/// Account quota (`quota.rs` in this folder, approved 2026-11-28): the
+/// tool needs its own choice and nothing else; the worker choice alone
+/// keeps only `deck_worker_list` `quota`. An account observed with no card
+/// is listed; each account's `cards` are only the cards the caller already
+/// sees (with the worker choice: its own worker cards and its calling card,
+/// never a human's card or another orchestrator's worker); nothing names an
+/// account id, a path or a session. The ledger takes the sticky quota
+/// version.
+#[test]
+fn the_quota_snapshot_needs_its_own_choice_and_names_only_visible_cards() {
+    let (runtime, _runner, root) = fixture("quota-snapshot", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let _quota = crate::quota::lock_for_tests(
+        crate::quota::install::State::On,
+        crate::quota::install::State::Absent,
+    );
+    let call = |tool: &str| route(&runtime, request(tool, json!({})));
+    let choose = |workers: bool, quota: bool| {
+        client_permissions(
+            &runtime,
+            "client_a",
+            super::commands::PermissionsInput {
+                allow_workers: workers,
+                allow_quota: quota,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    };
+    // one Codex account, observed by the scan before any card runs under it
+    let home = crate::test_dir::TestDir::new("quota-mcp-home");
+    let sessions = home.join("sessions");
+    let day = sessions.join("2026/11/27");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(
+        day.join("rollout-a.jsonl"),
+        concat!(
+            r#"{"timestamp":"2026-11-27T20:00:00.000Z","type":"session_meta","payload":{"id":"x","cwd":"/secret-cwd","creator_account_id":"raw-account-77"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-11-27T23:05:50.866Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":91.0,"window_minutes":10080,"resets_at":4000000000},"secondary":null,"plan_type":"pro"}}}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    crate::quota::record_codex_for_tests(&home, &sessions);
+
+    // neither choice: refused
+    assert_eq!(
+        call("deck_quota_snapshot")["error"]["code"],
+        "PERMISSION_DENIED"
+    );
+    assert_eq!(call("deck_capabilities")["mayReadQuota"], false);
+    // the worker choice alone: still refused, never an empty list; the
+    // card-linked projection stays where it was
+    choose(true, false);
+    let refused = call("deck_quota_snapshot");
+    assert_eq!(refused["error"]["code"], "PERMISSION_DENIED", "{refused}");
+    assert!(refused.get("accounts").is_none());
+    assert!(call("deck_worker_list")["quota"].is_array());
+    // the quota choice alone: every observed account, no card
+    choose(false, true);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+    assert_eq!(saved["version"], STATE_VERSION_QUOTA);
+    assert_eq!(saved["config"]["clients"][0]["allowQuota"], true);
+    assert_eq!(call("deck_capabilities")["mayReadQuota"], true);
+    assert_eq!(
+        call("deck_worker_list")["error"]["code"],
+        "PERMISSION_DENIED",
+        "the quota choice implies no worker choice"
+    );
+    let answer = call("deck_quota_snapshot");
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["cardScope"], "none");
+    assert_eq!(answer["sources"]["codex"]["state"], "found");
+    assert_eq!(answer["sources"]["claude"]["state"], "waiting");
+    assert_eq!(answer["sources"]["agy"]["state"], "not-connected");
+    let accounts = answer["accounts"].as_array().unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0]["agent"], "codex");
+    assert_eq!(accounts[0]["sevenDay"]["usedPercent"], 91.0);
+    assert_eq!(accounts[0]["cards"], json!([]));
+
+    // the Board: the orchestrator card O, its worker W, another
+    // orchestrator's worker X and the user's own card H, all under that
+    // Codex account
+    let card = |id: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": format!("Title {id}"), "cmd": "codex", "dir": "/tmp", "projectId": "P1", "columnId": "C1"});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("O"), card("W"), card("X"), card("H")]}),
+        true,
+    );
+    let worker = |id: &str, by: &str| Worker {
+        card_id: id.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{id}"),
+        automation_id: "codex".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: Some(by.into()),
+        reported: 0,
+        model: None,
+        lines: Vec::new(),
+        acknowledged: None,
+    };
+    runtime
+        .write(|doc| {
+            doc.workers.extend([worker("W", "O"), worker("X", "OTHER")]);
+            Ok(())
+        })
+        .unwrap();
+    crate::quota::link_codex_sessions_for_tests(&["deck-o", "deck-w", "deck-x", "deck-h"]);
+    let cards_from = |from: Option<&str>| {
+        let _as = super::origin::enter_as(from);
+        let answer = call("deck_quota_snapshot");
+        assert_eq!(answer["ok"], true, "{answer}");
+        (
+            answer["cardScope"].clone(),
+            answer["accounts"][0]["cards"].clone(),
+            answer,
+        )
+    };
+    // the quota choice alone, from a card: still no card
+    let (scope, cards, _) = cards_from(Some("O"));
+    assert_eq!((scope, cards), (json!("none"), json!([])));
+    // both choices: the calling card and its own worker, nothing else
+    choose(true, true);
+    let (scope, cards, answer) = cards_from(Some("O"));
+    assert_eq!(scope, "workers");
+    assert_eq!(cards, json!(["O", "W"]));
+    // a caller from no card sees the client's workers (as deck_worker_list)
+    let (_, cards, _) = cards_from(None);
+    assert_eq!(cards, json!(["W", "X"]));
+    // another orchestrator card sees none of O's
+    let (_, cards, _) = cards_from(Some("OTHER"));
+    assert_eq!(cards, json!(["X"]));
+    // redacted: no raw account id, path, session or title
+    let text = answer.to_string();
+    for secret in [
+        "raw-account-77",
+        "/secret-cwd",
+        home.to_str().unwrap(),
+        "deck-o",
+        "deck-h",
+        "Title",
+        "\"H\"",
+    ] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
+    // the choice withdrawn: refused again
+    choose(true, false);
+    assert_eq!(
+        call("deck_quota_snapshot")["error"]["code"],
+        "PERMISSION_DENIED"
+    );
     drop(root);
 }

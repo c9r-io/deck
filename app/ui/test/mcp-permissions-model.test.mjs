@@ -8,7 +8,7 @@ import { MAX_TYPE_MODELS, MAX_WORKER_TYPES, claudeAddCommand, modelLines, codexC
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', description: 'Write code' };
 
 test('a new client starts with nothing allowed; an existing one with its own choices', () => {
-  assert.deepEqual(initialPermissions(null), { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false, autoWorktrees: false, workerTypes: [] });
+  assert.deepEqual(initialPermissions(null), { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false, autoWorktrees: false, allowQuota: false, workerTypes: [] });
   const client = { allowCreate: true, allowWorkers: true, allowReplies: true, workerTypes: [claude] };
   const copy = initialPermissions(client);
   assert.equal(copy.allowCreate, true);
@@ -18,7 +18,7 @@ test('a new client starts with nothing allowed; an existing one with its own cho
 
 test('children of an unchecked parent are sent as off', () => {
   const payload = permissionsPayload({ allowWorkers: false, allowReplies: true, workerFirstSend: true, workerTypes: [claude] });
-  assert.deepEqual(payload, { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false, autoWorktrees: false, workerTypes: [] });
+  assert.deepEqual(payload, { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false, autoWorktrees: false, allowQuota: false, workerTypes: [] });
   const on = permissionsPayload({ allowWorkers: true, allowReplies: true, workerFirstSend: true,
     workerTypes: [{ name: ' claude ', cmd: 'claude   --permission-mode  auto', columnId: 'C1', description: ' Write code ' }] });
   assert.deepEqual(on.workerTypes, [claude], 'trimmed, single spaces, a column an older build gave the type dropped');
@@ -135,6 +135,12 @@ test('the row says what the client may do, nothing once revoked', () => {
   assert.equal(permissionsPayload({ allowCards: true, allowCardEdits: true, workerTypes: [] }).allowCardEdits, true);
   assert.equal(permissionsPayload({ allowCardEdits: true, workerTypes: [] }).allowCardEdits, false);
   assert.equal(initialPermissions({ allowCardEdits: true }).allowCardEdits, false);
+  // the quota summary stands alone: off by default, never implied
+  assert.deepEqual(permissionSummary({ allowQuota: true }), ['mcp.summaryQuota']);
+  assert.equal(permissionsPayload({ allowQuota: true, workerTypes: [] }).allowQuota, true);
+  assert.equal(permissionsPayload({ allowWorkers: true, allowCards: true, workerTypes: [] }).allowQuota, false);
+  assert.equal(initialPermissions({ allowQuota: true }).allowQuota, true);
+  assert.equal(initialPermissions({ allowWorkers: true }).allowQuota, false);
   assert.deepEqual(permissionSummary({ revoked: true, allowCreate: true }), []);
   assert.deepEqual(permissionSummary(null), []);
 });

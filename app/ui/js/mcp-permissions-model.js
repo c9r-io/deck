@@ -35,6 +35,9 @@
 //   worker cards and managed sessions may also start in a registered linked
 //   worktree of a reached project's repository, wherever it is. It adds
 //   start directories only; reads stay on the directories above.
+// - One choice, `allowQuota` (mcp/quota.rs `deck_quota_snapshot`): read the
+//   redacted usage windows of every account Deck observed. Off by default,
+//   never implied by another choice and implying none.
 // - The default list offers a Claude type (`--permission-mode auto`) and a
 //   Codex type (`--no-daemon --yolo`), so driving worker cards needs no
 //   further configuration.
@@ -89,6 +92,7 @@ export function initialPermissions(client) {
     allowCardEdits: client?.allowCards === true && client?.allowCardEdits === true,
     ruleColumn: client?.ruleColumn === true,
     autoWorktrees: client?.autoWorktrees === true,
+    allowQuota: client?.allowQuota === true,
     workerTypes: Array.isArray(client?.workerTypes) ? client.workerTypes.map(t => ({ ...t })) : [],
   };
 }
@@ -118,6 +122,7 @@ export function permissionsPayload(p) {
     allowCardEdits: p.allowCards === true && p.allowCardEdits === true,
     ruleColumn: p.ruleColumn === true,
     autoWorktrees: p.autoWorktrees === true,
+    allowQuota: p.allowQuota === true,
     workerTypes: workers ? p.workerTypes.map(t => ({
       name: String(t.name || '').trim(),
       cmd: String(t.cmd || '').trim().replace(/\s+/g, ' '),
@@ -192,6 +197,7 @@ export function permissionSummary(client) {
   if (client.allowMentions) keys.push('mcp.summaryMentions');
   if (client.allowCards) keys.push('mcp.summaryCards');
   if (client.allowCards && client.allowCardEdits) keys.push('mcp.summaryCardEdits');
+  if (client.allowQuota) keys.push('mcp.summaryQuota');
   return keys;
 }
 

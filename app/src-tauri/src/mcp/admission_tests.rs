@@ -49,6 +49,7 @@ fn client() -> Client {
         all_projects: false,
         lanes: Default::default(),
         auto_worktrees: false,
+        allow_quota: false,
         send_epoch: 0,
     }
 }

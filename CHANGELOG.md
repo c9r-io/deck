@@ -27,6 +27,19 @@
 - A worker's reports say `receiptState` (`unknown` for reports whose
   receipt Deck never tracked — not "received"); the card label shows
   "receipt unknown" or "received" accordingly.
+- **Read the account quota summary** (a new MCP client permission, off by
+  default): an orchestrator can read every agent account's usage windows
+  Deck has seen since it started (`deck_quota_snapshot`), also when no card
+  runs under that account — e.g. to tell you when an account passes 90, 95
+  and 99 % of its 7-day limit. It says how old each number is, whether a
+  window already reset, and why an agent may be missing (Codex files not
+  found or unreadable, Claude Code or agy status line not connected). No
+  email, account ID or folder path leaves Deck; Deck itself still notifies
+  nothing and quota never holds or schedules anything. The MCP ledger
+  moves to version 24 once a client has it.
+- Codex usage: a rate-limit event that lacks one of its two windows is read
+  instead of being reported as unreadable, and one without any window is no
+  longer mistaken for a format change.
 
 ## 0.8.46 — 2026-11-28 (Nightly)
 

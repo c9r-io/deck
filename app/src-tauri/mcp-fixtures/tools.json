@@ -24,6 +24,7 @@
     "deck_project_list",
     "deck_project_read",
     "deck_project_search",
+    "deck_quota_snapshot",
     "deck_session_close",
     "deck_session_control",
     "deck_session_create",

@@ -2,7 +2,7 @@ use super::*;
 use std::path::Path;
 
 /// The store is process-global: tests that use it take this lock.
-static LOCK: Mutex<()> = Mutex::new(());
+pub(super) static LOCK: Mutex<()> = Mutex::new(());
 
 fn locked() -> std::sync::MutexGuard<'static, ()> {
     let guard = LOCK.lock_or_recover();
@@ -368,4 +368,250 @@ fn a_claude_account_file_gives_up_only_its_uuid() {
     );
     assert_eq!(claude_account_in(b"{}"), None);
     assert_eq!(claude_account_in(b"garbage"), None);
+}
+
+// ---- deck_quota_snapshot (`mcp_snapshot_at`) ----
+
+use install::State as Install;
+
+/// A token_count line of the given time whose rate limits are as given.
+fn count_at(timestamp: &str, limits: &str) -> String {
+    format!(
+        r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":null,"rate_limits":{limits}}}}}"#
+    )
+}
+
+fn scan(sessions: &Path) {
+    record_codex(Path::new("/Users/u/.codex"), codex::latest(sessions));
+}
+
+fn account<'a>(answer: &'a serde_json::Value, agent: &str) -> &'a serde_json::Value {
+    answer["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == agent)
+        .unwrap_or_else(|| panic!("no {agent} account in {answer}"))
+}
+
+#[test]
+fn codex_without_any_card_is_listed_from_the_scan_with_its_seven_day_window() {
+    let _guard = locked();
+    let dir = crate::test_dir::TestDir::new("quota-snap-nocard");
+    let sessions: &Path = &dir;
+    rollout(sessions, "2026/11/27", "rollout-a.jsonl", &[META, COUNT]);
+    scan(sessions);
+    let observed = codex::iso_ms("2026-11-27T23:05:50.866Z").unwrap();
+    let now = observed + 60_000;
+    let answer = mcp_snapshot_at(None, Install::Off, Install::Absent, now);
+    assert_eq!(answer["sources"]["codex"]["state"], "found");
+    assert_eq!(answer["cardScope"], "none");
+    let codex = account(&answer, "codex");
+    assert_eq!(codex["cards"], serde_json::json!([]));
+    assert_eq!(codex["observedAt"], observed, "the event's own time");
+    assert_eq!(codex["ageMs"], 60_000);
+    assert_eq!(codex["stale"], false);
+    assert_eq!(codex["source"], "rollout");
+    assert_eq!(codex["sevenDay"]["window"], "seven_day");
+    assert_eq!(codex["sevenDay"]["usedPercent"], 53.0);
+    assert_eq!(codex["sevenDay"]["resetsAt"], 1_796_342_926_000u64);
+    assert_eq!(codex["label"], serde_json::json!([".codex"]));
+    // redacted: no account id, no path, no cwd
+    let text = answer.to_string();
+    for secret in ["user-abc", "/Users/u", "/secret"] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
+    // nothing seen of Claude Code and agy: their sources say why
+    assert_eq!(answer["sources"]["claude"]["state"], "not-connected");
+    assert_eq!(answer["sources"]["claude"]["statusLine"], "off");
+    assert_eq!(answer["sources"]["agy"]["state"], "not-connected");
+    assert_eq!(answer["sources"]["agy"]["statusLine"], "absent");
+    let waiting = mcp_snapshot_at(None, Install::On, Install::Unreadable, now);
+    assert_eq!(waiting["sources"]["claude"]["state"], "waiting");
+    assert_eq!(waiting["sources"]["agy"]["state"], "unreadable");
+}
+
+#[test]
+fn the_seven_day_window_is_found_by_its_minutes_in_either_slot() {
+    let secondary = count_at(
+        "2026-11-28T01:00:00.000Z",
+        r#"{"primary":{"used_percent":40.0,"window_minutes":300,"resets_at":1796000000},"secondary":{"used_percent":91.5,"window_minutes":10080,"resets_at":1796342926}}"#,
+    );
+    let (windows, _, _) = codex::limits_of(&secondary).unwrap().unwrap();
+    assert_eq!(windows[0].name, "five_hour");
+    assert_eq!(windows[1].name, "seven_day");
+    assert_eq!(windows[1].minutes, Some(10_080));
+    // an absent slot is no window, not a format change
+    let primary_only = count_at(
+        "2026-11-28T01:00:00.000Z",
+        r#"{"primary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1796342926}}"#,
+    );
+    let (windows, _, _) = codex::limits_of(&primary_only).unwrap().unwrap();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].name, "seven_day");
+    let secondary_only = count_at(
+        "2026-11-28T01:00:00.000Z",
+        r#"{"secondary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1796342926}}"#,
+    );
+    assert_eq!(
+        codex::limits_of(&secondary_only).unwrap().unwrap().0[0].name,
+        "seven_day"
+    );
+    // both slots null or absent: no observation at all
+    let empty = count_at(
+        "2026-11-28T01:00:00.000Z",
+        r#"{"primary":null,"secondary":null}"#,
+    );
+    assert_eq!(codex::limits_of(&empty), None);
+    let bare = count_at("2026-11-28T01:00:00.000Z", r#"{"limit_id":"codex"}"#);
+    assert_eq!(codex::limits_of(&bare), None);
+    // a window without its reset time, or a line without a time: unreadable
+    let no_reset = count_at(
+        "2026-11-28T01:00:00.000Z",
+        r#"{"primary":{"used_percent":12.0,"window_minutes":10080}}"#,
+    );
+    assert_eq!(codex::limits_of(&no_reset), Some(Err(())));
+    let no_time = r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1}}}}"#;
+    assert_eq!(codex::limits_of(no_time), Some(Err(())));
+}
+
+#[test]
+fn an_account_without_a_seven_day_window_says_so() {
+    let _guard = locked();
+    let line = r#"{"protocol":"deck-quota","v":1,"source":"claude-code","windows":[{"name":"five_hour","used":30,"resets_at":4000000000}]}"#;
+    record(
+        parse(line, SOCKET).unwrap(),
+        Path::new("/Users/u"),
+        None,
+        1_000,
+        |_| None,
+    );
+    let answer = mcp_snapshot_at(None, Install::On, Install::Off, 2_000);
+    let claude = account(&answer, "claude");
+    assert_eq!(claude["sevenDay"], serde_json::Value::Null);
+    assert_eq!(claude["windows"].as_array().unwrap().len(), 1);
+    assert_eq!(claude["source"], "statusline");
+    assert_eq!(answer["sources"]["claude"]["state"], "observed");
+    assert_eq!(answer["sources"]["claude"]["accounts"], 1);
+    // of several 7-day windows, the one closest to its limit that has not reset
+    let two = r#"{"protocol":"deck-quota","v":1,"source":"claude-code","windows":[{"name":"seven_day","used":40,"resets_at":4000000000},{"name":"seven_day_opus","used":96,"resets_at":4000000000},{"name":"seven_day_old","used":99,"resets_at":1}]}"#;
+    record(
+        parse(two, SOCKET).unwrap(),
+        Path::new("/Users/u"),
+        None,
+        3_000,
+        |_| None,
+    );
+    let answer = mcp_snapshot_at(None, Install::On, Install::Off, 4_000);
+    assert_eq!(
+        account(&answer, "claude")["sevenDay"]["window"],
+        "seven_day_opus"
+    );
+}
+
+#[test]
+fn stale_and_expired_snapshots_keep_their_numbers_and_their_time() {
+    let _guard = locked();
+    let dir = crate::test_dir::TestDir::new("quota-snap-stale");
+    let sessions: &Path = &dir;
+    let old = count_at(
+        "2026-11-20T08:00:00.000Z",
+        r#"{"primary":{"used_percent":97.0,"window_minutes":10080,"resets_at":1795300000},"secondary":null}"#,
+    );
+    rollout(sessions, "2026/11/20", "rollout-a.jsonl", &[META, &old]);
+    scan(sessions);
+    let observed = codex::iso_ms("2026-11-20T08:00:00.000Z").unwrap();
+    // read long after the event and after the window's reset time
+    let now = 1_795_300_000_000 + 1;
+    let answer = mcp_snapshot_at(None, Install::Off, Install::Off, now);
+    let codex = account(&answer, "codex");
+    assert_eq!(codex["observedAt"], observed, "never the read time");
+    assert_eq!(codex["stale"], true);
+    assert_eq!(codex["sevenDay"]["expired"], true);
+    assert_eq!(
+        codex["sevenDay"]["usedPercent"], 97.0,
+        "the old period's number, never a guessed zero"
+    );
+    assert_eq!(answer["staleAfterMs"], STALE_MS);
+}
+
+#[test]
+fn a_scan_that_finds_nothing_or_breaks_says_so_and_keeps_the_last_snapshot() {
+    let _guard = locked();
+    // before any scan
+    let answer = mcp_snapshot_at(None, Install::Off, Install::Off, 1);
+    assert_eq!(answer["sources"]["codex"]["state"], "not-scanned");
+    assert_eq!(answer["accounts"], serde_json::json!([]));
+    // an empty Codex home: scanned, nothing found
+    let dir = crate::test_dir::TestDir::new("quota-snap-scans");
+    let sessions: &Path = &dir;
+    scan(sessions);
+    let answer = mcp_snapshot_at(None, Install::Off, Install::Off, 1);
+    assert_eq!(answer["sources"]["codex"]["state"], "not-found");
+    assert!(answer["sources"]["codex"]["scannedAt"].is_u64());
+    // a session with limits, then (elsewhere) a newer one that does not parse
+    rollout(sessions, "2026/11/27", "rollout-a.jsonl", &[META, COUNT]);
+    scan(sessions);
+    let bad = count_at(
+        "2026-11-28T01:00:00.000Z",
+        r#"{"primary":{"used_percent":"high"}}"#,
+    );
+    let other = crate::test_dir::TestDir::new("quota-snap-bad");
+    rollout(&other, "2026/11/28", "rollout-b.jsonl", &[META, &bad]);
+    scan(&other);
+    let answer = mcp_snapshot_at(None, Install::Off, Install::Off, 1);
+    assert_eq!(answer["sources"]["codex"]["state"], "unreadable");
+    assert_eq!(
+        account(&answer, "codex")["sevenDay"]["usedPercent"],
+        53.0,
+        "the last parsed snapshot stays, never replaced by a guess"
+    );
+    // and a later scan that finds nothing does not delete it either
+    let empty = crate::test_dir::TestDir::new("quota-snap-empty");
+    scan(&empty);
+    let answer = mcp_snapshot_at(None, Install::Off, Install::Off, 1);
+    assert_eq!(answer["sources"]["codex"]["state"], "not-found");
+    assert_eq!(answer["accounts"].as_array().unwrap().len(), 1);
+    with_store(|store| store.codex_scan = Some((CodexScan::NoHome, 5)));
+    let answer = mcp_snapshot_at(None, Install::Off, Install::Off, 6);
+    assert_eq!(answer["sources"]["codex"]["state"], "no-home");
+}
+
+#[test]
+fn the_last_card_closing_keeps_the_account_and_cards_list_only_visible_ones() {
+    let _guard = locked();
+    let dir = crate::test_dir::TestDir::new("quota-snap-close");
+    let sessions: &Path = &dir;
+    rollout(sessions, "2026/11/27", "rollout-a.jsonl", &[META, COUNT]);
+    scan(sessions);
+    // two Codex cards of one account: one entry, only the card the caller sees
+    retain_with(
+        &[
+            row("%5", 700, "deck-mine", "codex"),
+            row("%6", 701, "deck-human", "codex"),
+        ],
+        &[],
+    );
+    let visible: HashMap<String, String> = [("deck-mine".to_string(), "W1".to_string())].into();
+    let answer = mcp_snapshot_at(Some(&visible), Install::Off, Install::Off, 1);
+    assert_eq!(answer["cardScope"], "workers");
+    assert_eq!(
+        answer["accounts"].as_array().unwrap().len(),
+        1,
+        "one account, never summed"
+    );
+    assert_eq!(
+        account(&answer, "codex")["cards"],
+        serde_json::json!(["W1"])
+    );
+    assert!(!answer.to_string().contains("deck-human"));
+    // without card visibility: no card at all
+    let none = mcp_snapshot_at(None, Install::Off, Install::Off, 1);
+    assert_eq!(account(&none, "codex")["cards"], serde_json::json!([]));
+    // the cards close (their panes are gone): the account and its numbers stay
+    retain_with(&[], &[]);
+    let answer = mcp_snapshot_at(Some(&visible), Install::Off, Install::Off, 1);
+    let codex = account(&answer, "codex");
+    assert_eq!(codex["cards"], serde_json::json!([]));
+    assert_eq!(codex["sevenDay"]["usedPercent"], 53.0);
 }

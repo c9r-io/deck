@@ -289,6 +289,14 @@ pub(crate) struct QuotaStatus {
     writable: bool,
 }
 
+impl QuotaStatus {
+    /// The Claude Code and agy statusLine states, as the files say now.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn states(&self) -> (State, State) {
+        (self.claude, self.agy)
+    }
+}
+
 pub(crate) fn status_now() -> QuotaStatus {
     let home = dirs::home_dir().unwrap_or_default();
     let state = |target: Target| {
