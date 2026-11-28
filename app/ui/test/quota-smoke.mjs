@@ -121,9 +121,9 @@ export async function runQuotaLiveSmoke() {
       opened.push(card);
       return card;
     };
-    const a = await start('Quota Claude A', `'${fixture}/claude.sh'`);
-    const b = await start('Quota Claude B', `'${fixture}/claude.sh'`);
-    const c = codex ? await start('Quota Codex', `'${fixture}/codex.sh'`) : null;
+    const a = await start('Quota Claude A', `/bin/sh '${fixture}/claude.sh'`);
+    const b = await start('Quota Claude B', `/bin/sh '${fixture}/claude.sh'`);
+    const c = codex ? await start('Quota Codex', `/bin/sh '${fixture}/codex.sh'`) : null;
 
     const claude = snap => snap.accounts.filter(x => x.kind === 'claude');
     const linked = await waitFor(async () => {

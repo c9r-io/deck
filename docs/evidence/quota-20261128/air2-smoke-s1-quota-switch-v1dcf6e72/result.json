@@ -1,0 +1,83 @@
+{
+  "run": "v1dcf6e72",
+  "root": "/private/tmp/deck-verify-v1dcf6e72",
+  "socket": "/private/tmp/deck-verify-v1dcf6e72/t/tmux-501/deck-smoke-v1dcf6e72",
+  "mode": "quota-switch",
+  "head": "e7728f51",
+  "dirty": [
+    "?? research_notes/"
+  ],
+  "binMtime": "2026-11-28 09:04:21",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "174",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "访达",
+  "version": "0.8.44",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-v1dcf6e72/experiment.json"
+  ],
+  "caffeinatePid": "58333",
+  "appPid": "58341",
+  "registerApp": [
+    0,
+    "registered process pid 58341 started Sat Nov 28 09:04:51 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 58362 started Sat Nov 28 09:04:54 2026"
+  ],
+  "operator": {
+    "copies": {
+      "quota-sw-clean": {
+        "claude": "{\n  \"model\": \"opus\",\n  \"statusLine\": {\n    \"type\": \"command\",\n    \"command\": \"~/.claude/line.sh \\\"$1\\\"\",\n    \"padding\": 1\n  },\n  \"hooks\": {}\n}\n",
+        "agy": "{\n  \"trustedWorkspaces\": [\n    \"/Users/u/project\"\n  ],\n  \"model\": \"gemini-3\"\n}\n"
+      },
+      "quota-sw-decline": {
+        "claude": "{\n  \"model\": \"opus\",\n  \"statusLine\": {\n    \"type\": \"command\",\n    \"command\": \"~/.claude/line.sh \\\"$1\\\"\",\n    \"padding\": 1\n  },\n  \"hooks\": {}\n}\n",
+        "agy": "{\n  \"trustedWorkspaces\": [\n    \"/Users/u/project\"\n  ],\n  \"model\": \"gemini-3\"\n}\n"
+      },
+      "quota-sw-on": {
+        "claude": "{\n  \"model\": \"opus\",\n  \"statusLine\": {\n    \"type\": \"command\",\n    \"command\": \"'/private/tmp/deck-verify-v1dcf6e72/home/Applications/deck.app/Contents/MacOS/deck-status-helper' --quota claude-code | ~/.claude/line.sh \\\"$1\\\"\",\n    \"padding\": 1\n  },\n  \"hooks\": {}\n}\n",
+        "agy": "{\n  \"trustedWorkspaces\": [\n    \"/Users/u/project\"\n  ],\n  \"model\": \"gemini-3\",\n  \"statusLine\": {\n    \"command\": \"'/private/tmp/deck-verify-v1dcf6e72/home/Applications/deck.app/Contents/MacOS/deck-status-helper' --quota agy --quiet\",\n    \"stack_with_default\": true,\n    \"type\": \"command\"\n  }\n}\n"
+      },
+      "quota-sw-off": {
+        "claude": "{\n  \"model\": \"opus\",\n  \"statusLine\": {\n    \"type\": \"command\",\n    \"command\": \"~/.claude/line.sh \\\"$1\\\"\",\n    \"padding\": 1\n  },\n  \"hooks\": {}\n}\n",
+        "agy": "{\n  \"trustedWorkspaces\": [\n    \"/Users/u/project\"\n  ],\n  \"model\": \"gemini-3\"\n}\n"
+      }
+    },
+    "judged": {
+      "quota-sw-clean": true,
+      "quota-sw-decline": true,
+      "quota-sw-on": true,
+      "quota-sw-off": true
+    }
+  },
+  "seconds": 24,
+  "finished": true,
+  "verdict": "PASS",
+  "verdictDetail": [
+    "smoke-verdict quota-switch: PASS (6/6 expected checkpoints, 6 lines)"
+  ],
+  "checksOfInterest": [
+    "smoke-check quota-sw-clean a=1 b=0\n",
+    "smoke-check quota-sw-decline a=1 b=0\n",
+    "smoke-check quota-sw-on a=1 b=0\n",
+    "smoke-check quota-sw-reopen a=1 b=0\n",
+    "smoke-check quota-sw-off a=1 b=0\n",
+    "smoke-check done a=1 b=0\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 58341 started Sat Nov 28 09:04:51 2026: running\ntmux-server pid 58362 started Sat Nov 28 09:04:54 2026 socket /private/tmp/deck-verify-v1dcf6e72/t/tmux-501/deck-smoke-v1dcf6e72: running"
+  ],
+  "cleanup": [
+    0,
+    "process pid 58341 started Sat Nov 28 09:04:51 2026: running\ntmux-server pid 58362 started Sat Nov 28 09:04:54 2026 socket /private/tmp/deck-verify-v1dcf6e72/t/tmux-501/deck-smoke-v1dcf6e72: running\nstopped tmux-server pid 58362\nstopped process pid 58341"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 2400",
+  "rootTrashed": true,
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

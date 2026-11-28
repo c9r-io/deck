@@ -1,0 +1,10 @@
+1795824296 [ui] smoke-check quota-sw-clean a=1 b=0
+1795824303 [ui] smoke-check quota-sw-decline a=1 b=0
+1795824309 [quota] statusline claude-code on
+1795824309 [quota] statusline agy on
+1795824309 [ui] smoke-check quota-sw-on a=1 b=0
+1795824315 [ui] smoke-check quota-sw-reopen a=1 b=0
+1795824315 [quota] statusline claude-code off
+1795824315 [quota] statusline agy off
+1795824316 [ui] smoke-check quota-sw-off a=1 b=0
+1795824322 [ui] smoke-check done a=1 b=0

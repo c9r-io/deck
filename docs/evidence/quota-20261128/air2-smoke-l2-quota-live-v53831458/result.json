@@ -1,0 +1,111 @@
+{
+  "run": "v53831458",
+  "root": "/private/tmp/deck-verify-v53831458",
+  "socket": "/private/tmp/deck-verify-v53831458/t/tmux-501/deck-smoke-v53831458",
+  "mode": "quota-live",
+  "head": "e7728f51",
+  "dirty": [
+    "M app/ui/test/quota-smoke.mjs",
+    "?? research_notes/"
+  ],
+  "binMtime": "2026-11-28 09:18:00",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "0",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "访达",
+  "claudeAuth": true,
+  "version": "0.8.44",
+  "trustAdded": "add True",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-v53831458/experiment.json"
+  ],
+  "caffeinatePid": "9476",
+  "appPid": "9482",
+  "registerApp": [
+    0,
+    "registered process pid 9482 started Sat Nov 28 09:18:08 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 9499 started Sat Nov 28 09:18:10 2026"
+  ],
+  "operator": {
+    "panes": [
+      "deck-quota-claude-a-5da6 %0 2.1.332",
+      "deck-quota-claude-b-5fl7 %1 2.1.332",
+      "deck-quota-codex-5hh8 %2 codex"
+    ],
+    "userLine": {
+      "deck-quota-claude-a-5da6": {
+        "QUOTA-USER-LINE": true,
+        "reply": true,
+        "tail": [
+          "✻ Crunched for 2s · done 9:18 AM",
+          "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+          "❯ ",
+          "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+          "  QUOTA-USER-LINE",
+          "  ⏵⏵ auto mode on (shift+tab to cycle)"
+        ]
+      },
+      "deck-quota-claude-b-5fl7": {
+        "QUOTA-USER-LINE": true,
+        "reply": true,
+        "tail": [
+          "✻ Sautéed for 2s · done 9:18 AM",
+          "────────────────────────────────────────────────────────────────────────────────",
+          "❯ ",
+          "────────────────────────────────────────────────────────────────────────────────",
+          "  QUOTA-USER-LINE",
+          "  ⏵⏵ auto mode on (shift+tab to cycle)                                  "
+        ]
+      },
+      "deck-quota-codex-5hh8": {
+        "QUOTA-USER-LINE": false,
+        "reply": true,
+        "tail": [
+          "• QUOTA-CODEX-OK",
+          "  Worked for 2s • 09:18                                                         ",
+          "› Ask Codex to do anything",
+          "  GPT-6.1-Sol low · /private/tmp/deck-verify-v53831458/run/data/translation-    ",
+          "  fixture/work · Return QUOTA-CODEX-OK",
+          "  ← for agents · ? for shortcuts                      ⚠ 2 warnings · f2 to view"
+        ]
+      }
+    },
+    "rollouts": "1"
+  },
+  "seconds": 69,
+  "finished": true,
+  "verdict": "PASS",
+  "verdictDetail": [
+    "smoke-verdict quota-live: PASS (9/9 expected checkpoints, 9 lines)"
+  ],
+  "checksOfInterest": [
+    "smoke-check quota-clean a=1 b=0\n",
+    "smoke-check quota-claude a=2 b=2\n",
+    "smoke-check quota-dedupe a=2 b=0\n",
+    "smoke-check quota-codex a=2 b=0\n",
+    "smoke-check quota-area a=2 b=2\n",
+    "smoke-check quota-chip a=1 b=0\n",
+    "smoke-check quota-detail a=2 b=0\n",
+    "smoke-check quota-armed a=1 b=0\n",
+    "smoke-check done a=1 b=0\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 9482 started Sat Nov 28 09:18:08 2026: running\ntmux-server pid 9499 started Sat Nov 28 09:18:10 2026 socket /private/tmp/deck-verify-v53831458/t/tmux-501/deck-smoke-v53831458: running"
+  ],
+  "cleanup": [
+    0,
+    "process pid 9482 started Sat Nov 28 09:18:08 2026: running\ntmux-server pid 9499 started Sat Nov 28 09:18:10 2026 socket /private/tmp/deck-verify-v53831458/t/tmux-501/deck-smoke-v53831458: running\nstopped tmux-server pid 9499\nstopped process pid 9482"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 2400",
+  "codexAuthRemoved": "removed",
+  "rootTrashed": true,
+  "trustRemoved": "remove False",
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

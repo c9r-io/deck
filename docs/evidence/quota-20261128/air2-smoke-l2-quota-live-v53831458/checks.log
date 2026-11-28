@@ -1,0 +1,9 @@
+1795825092 [ui] smoke-check quota-clean a=1 b=0
+1795825098 [ui] smoke-check quota-claude a=2 b=2
+1795825098 [ui] smoke-check quota-dedupe a=2 b=0
+1795825153 [ui] smoke-check quota-codex a=2 b=0
+1795825153 [ui] smoke-check quota-area a=2 b=2
+1795825153 [ui] smoke-check quota-chip a=1 b=0
+1795825153 [ui] smoke-check quota-detail a=2 b=0
+1795825154 [ui] smoke-check quota-armed a=1 b=0
+1795825162 [ui] smoke-check done a=1 b=0
