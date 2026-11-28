@@ -313,6 +313,74 @@ def recovery_operator(t0, phase):
     return facts
 
 
+SF_SERVER = """import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def _r(self):
+        n = int(self.headers.get('content-length') or 0)
+        self.rfile.read(n)
+        with open(sys.argv[2], 'a') as f:
+            f.write(self.command + ' ' + self.path + chr(10))
+        body = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": "deck probe: forced failure"}}).encode()
+        self.send_response(400)
+        self.send_header('content-type', 'application/json')
+        self.send_header('content-length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_POST = _r
+    do_GET = _r
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()
+"""
+
+
+def stopfailure_operator():
+    """Phase 3, in "Orch R"'s pane while the page still holds it: a loopback
+    API that answers every request 400, an isolated Claude config folder
+    (a fake API key, this carrier's helper as the UserPromptSubmit and
+    StopFailure hooks, plus a tee keeping the payload), and one `claude -p`
+    turn typed into the pane. No real credential, folder or quota is used."""
+    facts = {}
+    pane = RECOVERY_PANE.get("pane")
+    if not pane:
+        return {"error": "no pane"}
+    sf = f"{ROOT}/sf"; port = 18000 + int(RUN[1:5], 16) % 1000
+    hook = lambda *a: {"type": "command", "command": HELPER, "args": ["claude-code", *a], "timeout": 10}
+    tee = {"type": "command", "command": "/bin/sh", "args": ["-c", f"cat > {sf}/out/stopfailure.json"], "timeout": 10}
+    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [hook("working")]}],
+                          "StopFailure": [{"hooks": [hook("turn-failed"), tee]}],
+                          "Stop": [{"hooks": [hook("turn-done")]}]}}
+    remote(f"mkdir -p -m 700 {sf}/cfg {sf}/home {sf}/proj {sf}/out && printf %s {shlex.quote(SF_SERVER)} > {sf}/server.py && "
+           f"printf %s {shlex.quote(json.dumps(settings))} > {sf}/cfg/settings.json")
+    spid = remote(f"nohup python3 {sf}/server.py {port} {sf}/requests.log >/dev/null 2>&1 & echo $!").strip()
+    facts["serverPid"] = spid
+    facts["registerServer"] = registry("add-process", f"--pid {spid}")
+    time.sleep(2)
+    env = f"TMUX_TMPDIR={shlex.quote(TMUX_TMPDIR)}"
+    line = (f"cd {sf}/proj && HOME={sf}/home CLAUDE_CONFIG_DIR={sf}/cfg ANTHROPIC_API_KEY=sk-ant-deck-probe-fake "
+            f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port} CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 "
+            f"claude -p 'say hi'; echo SF-EXIT=$?")
+    lines_before = int(remote(f"wc -l < {DATA}/app.log", check=False).strip() or 0)
+    remote(f"{env} {shlex.quote(TMUX)} -L {SOCKET} send-keys -t {pane} -l {shlex.quote(line)} && "
+           f"{env} {shlex.quote(TMUX)} -L {SOCKET} send-keys -t {pane} Enter")
+    end = time.time() + 150
+    while time.time() < end:
+        if "SF-EXIT=" in remote(f"{env} {shlex.quote(TMUX)} -L {SOCKET} capture-pane -p -J -t {pane} -S -20 2>/dev/null", check=False):
+            break
+        time.sleep(3)
+    facts["pane"] = remote(f"{env} {shlex.quote(TMUX)} -L {SOCKET} capture-pane -p -J -t {pane} -S -12 2>/dev/null | grep -v '^[[:space:]]*$' | tail -6", check=False)[-1500:]
+    payload = remote(f"cat {sf}/out/stopfailure.json 2>/dev/null", check=False)
+    try:
+        p = json.loads(payload)
+        facts["payload"] = {k: (v if k in ("hook_event_name", "error") else (type(v).__name__ if v is not None else None)) for k, v in p.items()}
+    except ValueError:
+        facts["payload"] = None
+    facts["requests"] = remote(f"wc -l < {sf}/requests.log 2>/dev/null", check=False).strip()
+    facts["agentStatus"] = remote(f"tail -n +{lines_before + 1} {DATA}/app.log | grep -a 'agent-status' | cut -c1-160 | tail -8", check=False).strip().splitlines()
+    facts["stopServer"] = registry("stop", f"--pid {spid}")
+    return facts
+
+
 def close_operator(t0):
     """After `close-armed`: the worker's project MCP server (this instance's
     adapter) is written, and the client is typed into the page's one card."""
@@ -868,6 +936,7 @@ def main():
             result["registerApp2"] = registry("add-process", f"--pid {pid2}")
         t1 = time.time()
         result["operator2"] = recovery_operator(t1, 2)
+        result["stopfailure"] = stopfailure_operator()
         result["relaunchFinished"] = False
         while time.time() - t1 < 900:
             time.sleep(3)

@@ -938,8 +938,10 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await report('recovery-restored', restored, 1, (orch ? 1 : 0) + (worker ? 2 : 0));
     const cleared = worker ? await until(() => (provider.get(worker.id) ? null : true), 1_200_000, 1000) : null;
     await report('recovery-cleared', !!cleared);
-    /* the client still checks the replay and writes its evidence there */
-    await pause(30_000);
+    /* the client still checks the replay and writes its evidence there,
+       then the runner runs a real Claude Code turn that an API error ends
+       in this card's pane (StopFailure through this carrier's helper) */
+    await pause(240_000);
     if (orch) await provider.close(orch.id);
     await report('done', !failed, 1, 4);
   };
