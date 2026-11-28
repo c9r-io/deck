@@ -1053,6 +1053,22 @@ impl World {
         }
     }
 
+    /// The sessions whose client THIS process (Deck under test) hung up: a
+    /// stand-in's `hup <session> from=<pid>` lines with our own pid. A
+    /// hang-up the old tmux server's teardown delivers to its panes comes
+    /// from another sender and is not Deck's.
+    fn deck_hangups(&self) -> Vec<String> {
+        let us = format!("from={}", std::process::id());
+        self.lines("reported.log")
+            .iter()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("hup ")?;
+                let (session, from) = rest.split_once(' ')?;
+                (from == us).then(|| session.to_string())
+            })
+            .collect()
+    }
+
     fn lines(&self, file: &str) -> Vec<String> {
         // the fake client writes its own records into its HOME
         std::fs::read_to_string(self.home.join(file))
@@ -8454,9 +8470,9 @@ fn a_client_held_by_its_own_exit_question_is_hung_up_and_reentered_in_its_own_se
     assert_eq!(pasted, expected);
     // the two ticked held clients were hung up and said so; the unticked
     // one was not (it ended with the server, silently)
-    let reports = world.lines("reported.log");
-    assert!(reports.contains(&format!("hup {ID_A}")), "{reports:?}");
-    assert!(reports.contains(&format!("hup {ID_C}")), "{reports:?}");
+    let reports = world.deck_hangups();
+    assert!(reports.contains(&ID_A.to_string()), "{reports:?}");
+    assert!(reports.contains(&ID_C.to_string()), "{reports:?}");
     assert!(
         !reports.iter().any(|line| line.contains(ID_D)),
         "{reports:?}"
@@ -8604,13 +8620,7 @@ fn a_held_client_of_an_adapter_without_a_late_exit_is_left_to_the_server() {
         (Outcome::NotAttempted, Some(Reason::ExitTimeout), None)
     );
     assert!(world.pasted().is_empty());
-    assert!(
-        !world
-            .lines("reported.log")
-            .iter()
-            .any(|line| line.starts_with("hup")),
-        "Deck sent it no hang-up"
-    );
+    assert!(world.deck_hangups().is_empty(), "Deck sent it no hang-up");
 }
 
 /// Reading a record into an offer is not a claim: a record that a restart's

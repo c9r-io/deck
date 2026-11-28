@@ -65,6 +65,10 @@
 //! as Claude Code 2.1.332 does; `silent` leaves without a report; `ignore`
 //! stays; `late:<ms>` reports that many milliseconds after the hang-up;
 //! `switch:<uuid>` reports a switch to that session first, then its end.
+//! Its report line `hup <session> from=<pid>` names the process the signal
+//! came from (`SA_SIGINFO`'s `si_pid`): the tests count only hang-ups
+//! Deck's own process sent, never the one a tmux server's teardown delivers
+//! to its panes.
 //! Without `hup=` a hang-up ends it the default way, with no report.
 //!
 //! This file uses nothing but the standard library (`sys` below declares
@@ -88,6 +92,28 @@ mod sys {
     pub const SIGHUP: c_int = 1;
     /// `SIG_IGN` as `signal(3)` takes it.
     pub const SIG_IGN: usize = 1;
+    /// `SA_SIGINFO` and `SA_RESTART` (`<sys/signal.h>`): `signal(3)` on
+    /// macOS restarts interrupted calls, and so must this handler.
+    pub const SA_SIGINFO: c_int = 0x0040;
+    pub const SA_RESTART: c_int = 0x0002;
+
+    /// `struct sigaction` as macOS lays it out: the handler union, a
+    /// 32-bit `sigset_t`, the flags.
+    #[repr(C)]
+    pub struct SigAction {
+        pub handler: usize,
+        pub mask: u32,
+        pub flags: c_int,
+    }
+
+    /// The head of macOS's `siginfo_t`: what this program reads of it.
+    #[repr(C)]
+    pub struct SigInfo {
+        pub signo: c_int,
+        pub errno: c_int,
+        pub code: c_int,
+        pub pid: c_int,
+    }
 
     /// `struct termios`: four flag words, twenty control characters, two speeds.
     #[repr(C)]
@@ -121,6 +147,7 @@ mod sys {
         pub fn cfmakeraw(termios: *mut Termios);
         pub fn raise(signal: c_int) -> c_int;
         pub fn signal(signal: c_int, handler: usize) -> usize;
+        pub fn sigaction(signal: c_int, action: *const SigAction, old: *mut SigAction) -> c_int;
         pub fn poll(fds: *mut PollFd, count: c_uint, timeout: c_int) -> c_int;
     }
 }
@@ -139,6 +166,8 @@ const EXITING: &str = "FAKE_REENTRY_EXITING";
 /// The session this client is in now (`hup=`), and whether it was hung up.
 static CURRENT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static HUNG_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The process the hang-up came from (0: the kernel, e.g. a terminal's).
+static SENDER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// The session lock, poisoned or not. This file is built by `rustc` alone
 /// (module header), so the crate's `LockRecover` is not in reach.
@@ -153,7 +182,18 @@ fn now_in(session: &str) {
     *current() = session.to_string();
 }
 
-extern "C" fn on_hang_up(_: std::os::raw::c_int) {
+extern "C" fn on_hang_up(
+    _: std::os::raw::c_int,
+    info: *const sys::SigInfo,
+    _: *const std::ffi::c_void,
+) {
+    // SAFETY: the kernel hands an SA_SIGINFO handler a valid siginfo_t.
+    let pid = if info.is_null() {
+        0
+    } else {
+        unsafe { (*info).pid }
+    };
+    SENDER.store(pid, std::sync::atomic::Ordering::SeqCst);
     HUNG_UP.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
@@ -165,8 +205,13 @@ fn on_hang_up_do(mode: &str) {
         unsafe { sys::signal(sys::SIGHUP, sys::SIG_IGN) };
         return;
     }
-    // SAFETY: a handler that only stores to an atomic.
-    unsafe { sys::signal(sys::SIGHUP, on_hang_up as *const () as usize) };
+    let action = sys::SigAction {
+        handler: on_hang_up as *const () as usize,
+        mask: 0,
+        flags: sys::SA_SIGINFO | sys::SA_RESTART,
+    };
+    // SAFETY: a handler that only stores to atomics; `action` outlives the call.
+    unsafe { sys::sigaction(sys::SIGHUP, &action, std::ptr::null_mut()) };
     let mode = mode.to_string();
     std::thread::spawn(move || loop {
         if !HUNG_UP.load(std::sync::atomic::Ordering::SeqCst) {
@@ -185,7 +230,8 @@ fn on_hang_up_do(mode: &str) {
         } else if mode == "other" {
             hook("session-end", &session, "other");
         }
-        reported(&format!("hup {session}"));
+        let from = SENDER.load(std::sync::atomic::Ordering::SeqCst);
+        reported(&format!("hup {session} from={from}"));
         std::process::exit(0);
     });
 }
