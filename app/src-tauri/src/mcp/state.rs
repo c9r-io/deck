@@ -82,6 +82,12 @@ pub(super) struct Client {
     /// file reads stay on the roots, and every other choice is its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) auto_worktrees: bool,
+    /// The user's choice (approved 2026-11-28, `quota.rs` in this folder)
+    /// that this client may read the redacted usage windows of every agent
+    /// account Deck observed this run (`deck_quota_snapshot`). Read only;
+    /// never implied by another choice, and it implies none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) allow_quota: bool,
     /// Creates this client has had accepted. A create must name the current
     /// value, so a create whose record was retired can never be accepted again.
     #[serde(default)]
@@ -835,7 +841,9 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if super::grants::uses_auto_worktrees(doc) {
+    if super::quota::uses_quota(doc) {
+        STATE_VERSION_QUOTA
+    } else if super::grants::uses_auto_worktrees(doc) {
         STATE_VERSION_AUTO_WORKTREES
     } else if super::reports::uses_report_acks(doc) {
         STATE_VERSION_REPORT_ACKS

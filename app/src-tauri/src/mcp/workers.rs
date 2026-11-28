@@ -973,8 +973,26 @@ pub(super) fn worker_list(
 
 /// The usage windows of the accounts the caller's own card and its listed
 /// worker cards run under (`quota.rs` `projection`): deduplicated by
-/// account, presentation only — nothing here reads it for a decision.
+/// account, presentation only — nothing here reads it for a decision. The
+/// accounts no such card runs under now are `deck_quota_snapshot`'s
+/// (`quota.rs` in this folder, its own choice).
 fn quota_view(rows: &[WorkerRow]) -> Vec<Value> {
+    crate::quota::projection(&quota_cards_of(rows))
+}
+
+/// The cards a caller with the worker choice sees, as `quota.rs` takes
+/// them (session name → card id): its listed worker cards (`rows_of`,
+/// `origin::sees`) and its own calling card. `deck_quota_snapshot` names
+/// these and no other card.
+pub(super) fn quota_cards(
+    doc: &DiskDoc,
+    client_id: &str,
+    orchestrator: Option<&str>,
+) -> std::collections::HashMap<String, String> {
+    quota_cards_of(&rows_of(doc, client_id, orchestrator))
+}
+
+fn quota_cards_of(rows: &[WorkerRow]) -> std::collections::HashMap<String, String> {
     let mut cards: std::collections::HashMap<String, String> = rows
         .iter()
         .filter_map(|row| {
@@ -991,7 +1009,7 @@ fn quota_view(rows: &[WorkerRow]) -> Vec<Value> {
             cards.insert(target.session, own);
         }
     }
-    crate::quota::projection(&cards)
+    cards
 }
 
 /// What a `deck_worker_wait` returns for (`until`).
@@ -3159,6 +3177,7 @@ struct Choices {
     card_edits: bool,
     rule_column: bool,
     auto_worktrees: bool,
+    quota: bool,
 }
 
 impl Choices {
@@ -3176,6 +3195,7 @@ impl Choices {
             card_edits: client.allow_card_edits,
             rule_column: client.rule_column,
             auto_worktrees: client.auto_worktrees,
+            quota: client.allow_quota,
         }
     }
 
@@ -3195,6 +3215,7 @@ impl Choices {
             card_edits: input.allow_cards && input.allow_card_edits,
             rule_column: input.rule_column,
             auto_worktrees: input.auto_worktrees,
+            quota: input.allow_quota,
         }
     }
 
@@ -3211,6 +3232,7 @@ impl Choices {
         client.allow_card_edits = self.card_edits;
         client.rule_column = self.rule_column;
         client.auto_worktrees = self.auto_worktrees;
+        client.allow_quota = self.quota;
     }
 }
 

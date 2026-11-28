@@ -84,6 +84,7 @@ pub(super) enum Choice {
     Mentions,
     Cards,
     CardEdits,
+    Quota,
 }
 
 impl Choice {
@@ -96,6 +97,7 @@ impl Choice {
             Choice::Mentions => client.allow_mentions,
             Choice::Cards => client.allow_cards,
             Choice::CardEdits => client.allow_cards && client.allow_card_edits,
+            Choice::Quota => client.allow_quota,
         }
     }
 
@@ -108,6 +110,7 @@ impl Choice {
             Choice::Mentions => "client may not read Slack mentions",
             Choice::Cards => "client may not read the card snapshot",
             Choice::CardEdits => "client may not rename or move cards",
+            Choice::Quota => "client may not read the account quota summary",
         }
     }
 }

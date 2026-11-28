@@ -92,6 +92,8 @@ pub(super) fn capabilities(
                 "mayReadMentions": client.allow_mentions,
                 "mayReadCards": client.allow_cards,
                 "mayEditCards": client.allow_cards && client.allow_card_edits,
+                // the account quota summary (`deck_quota_snapshot`)
+                "mayReadQuota": client.allow_quota,
                 // notes for the user go into that card's scratchpad
                 // (`notes.rs`): only a call from a card can leave one
                 "mayLeaveNotes": !card.is_null(),

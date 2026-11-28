@@ -57,6 +57,8 @@ pub(crate) struct ClientView {
     pub(super) projects: Vec<ProjectScope>,
     /// Its linked-worktree switch (`grants::auto_worktree_scope`).
     pub(super) auto_worktrees: bool,
+    /// May read the account quota summary (`deck_quota_snapshot`).
+    pub(super) allow_quota: bool,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
     /// the answer otherwise.
@@ -101,6 +103,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 all_projects: client.all_projects,
                 projects: client.projects.clone(),
                 auto_worktrees: client.auto_worktrees,
+                allow_quota: client.allow_quota,
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
             })
@@ -403,6 +406,7 @@ pub(crate) fn mcp_client_add(
         all_projects,
         projects: _,
         auto_worktrees,
+        allow_quota,
     } = permissions;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
@@ -460,6 +464,7 @@ pub(crate) fn mcp_client_add(
             rule_column,
             lanes: Default::default(),
             auto_worktrees,
+            allow_quota,
             send_epoch: 0,
         };
         doc.config.clients.push(client.clone());
@@ -481,6 +486,7 @@ pub(crate) fn mcp_client_add(
             rule_column: client.rule_column,
             all_projects: client.all_projects,
             auto_worktrees: client.auto_worktrees,
+            allow_quota: client.allow_quota,
             projects: client.projects,
         })
     });
@@ -785,6 +791,10 @@ pub(crate) struct PermissionsInput {
     /// (`grants::auto_worktree_scope`); absent = off.
     #[serde(default)]
     pub(super) auto_worktrees: bool,
+    /// May read the redacted usage windows of every agent account Deck
+    /// observed this run (`deck_quota_snapshot`); absent = off.
+    #[serde(default)]
+    pub(super) allow_quota: bool,
 }
 
 #[tauri::command(async)]

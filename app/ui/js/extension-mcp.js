@@ -66,6 +66,8 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-card-edits"> <span data-i18n="mcp.permCardEdits">Organize cards</span></label>
         <p class="set-hint mcp-perm-hint" data-i18n="mcp.permCardEditsHint">It may rename its projects' cards and move them between columns and between the projects it reaches. With Drive worker cards on, it may also choose the column each worker card it starts opens in.</p>
       </div>
+      <label class="mcp-perm"><input type="checkbox" id="mcp-perm-quota"> <span data-i18n="mcp.permQuota">Read the account quota summary</span></label>
+      <p class="set-hint mcp-perm-hint" data-i18n="mcp.permQuotaHint">The usage windows (such as 5 hours and 7 days) of every agent account Deck has seen since it started, also without a card running under it. No email, account ID or folder path. Claude Code and agy also need Settings › Agents & notifications › Show usage quota.</p>
       <p class="mcp-field-error" id="mcp-perm-error" role="alert" hidden></p>
     </div>
     <div class="cfm-actions">
@@ -442,6 +444,7 @@ export function createMcpSettings(host) {
         $('mcp-perm-cards').checked = perms.allowCards;
         $('mcp-perm-card-edits').checked = perms.allowCards && perms.allowCardEdits;
         $('mcp-perm-card-edits-box').hidden = !perms.allowCards;
+        $('mcp-perm-quota').checked = perms.allowQuota;
         $('mcp-perm-worker-box').hidden = !perms.allowWorkers;
         $('mcp-perm-follow').checked = !perms.ruleColumn;
         $('mcp-perm-follow-box').hidden = !(perms.allowWorkers || perms.allowAutomations);
@@ -467,6 +470,7 @@ export function createMcpSettings(host) {
       $('mcp-perm-mentions').onchange = () => { perms.allowMentions = $('mcp-perm-mentions').checked; };
       $('mcp-perm-cards').onchange = () => { perms.allowCards = $('mcp-perm-cards').checked; paintPerms(); };
       $('mcp-perm-card-edits').onchange = () => { perms.allowCardEdits = $('mcp-perm-card-edits').checked; };
+      $('mcp-perm-quota').onchange = () => { perms.allowQuota = $('mcp-perm-quota').checked; };
       $('mcp-perm-type-add').onclick = () => {
         perms.workerTypes.push({ name: '', cmd: '', description: '' });
         paintTypes();

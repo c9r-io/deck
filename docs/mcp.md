@@ -196,6 +196,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_card_update` | Rename one card of the client's projects and/or move it to a column, of its own project or (`project_id`) of another the client reaches: `card_id`, `request_id`, `title` + `from_title`, `column_id` + `from_column_id`. Refused with `CARD_CHANGED` when the card is no longer where or named as the request says, `COLUMN_NOT_FOUND` for a column outside the target project or a project out of reach, `CAPACITY_EXCEEDED` past 30 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `card-changed`, `card-starting`, `card-collecting`, `card-managed` or `card-missing`. Types, starts and closes nothing. Needs the client's separate **organize cards** choice (and the card snapshot). |
 | `deck_card_note` | Leave, revise or withdraw one note for the user in the scratchpad of the card the call comes from (proved from the kernel; `NOT_IN_A_CARD` otherwise): `request_id`, `key` (the client's own; the same key revises the note while it is open), `title` (one line, at most 120 characters), `text` (at most 8 KiB), `acted` (the Agent already went ahead with its recommendation), or `withdraw: true` with the key alone. `NOTE_HANDLED` once the user handled that key, `CAPACITY_EXCEEDED` past 32 open notes on the card, `RATE_LIMITED` past 12 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `note-handled`, `note-capacity`, `note-conflict` or `card-missing`. Any locally authorized client; no separate choice. |
 | `deck_card_notes` | The caller's own notes in the card the call comes from: `key`, `title`, `acted`, `state` (`open` or `handled`), `updatedAt`. Never the user's notes or another client's. |
+| `deck_quota_snapshot` | Read only, no arguments. The usage windows of every agent account (Claude Code, Codex, agy) Deck observed in this run, also with no card under it now; see "Account quota". Needs the client's separate **Read the account quota summary** choice (`mayReadQuota`), nothing else; `PERMISSION_DENIED` without it, the worker choice included. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence` (one request at a time) or `lane_epoch` (several at once; see "Several requests at once"). Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over, and for agy never while agy works (`agy-working`). |
 | `deck_worker_interject` | Send one line to a worker card the calling orchestrator card started, without waiting for the card to fall quiet (the same arguments as `deck_worker_send`; see "Interjecting" under Worker cards). `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `INTERJECT_UNSUPPORTED` for an agy worker, `INVALID_ARGUMENTS` for text with a control character other than newline and tab. Every other hold, the minute between two lines, the sequence, rate and unsent bound are `deck_worker_send`'s. Part of **Drive worker cards**. |
 | `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `request_id`, `send_sequence` or `lane_epoch`), bound by `close_mode`: `episode` (default, `after_episode`: `EPISODE_MOVED` once it moved on, its own turn ending included) or `instance` (`instance` and `last_line` from `deck_worker_list`: the agent's own turns do not refuse it; `INSTANCE_CHANGED`, `NEW_INPUT`, `LINES_PENDING`, `INSTANCE_UNKNOWN`, `OBSERVATION_UNKNOWN` do; an instance that ended leaves the card to close). Also `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `CLOSE_IN_PROGRESS` while another close of it is under way; each refusal says `stage: precheck`, `accepted: false` and what Deck `observed`. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above in lower case when the card changed before the close ran, with `result.refusal` (`stage: admission`, `code`, `observed`, `nextAction`). From acceptance until it ends, a line for the card is `WORKER_CLOSING`. Part of **Drive worker cards**; 30 a minute together with lines. |
@@ -800,6 +801,56 @@ Agent's question. Stopping the choice,
 a project leaving the client's scope, revoking the client or disabling MCP
 takes effect on the next call and removes the client's marks. A ledger
 holding this choice is written at version 14 (sticky).
+
+## Account quota
+
+**Read the account quota summary** (in the same dialog, off by default,
+never implied by another choice) lets an orchestrator keep an eye on the
+agent accounts its work runs on — "tell me when an account passes 90, 95
+and 99 % of its 7-day limit" — even while no card of it runs under that
+account. `deck_quota_snapshot` lists every account Deck observed since it
+started: an account stays listed after its last card closed, and Codex is
+found by the same bounded scan of its newest session files (at most once a
+minute) whether or not a Codex card is open. Claude Code and agy accounts
+appear once one of their sessions refreshed its status line with Settings
+› Agents & notifications › Show usage quota on.
+
+Per account: `account` (an opaque id, stable within ONE Deck run: a
+restart draws new ids, so nothing matches accounts across restarts),
+`agent`, `byAccount`, `label` (config folder names only), `plan`, `source`
+(`statusline` or `rollout`), `observedAt` (the observation's own time — the
+status line's run or the Codex event's timestamp, never the time Deck read
+a file), `ageMs`, `stale` (no newer observation for `staleAfterMs`, 30
+minutes), `windows` (`window`, `minutes`, `usedPercent`, `resetsAt` in
+epoch ms, `expired` once the reset time passed: the number is the previous
+period's and Deck never guesses the new one), `sevenDay` (the 7-day window,
+`minutes: 10080`, closest to its limit among those not expired, wherever
+the source put it; `null` when the account reports none) and `cards`: only
+cards the caller already sees — with the worker choice its own worker
+cards and its calling card (`cardScope: workers`), otherwise none
+(`cardScope: none`). Two cards of one account are one entry, never added
+together. No email, raw account id, credential, path, session name or
+other card's title ever leaves.
+
+`sources` says why an agent may be missing, since an empty `accounts` is
+not "no use": `codex.state` is `found`, `not-found` (no rate limits in the
+newest session files Deck reads), `unreadable` (they did not parse: the
+format changed; the last parsed snapshot stays), `no-home` or
+`not-scanned`, with `scannedAt`; `claude.state` and `agy.state` are
+`observed`, `waiting` (Deck's statusLine entry is on, nothing arrived
+since Deck started), `not-connected` (the switch is off, another statusLine
+holds the slot, or the agent never ran here) or `unreadable` (its settings
+file is not JSON), with the file's own `statusLine` word.
+
+For alerts the tool description tells the client: judge a threshold only
+on a window that is neither `stale` nor `expired`; old data is only "as of
+`observedAt`"; remember each alert by account + window + `resetsAt` +
+threshold, and when several thresholds were crossed since the last look,
+say the highest. Deck itself notifies nobody, polls nothing, switches no
+account, and no hold, release, readiness or schedule reads quota.
+`deck_worker_list` `quota` keeps its own meaning: the accounts the caller's
+card and its listed worker cards run under now, under the worker choice.
+A ledger holding the choice is written at version 24 (sticky).
 
 ## Notes for the user
 

@@ -128,7 +128,11 @@ pub(crate) fn account_of(first: &str) -> Option<String> {
 pub(crate) type Limits = (Vec<Window>, Option<String>, u64);
 
 /// The rate limits of one `token_count` line, `Err` when it has the shape
-/// of one but not of what Deck reads.
+/// of one but not of what Deck reads. A window's name follows its
+/// `window_minutes` (10 080 = `seven_day`, 300 = `five_hour`), whichever
+/// slot (`primary`, `secondary`) carries it; a line whose slots are both
+/// null or absent is no observation (`None`). The time is the event's own
+/// `timestamp`, never the time Deck read the file.
 pub(crate) fn limits_of(line: &str) -> Option<Result<Limits, ()>> {
     if !line.contains("\"token_count\"") || !line.contains("\"rate_limits\"") {
         return None;
@@ -149,10 +153,11 @@ pub(crate) fn limits_of(line: &str) -> Option<Result<Limits, ()>> {
     let parsed = (|| {
         let mut windows = Vec::new();
         for slot in ["primary", "secondary"] {
-            let window = limits.get(slot).ok_or(())?;
-            if window.is_null() {
+            // an absent slot is no window, like a null one: which slot holds
+            // the 7-day window is named by its minutes, not its place
+            let Some(window) = limits.get(slot).filter(|w| !w.is_null()) else {
                 continue;
-            }
+            };
             let used = window
                 .get("used_percent")
                 .and_then(|v| v.as_f64())
@@ -178,16 +183,18 @@ pub(crate) fn limits_of(line: &str) -> Option<Result<Limits, ()>> {
             });
         }
         if windows.is_empty() {
-            return Err(());
+            return Ok(None);
         }
         let plan = limits
             .get("plan_type")
             .and_then(|v| v.as_str())
             .filter(|p| plan_ok(p))
             .map(str::to_owned);
-        Ok((windows, plan, observed.ok_or(())?))
+        Ok(Some((windows, plan, observed.ok_or(())?)))
     })();
-    Some(parsed)
+    // limits with no window at all (both slots null or absent) say nothing:
+    // not an observation, and not a format change either
+    parsed.transpose()
 }
 
 /// The last rate limits of one file and its account.
