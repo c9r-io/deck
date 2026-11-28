@@ -511,6 +511,25 @@ not exist there, so the runner wrote Deck's entry naming a link
 helper — Deck recognizes its entry by that path — and removed the file and
 the run's trusted folder after).
 
+## Linked-worktree switch (WKWebView modes `worktree-switch`, `worktree-switch-relaunch`)
+
+Two launches on one data directory. Phase 1: the page makes a project
+"Repo" whose directory is the fixture's repository (`repo/`, one commit),
+authorizes one client of all projects with a worker type `claude --version`
+(the card's shell starts in its directory and nothing interactive opens) and
+the switch off, then ticks **Allow the linked worktrees of these projects**
+in the real Permissions… dialog and saves (`wt-saved` b=3). The runner stops
+the carrier and relaunches it on the same data. Phase 2: the switch is still
+on (`wt-restored`); the page makes a project "Later" (`repo2/`) only now and
+one plain-shell card "Orch W" (`wt-armed`). The runner creates, with git,
+`disk2/wt1` (a worktree of `repo`), `disk3/wt2` (of `repo2`) and a clone
+`disk2/clone`, then types `scripts/mcp-worktree-e2e.py` into "Orch W": the
+real `tools/list`, `autoLinkedWorktrees` and `authorizedWorkspaces`, two
+starts committed in their projects with `result.launch.grant`
+`auto-worktree`, the clone and a plain folder refused. The page checks the
+two cards' project and directory (`wt-cards` b=3). Judge each phase with
+`scripts/smoke-verdict <data> <mode>` and the client's PASS line.
+
 ## Closing a worker that reported (WKWebView mode `worker-close`)
 
 Round 2 of 2026-11-28 end to end in the real window: the `workers` report

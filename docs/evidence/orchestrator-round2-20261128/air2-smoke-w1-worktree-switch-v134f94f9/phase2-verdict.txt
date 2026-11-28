@@ -1,0 +1,1 @@
+smoke-verdict worktree-switch-relaunch: PASS (4/4 expected checkpoints, 4 lines)

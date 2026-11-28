@@ -675,109 +675,114 @@ pub(super) fn record_expired_grants(runtime: &Runtime) -> Result<(), DeckError> 
     })
 }
 
-/* ---------- linked-worktree rules (approved 2026-11-28) ---------- */
+/* ---------- linked worktrees of authorized projects (approved 2026-11-28) ---------- */
 
-/// Linked-worktree rules one client may hold (`Client.worktrees`).
-pub(super) const MAX_WORKTREE_RULES: usize = 16;
 /// The most bytes Deck reads of one of Git's small pointer files
 /// (`.git`, `gitdir`, `commondir`): each holds one path.
 const GIT_POINTER_BYTES: u64 = 4096;
+/// The most directories `worktree_top` climbs looking for a `.git`.
+const MAX_WORKTREE_DEPTH: usize = 64;
 
-/// Whether the ledger holds a linked-worktree rule (a v22 reader would
-/// refuse the member).
-pub(super) fn uses_worktree_rules(doc: &DiskDoc) -> bool {
-    doc.config.clients.iter().any(|c| !c.worktrees.is_empty())
+/// Whether the ledger holds a client with the linked-worktree switch on (a
+/// v22 reader would refuse the member).
+pub(super) fn uses_auto_worktrees(doc: &DiskDoc) -> bool {
+    doc.config.clients.iter().any(|c| c.auto_worktrees)
 }
 
-/// Why a directory under a rule's folder is not a verified linked
-/// worktree of the rule's repository: closed words a refusal carries.
-pub(super) const WORKTREE_REASONS: [&str; 5] = [
-    // no `.git` file between the directory and the folder: not a worktree
+/// Why a directory is not a linked worktree of a repository the client's
+/// projects anchor, or why a project anchors no repository: closed words.
+pub(super) const WORKTREE_REASONS: [&str; 8] = [
+    // no `.git` above the directory: not inside any Git working tree
     "not-a-worktree",
-    // a `.git` directory: a repository of its own (a clone), not linked
+    // the nearest `.git` is a directory: a repository's own checkout (a
+    // clone, or a main checkout no project root names), not linked
     "separate-repository",
-    // a `.git` file naming another repository's metadata, or a submodule's
+    // a linked worktree, but of a repository no reached project anchors
     "other-repository",
-    // the repository does not name this directory back as its worktree
+    // its `.git` names worktree metadata that does not name it back
     "not-registered",
-    // a pointer file is missing, too long or not the shape Git writes
+    // a pointer file missing, too long, not a regular file, a link, or not
+    // the shape Git writes
     "unreadable-metadata",
+    // a project root that is not a working tree's top (a subdirectory of a
+    // repository, or no repository): it anchors nothing
+    "not-a-repository-root",
+    // a project root whose `.git` names a submodule's or another layout's
+    // metadata, or a bare repository: not supported as an anchor
+    "unsupported-layout",
+    // the worktree's top is too broad or sensitive (`mcp_fs::root_policy`)
+    "path-policy",
 ];
 
 /// One of Git's pointer files: `gitdir: <path>` (a worktree's `.git`) or a
 /// bare path (`gitdir`, `commondir`), resolved against `base` when
-/// relative. Bounded, no symlink followed for the file itself, no spawn.
+/// relative. Opened with `O_NOFOLLOW` and checked on the descriptor it
+/// opened (a regular file of at most `GIT_POINTER_BYTES`), so a link or a
+/// file swapped in after a check is never what is read. Bounded, no spawn.
 fn read_pointer(file: &Path, prefix: Option<&str>, base: &Path) -> Result<PathBuf, &'static str> {
     use std::io::Read as _;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
     let unreadable = "unreadable-metadata";
-    let meta = std::fs::symlink_metadata(file).map_err(|_| unreadable)?;
+    let path = std::ffi::CString::new(file.as_os_str().as_bytes()).map_err(|_| unreadable)?;
+    // SAFETY: a NUL-terminated path; the descriptor is owned below.
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(unreadable);
+    }
+    // SAFETY: open returned a new descriptor this File now owns.
+    let mut opened = unsafe { std::fs::File::from_raw_fd(fd) };
+    let meta = opened.metadata().map_err(|_| unreadable)?;
     if !meta.is_file() || meta.len() > GIT_POINTER_BYTES {
         return Err(unreadable);
     }
     let mut text = String::new();
-    std::fs::File::open(file)
-        .map_err(|_| unreadable)?
+    (&mut opened)
         .take(GIT_POINTER_BYTES)
         .read_to_string(&mut text)
         .map_err(|_| unreadable)?;
     let line = text.lines().next().unwrap_or_default().trim_end();
-    let path = match prefix {
+    let named = match prefix {
         Some(prefix) => line.strip_prefix(prefix).ok_or(unreadable)?.trim_start(),
         None => line,
     };
-    if path.is_empty() || path.contains('\0') {
+    if named.is_empty() || named.contains('\0') {
         return Err(unreadable);
     }
-    let path = Path::new(path);
-    let path = if path.is_absolute() {
-        path.to_path_buf()
+    let named = Path::new(named);
+    let named = if named.is_absolute() {
+        named.to_path_buf()
     } else {
-        base.join(path)
+        base.join(named)
     };
-    std::fs::canonicalize(path).map_err(|_| unreadable)
+    std::fs::canonicalize(named).map_err(|_| unreadable)
 }
 
-/// The linked worktree of repository `repo` (its main checkout) that holds
-/// `path`, verified from Git's own files both ways, as git-worktree(1) and
-/// gitrepository-layout(5) lay them out: the nearest `.git` above `path`
-/// (below `parent`, which is only a boundary) is a FILE naming
-/// `<repo>/.git/worktrees/<id>`; that directory's `commondir` resolves to
-/// `<repo>/.git`, and its `gitdir` names this very `.git` file back. A
-/// `.git` directory (a separate clone), a pointer into another repository
-/// or `modules/` (a submodule), and a one-way pointer the repository does
-/// not register are refused with their word (`WORKTREE_REASONS`). Equal
-/// remotes, branch names, HEADs or directory names prove nothing and are
-/// not read. The `.git` file itself is read without following a link.
-/// Returns the worktree's top directory.
-pub(super) fn verify_linked_worktree(
-    repo: &Path,
-    parent: &Path,
-    path: &Path,
-) -> Result<PathBuf, &'static str> {
-    let common = std::fs::canonicalize(repo.join(".git"))
-        .ok()
-        .filter(|p| p.is_dir())
-        .ok_or("unreadable-metadata")?;
-    let mut top = path;
-    let dot_git = loop {
-        if !top.starts_with(parent) || top == parent {
-            return Err("not-a-worktree");
-        }
-        let candidate = top.join(".git");
-        match std::fs::symlink_metadata(&candidate) {
-            Ok(meta) if meta.is_dir() => return Err("separate-repository"),
-            Ok(meta) if meta.is_file() => break candidate,
-            Ok(_) => return Err("unreadable-metadata"),
-            Err(_) => {}
-        }
-        top = top.parent().ok_or("not-a-worktree")?;
-    };
+/// A linked worktree whose top is `top`: its `.git` FILE names
+/// `<common>/worktrees/<id>`, that directory's `commondir` resolves to
+/// `<common>`, and its `gitdir` names this `.git` back (git-worktree(1),
+/// gitrepository-layout(5); absolute or relative paths). Returns `<common>`,
+/// the repository's own Git directory. Equal remotes, branches, HEADs or
+/// names prove nothing and are not read. This is a consistency check of
+/// what the repository registered, not a signature: a local program able
+/// to rewrite both sides can make a consistent pair.
+fn linked_common(top: &Path) -> Result<PathBuf, &'static str> {
+    let dot_git = top.join(".git");
     let admin = read_pointer(&dot_git, Some("gitdir:"), top)?;
-    if admin.parent() != Some(common.join("worktrees").as_path()) {
+    let registry = admin.parent().ok_or("unreadable-metadata")?;
+    if registry.file_name() != Some(std::ffi::OsStr::new("worktrees")) {
         return Err("other-repository");
     }
-    let named_common = read_pointer(&admin.join("commondir"), None, &admin)?;
-    if named_common != common {
+    let common = registry
+        .parent()
+        .ok_or("unreadable-metadata")?
+        .to_path_buf();
+    if read_pointer(&admin.join("commondir"), None, &admin)? != common {
         return Err("other-repository");
     }
     let back = read_pointer(&admin.join("gitdir"), None, &admin)?;
@@ -785,177 +790,177 @@ pub(super) fn verify_linked_worktree(
     if back != here {
         return Err("not-registered");
     }
-    Ok(top.to_path_buf())
+    Ok(common)
 }
 
-/// The scopes `client`'s linked-worktree rules give canonical directory
-/// `path`: one per rule of a project the client reaches now (its list, or
-/// the Board for a client of all projects) whose folder holds `path` and
-/// whose repository verifies it (`verify_linked_worktree`), the root being
-/// the worktree's top directory. Also the first reason a rule whose folder
-/// holds `path` refused it, for the caller's diagnosis.
-pub(super) fn worktree_scope(
+/// The repository a project root anchors, from the root itself: a main
+/// checkout's top (its `.git` is a directory: that directory) or a linked
+/// worktree's top (verified both ways: its repository's Git directory). A
+/// root that is a subdirectory of a working tree anchors nothing — only
+/// what the user authorized is the anchor, never a `.git` found above it —
+/// and a submodule's, a bare or another layout is not supported.
+pub(super) fn repository_anchor(root: &Path) -> Result<PathBuf, &'static str> {
+    match std::fs::symlink_metadata(root.join(".git")) {
+        Ok(meta) if meta.is_dir() => {
+            std::fs::canonicalize(root.join(".git")).map_err(|_| "unreadable-metadata")
+        }
+        Ok(meta) if meta.is_file() => linked_common(root).map_err(|why| match why {
+            "other-repository" => "unsupported-layout",
+            other => other,
+        }),
+        Ok(_) => Err("unreadable-metadata"),
+        Err(_) => Err("not-a-repository-root"),
+    }
+}
+
+/// The top of the working tree that holds `path` (the nearest directory
+/// with a `.git`), and whether that `.git` is a file (a linked worktree).
+fn worktree_top(path: &Path) -> Result<(PathBuf, bool), &'static str> {
+    let mut top = path;
+    for _ in 0..MAX_WORKTREE_DEPTH {
+        match std::fs::symlink_metadata(top.join(".git")) {
+            Ok(meta) if meta.is_dir() => return Ok((top.to_path_buf(), false)),
+            Ok(meta) if meta.is_file() => return Ok((top.to_path_buf(), true)),
+            Ok(_) => return Err("unreadable-metadata"),
+            Err(_) => {}
+        }
+        top = top.parent().ok_or("not-a-worktree")?;
+    }
+    Err("not-a-worktree")
+}
+
+/// The repositories the client's reached projects anchor now
+/// (`repository_anchor` of each root, read at each use: a project whose
+/// directory changed anchors its new one), and why each that anchors
+/// nothing does not.
+pub(super) fn project_anchors(
+    client: &Client,
+) -> Vec<(String, String, Result<PathBuf, &'static str>)> {
+    client_scopes(client)
+        .into_iter()
+        .flat_map(|scope| {
+            let id = scope.project_id.clone();
+            scope.roots.into_iter().map(move |root| {
+                let anchor = std::fs::canonicalize(&root)
+                    .map_err(|_| "not-a-repository-root")
+                    .and_then(|r| repository_anchor(&r));
+                (id.clone(), root, anchor)
+            })
+        })
+        .collect()
+}
+
+/// The scopes the linked-worktree switch gives canonical directory `path`
+/// (approved 2026-11-28, `Client.auto_worktrees`): when the switch is on
+/// and `path` lies in a linked worktree (`linked_common`) of a repository a
+/// project the client reaches anchors (`project_anchors`), one scope per
+/// such project, its root the worktree's top — wherever that worktree is.
+/// The worktree's top passes the root policy. `Err` is why not (a closed
+/// word). Off, it is empty: the switch adds start directories and nothing
+/// else.
+pub(super) fn auto_worktree_scope(
     client: &Client,
     path: &Path,
-) -> (Vec<ProjectScope>, Option<&'static str>) {
-    let reached = reach(client);
+) -> Result<Vec<ProjectScope>, &'static str> {
+    if !client.auto_worktrees {
+        return Ok(Vec::new());
+    }
+    let (top, linked) = worktree_top(path)?;
+    if !linked {
+        return Err("separate-repository");
+    }
+    let common = linked_common(&top)?;
+    if crate::mcp_fs::root_policy(&top).is_err() {
+        return Err("path-policy");
+    }
+    let root = top.display().to_string();
     let mut scopes: Vec<ProjectScope> = Vec::new();
-    let mut refused = None;
-    for rule in &client.worktrees {
-        if !reached.contains(&rule.project_id) {
-            continue;
-        }
-        let (Ok(repo), Ok(parent)) = (
-            std::fs::canonicalize(&rule.repo),
-            std::fs::canonicalize(&rule.parent),
-        ) else {
-            continue;
-        };
-        if !path.starts_with(&parent) || path == parent {
-            continue;
-        }
-        match verify_linked_worktree(&repo, &parent, path) {
-            Ok(top) => {
-                let root = top.display().to_string();
-                if !scopes
-                    .iter()
-                    .any(|s| s.project_id == rule.project_id && s.roots.contains(&root))
-                {
-                    scopes.push(ProjectScope {
-                        project_id: rule.project_id.clone(),
-                        roots: vec![root],
-                    });
-                }
-            }
-            Err(reason) => {
-                debug_assert!(WORKTREE_REASONS.contains(&reason));
-                refused.get_or_insert(reason);
-            }
+    for (project, _, anchor) in project_anchors(client) {
+        if anchor.as_ref().ok() == Some(&common) && !scopes.iter().any(|s| s.project_id == project)
+        {
+            scopes.push(ProjectScope {
+                project_id: project,
+                roots: vec![root.clone()],
+            });
         }
     }
-    (scopes, refused)
+    if scopes.is_empty() {
+        return Err("other-repository");
+    }
+    Ok(scopes)
+}
+
+/// How a start directory was authorized (`project_cwd`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CwdGrant {
+    /// Inside the project's own roots.
+    Roots,
+    /// Inside a linked worktree of the project's repository, by the switch.
+    AutoWorktree,
+}
+
+impl CwdGrant {
+    pub(super) fn word(self) -> &'static str {
+        match self {
+            CwdGrant::Roots => "roots",
+            CwdGrant::AutoWorktree => "auto-worktree",
+        }
+    }
 }
 
 /// The working directory a managed session or worker card of `project`
 /// starts in: `path` canonicalized inside the project's roots
-/// (`canonical_scope`), or inside a linked worktree a rule of that project
-/// verifies now (`worktree_scope`); refused otherwise.
+/// (`canonical_scope`) first, or else inside a linked worktree of the
+/// project's repository the switch admits (`auto_worktree_scope`); refused
+/// otherwise. The roots decide on their own: the switch off never refuses
+/// what they hold.
 pub(super) fn project_cwd(
     client: &Client,
     project: &ProjectScope,
     path: &str,
-) -> Result<PathBuf, DeckError> {
+) -> Result<(PathBuf, CwdGrant), DeckError> {
     match canonical_scope(path, &project.roots) {
-        Ok(cwd) => Ok(cwd),
+        Ok(cwd) => Ok((cwd, CwdGrant::Roots)),
         Err(error) if error.kind() == ErrorKind::Perm => {
             let canonical = std::fs::canonicalize(path).map_err(|_| error.clone())?;
-            let (scopes, _) = worktree_scope(client, &canonical);
-            if scopes.iter().any(|s| s.project_id == project.project_id) {
-                Ok(canonical)
-            } else {
-                Err(error)
+            match auto_worktree_scope(client, &canonical) {
+                Ok(scopes) if scopes.iter().any(|s| s.project_id == project.project_id) => {
+                    Ok((canonical, CwdGrant::AutoWorktree))
+                }
+                _ => Err(error),
             }
         }
         Err(error) => Err(error),
     }
 }
 
-/// The most worktrees of one repository a suggestion reads.
-const MAX_SUGGESTED_WORKTREES: usize = 512;
-
-/// One folder `suggest_worktree_folders` proposes for a repository.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorktreeSuggestion {
-    pub(crate) project_id: String,
-    pub(crate) repo: String,
-    pub(crate) parent: String,
-    /// How many of the repository's registered worktrees lie there and verify.
-    pub(crate) worktrees: usize,
+/// A directory's identity (device, inode), recorded when a start is
+/// accepted and compared at its launch: the same path naming another
+/// directory (replaced, moved over) is not the directory admitted.
+pub(super) fn dir_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .ok()
+        .filter(|m| m.is_dir())
+        .map(|m| (m.dev(), m.ino()))
 }
 
-/// The worktree folders of repository `repo` (approved 2026-11-28, the
-/// dialog's "Fill in worktree folders"): the repository's own registry,
-/// `<repo>/.git/worktrees/<id>/gitdir`, read in-process (bounded, no `git`,
-/// no spawn), each named worktree's top directory verified as the rule
-/// would verify it (`verify_linked_worktree`), grouped by the folder it
-/// sits in. Worktrees inside the repository need no rule (its directory
-/// already holds them); a folder the root policy refuses (`/`, the home,
-/// `/Volumes` …) or that does not resolve now (a disk not connected) is not
-/// proposed. A proposal grants nothing: the user saves it.
-pub(crate) fn suggest_worktree_folders(project_id: &str, repo: &str) -> Vec<WorktreeSuggestion> {
-    let Some(repo) = std::fs::canonicalize(repo).ok().filter(|r| r.is_dir()) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(repo.join(".git/worktrees")) else {
-        return Vec::new();
-    };
-    let mut folders: Vec<(PathBuf, usize)> = Vec::new();
-    for entry in entries.flatten().take(MAX_SUGGESTED_WORKTREES) {
-        let admin = entry.path();
-        let Ok(dot_git) = read_pointer(&admin.join("gitdir"), None, &admin) else {
-            continue;
-        };
-        let Some(top) = dot_git.parent().map(Path::to_path_buf) else {
-            continue;
-        };
-        let Some(folder) = top.parent().map(Path::to_path_buf) else {
-            continue;
-        };
-        if top.starts_with(&repo) || crate::mcp_fs::root_policy(&folder).is_err() {
-            continue;
-        }
-        if verify_linked_worktree(&repo, &folder, &top).as_deref() != Ok(top.as_path()) {
-            continue;
-        }
-        match folders.iter_mut().find(|(f, _)| *f == folder) {
-            Some((_, count)) => *count += 1,
-            None => folders.push((folder, 1)),
-        }
+/// What the capabilities say of the switch: whether it is on and, for each
+/// reached project root, whether it anchors a repository (else why).
+pub(super) fn auto_worktrees_view(client: &Client) -> Value {
+    if !client.auto_worktrees {
+        return json!({"enabled": false});
     }
-    folders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    folders
-        .into_iter()
-        .map(|(folder, worktrees)| WorktreeSuggestion {
-            project_id: project_id.into(),
-            repo: repo.display().to_string(),
-            parent: folder.display().to_string(),
-            worktrees,
-        })
-        .collect()
-}
-
-/// A rule as the user saves it: the project in the client's reach, the
-/// repository a main checkout (a `.git` directory), the folder an existing
-/// directory that passes the root policy and is not the repository itself
-/// or inside it; both canonicalized. `Err` is the closed word the webview
-/// maps (`mcp-worktree-*`).
-pub(super) fn checked_worktree_rule(
-    project_id: &str,
-    repo: &str,
-    parent: &str,
-) -> Result<WorktreeRule, DeckError> {
-    let invalid = |word: &'static str| DeckError::new(ErrorKind::Invalid, word);
-    if !valid_id(project_id) {
-        return Err(invalid("mcp-worktree-project"));
-    }
-    let repo = std::fs::canonicalize(repo)
-        .ok()
-        .filter(|r| {
-            r.is_dir() && std::fs::symlink_metadata(r.join(".git")).is_ok_and(|m| m.is_dir())
-        })
-        .ok_or_else(|| invalid("mcp-worktree-repo"))?;
-    let parent = std::fs::canonicalize(parent)
-        .ok()
-        .filter(|p| p.is_dir())
-        .ok_or_else(|| invalid("mcp-worktree-parent"))?;
-    if crate::mcp_fs::root_policy(&parent).is_err() {
-        return Err(invalid("mcp-worktree-parent"));
-    }
-    Ok(WorktreeRule {
-        project_id: project_id.into(),
-        repo: repo.display().to_string(),
-        parent: parent.display().to_string(),
+    json!({
+        "enabled": true,
+        "note": "worker starts and managed sessions may also use any registered linked worktree of these projects' repositories, wherever it is; authorizedWorkspaces stays the file-read scope",
+        "projects": project_anchors(client)
+            .into_iter()
+            .map(|(project, root, anchor)| match anchor {
+                Ok(_) => json!({"projectId": project, "root": root, "anchored": true}),
+                Err(why) => json!({"projectId": project, "root": root, "anchored": false, "reason": why}),
+            })
+            .collect::<Vec<_>>(),
     })
 }
 

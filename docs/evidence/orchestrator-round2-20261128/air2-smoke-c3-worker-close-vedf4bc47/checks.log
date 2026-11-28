@@ -1,0 +1,10 @@
+1795851992 [ui] smoke-check workers-client a=1 b=0
+1795851992 [ui] smoke-check close-armed a=1 b=0
+1795851996 [ui] smoke-check close-card a=1 b=0
+1795852022 [agent-status] claude-code working s=sess-09ce0 target=1 v=2 e=1
+1795852034 [mcp] refused deck_worker_reports_ack code=REPORT_NOT_FOUND relation=-
+1795852072 [agent-status] claude-code turn-done s=sess-09ce0 target=1 v=2 e=2
+1795852072 [mcp] refused deck_worker_close code=EPISODE_MOVED relation=-
+1795852073 [ui] smoke-check close-label a=1 b=3
+1795852073 [ui] smoke-check close-closed a=1 b=0
+1795852118 [ui] smoke-check done a=1 b=6

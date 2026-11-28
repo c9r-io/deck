@@ -15,7 +15,7 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { claudeAddCommand, codexConfig, defaultWorkerTypes, workerCapacityView, previewErrorKey, scopeProblem, heldRoot, initialPermissions, initialScope, initialWorktrees, modelLines, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem, worktreeErrorKey, worktreesPayload, worktreesProblem, worktreeRepos, withSuggestions, MAX_WORKTREE_RULES } from './mcp-permissions-model.js';
+import { claudeAddCommand, codexConfig, defaultWorkerTypes, workerCapacityView, previewErrorKey, scopeProblem, heldRoot, initialPermissions, initialScope, modelLines, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem } from './mcp-permissions-model.js';
 import { tunnelActionKey, tunnelCode, tunnelFailureKey, tunnelSetupKey } from './tunnel-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
@@ -30,14 +30,6 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
     <div class="set-actions" id="mcp-auth-add-row"><button class="btn" id="mcp-auth-add-project" type="button" data-i18n="mcp.addProject">Add a project or a directory</button></div>
     <p class="mcp-field-error" id="mcp-auth-more-error" role="alert" hidden></p>
     <p class="set-hint" id="mcp-auth-scope-hint" data-i18n="mcp.scopeHint">A project may have several directories: add a row for each.</p>
-    <div class="mcp-worktrees" id="mcp-auth-worktrees">
-      <h3 class="mcp-perms-title" data-i18n="mcp.worktreeTitle">Linked Git worktrees</h3>
-      <p class="set-hint" data-i18n="mcp.worktreeHint">For a project: its repository and the folder you make its worktrees in.</p>
-      <div id="mcp-auth-worktree-rows"></div>
-      <div class="set-actions"><button class="btn" id="mcp-auth-worktree-fill" type="button" data-i18n="mcp.worktreeFill">Fill in worktree folders</button><button class="btn" id="mcp-auth-worktree-add" type="button" data-i18n="mcp.worktreeAdd">Add worktree folder</button></div>
-      <p class="set-hint" id="mcp-auth-worktree-note" role="status" hidden></p>
-      <p class="mcp-field-error" id="mcp-auth-worktree-error" role="alert" hidden></p>
-    </div>
     <p class="set-hint" id="mcp-auth-hint" data-i18n="mcp.authorizeHint">Choose the project and directory explicitly. A configured project directory is filled in but remains editable. Its canonical path will be shown again before Deck creates the authorization.</p>
     <div class="mcp-perms" id="mcp-auth-perms">
       <h3 class="mcp-perms-title" data-i18n="mcp.permsTitle">What it may do</h3>
@@ -62,6 +54,8 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
         <label class="mcp-perm"><input type="checkbox" id="mcp-perm-follow"> <span data-i18n="mcp.permFollow">Open worker cards beside their orchestrator</span></label>
         <p class="set-hint mcp-perm-hint" data-i18n="mcp.permFollowHint">When the agent runs in a Deck card, the cards it starts open in that card's column and only it drives them. Off: the automation's column, or where your new cards open in that project.</p>
       </div>
+      <label class="mcp-perm"><input type="checkbox" id="mcp-perm-auto-worktrees"> <span data-i18n="mcp.permAutoWorktrees">Allow the linked worktrees of these projects</span></label>
+      <p class="set-hint mcp-perm-hint" data-i18n="mcp.permAutoWorktreesHint">Worker cards and managed sessions may also start in any registered linked worktree of these projects' repositories, wherever it is. With all projects, projects added later too. File reads stay on the project directories.</p>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-drafts"> <span data-i18n="mcp.permDrafts">Draft templates and automations</span></label>
       <p class="set-hint mcp-perm-hint" data-i18n="mcp.permDraftsHint">Drafts wait in Needs attention; nothing works until you approve it. It may also read a summary of your settings (switches and counts, no text or secrets) to tell you why something does not work; it cannot change them.</p>
       <label class="mcp-perm"><input type="checkbox" id="mcp-perm-mentions"> <span data-i18n="mcp.permMentions">Read Slack mentions</span></label>
@@ -161,14 +155,13 @@ export function createMcpSettings(host) {
         permissions.textContent = t('mcp.permissions');
         permissions.onclick = async () => {
           const chosen = await mcpAuthorizationDialog(store.projects, { client,
-            previewRoot: root => inv('mcp_scope_preview', { root }),
-            suggestWorktrees: repos => inv('mcp_worktree_suggest', { repos }) });
+            previewRoot: root => inv('mcp_scope_preview', { root }) });
           if (!chosen) return;
           try {
             await inv('mcp_client_permissions', { clientId: client.id, permissions: { ...chosen.permissions, ...scopePayload(chosen) } });
             await renderMcpSettings();
           }
-          catch (error) { toast(t(workerTypeErrorKey(error) || worktreeErrorKey(error) || 'mcp.actionFailed')); }
+          catch (error) { toast(t(workerTypeErrorKey(error) || 'mcp.actionFailed')); }
         };
         /* a fresh bearer under the same client and choices (commands.rs
            `client_reissue`): the way out when the integration says to
@@ -403,78 +396,6 @@ export function createMcpSettings(host) {
       };
       const scopeNow = () => ({ all: all.checked, rows: [{ projectId: select.value, root: root.value.trim() },
         ...moreRows.map(entry => ({ projectId: entry.select.value, root: entry.input.value.trim() }))] });
-      /* the linked-worktree rules (mcp-permissions-model.js): one row each,
-         shown in both scope modes */
-      let worktreeRows = initialWorktrees(editing);
-      const suggestWorktrees = options.suggestWorktrees || (async () => []);
-      const worktreeNote = $('mcp-auth-worktree-note');
-      const worktreeError = $('mcp-auth-worktree-error');
-      const paintWorktrees = () => {
-        const list = $('mcp-auth-worktree-rows'); list.replaceChildren();
-        worktreeRows.forEach((rule, index) => {
-          const row = document.createElement('div'); row.className = 'set-row mcp-worktree-row';
-          const pick = document.createElement('select'); pick.className = 'mcp-worktree-project';
-          pick.setAttribute('aria-label', t('mcp.project'));
-          const none = document.createElement('option'); none.value = ''; none.textContent = t('mcp.chooseProject');
-          pick.appendChild(none);
-          for (const project of available) {
-            const option = document.createElement('option');
-            option.value = project.id; option.textContent = project.name;
-            pick.appendChild(option);
-          }
-          pick.value = rule.projectId;
-          pick.onchange = () => {
-            rule.projectId = pick.value; showError(worktreeError, null, '');
-            const project = available.find(value => value.id === pick.value);
-            if (!rule.repo && typeof project?.dir === 'string') { rule.repo = project.dir.trim(); repo.value = rule.repo; }
-          };
-          const field = (cls, key, value, holder) => {
-            const input = document.createElement('input'); input.type = 'text'; input.className = cls;
-            input.autocomplete = 'off'; input.spellcheck = false; input.value = value;
-            input.setAttribute('aria-label', t(key)); input.placeholder = t(holder);
-            return input;
-          };
-          const repo = field('mcp-worktree-repo', 'mcp.worktreeRepoPlaceholder', rule.repo, 'mcp.worktreeRepoPlaceholder');
-          repo.oninput = () => { rule.repo = repo.value; showError(worktreeError, null, ''); };
-          const parent = field('mcp-worktree-parent', 'mcp.worktreeParentPlaceholder', rule.parent, 'mcp.worktreeParentPlaceholder');
-          parent.oninput = () => { rule.parent = parent.value; showError(worktreeError, null, ''); };
-          const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn mcp-worktree-remove';
-          remove.textContent = '✕'; remove.title = t('mcp.worktreeRemove'); remove.setAttribute('aria-label', t('mcp.worktreeRemove'));
-          remove.onclick = () => { worktreeRows.splice(index, 1); paintWorktrees(); };
-          row.append(pick, repo, parent, remove);
-          list.appendChild(row);
-        });
-        $('mcp-auth-worktree-add').disabled = worktreeRows.length >= MAX_WORKTREE_RULES;
-      };
-      /* "Fill in worktree folders": Deck reads each repository's own list of
-         its linked worktrees (mcp/grants.rs `suggest_worktree_folders`) and
-         adds a row per folder they lie in; nothing is saved until Save */
-      $('mcp-auth-worktree-fill').onclick = async () => {
-        const fill = $('mcp-auth-worktree-fill');
-        if (fill.disabled) return;
-        fill.disabled = true; showError(worktreeError, null, '');
-        const repos = worktreeRepos(all.checked, scopeNow().rows, available);
-        let found = [];
-        try { found = repos.length ? await suggestWorktrees(repos) : []; } catch (_) { found = []; }
-        fill.disabled = false;
-        if (closed) return;
-        const next = withSuggestions(worktreeRows, found);
-        worktreeRows = next.rows;
-        paintWorktrees();
-        worktreeNote.textContent = next.added ? t('mcp.worktreeFilled', { count: formatNumber(next.added) })
-          : t(found.length ? 'mcp.worktreeFillSame' : 'mcp.worktreeFillNone');
-        worktreeNote.hidden = false;
-      };
-      $('mcp-auth-worktree-add').onclick = () => {
-        worktreeRows.push({ projectId: '', repo: '', parent: '' });
-        paintWorktrees();
-        $('mcp-auth-worktree-rows').lastElementChild?.querySelector?.('select')?.focus?.();
-      };
-      /* the permissions as saved, the worktree rules with them */
-      const chosenPermissions = () => ({ ...permissionsPayload(perms), worktrees: worktreesPayload(worktreeRows) });
-      /* the reachable project ids for a rule: the scope rows' projects, or
-         (all projects) any project of the Board */
-      const reachable = () => (all.checked ? null : scopeNow().rows.map(row => row.projectId).filter(Boolean));
       const paintTypes = () => {
         const list = $('mcp-perm-types'); list.replaceChildren();
         perms.workerTypes.forEach((type, index) => {
@@ -516,6 +437,7 @@ export function createMcpSettings(host) {
         $('mcp-perm-first-send').checked = perms.workerFirstSend;
         $('mcp-perm-replies').checked = perms.allowReplies;
         $('mcp-perm-drafts').checked = perms.allowDrafts;
+        $('mcp-perm-auto-worktrees').checked = perms.autoWorktrees;
         $('mcp-perm-mentions').checked = perms.allowMentions;
         $('mcp-perm-cards').checked = perms.allowCards;
         $('mcp-perm-card-edits').checked = perms.allowCards && perms.allowCardEdits;
@@ -541,6 +463,7 @@ export function createMcpSettings(host) {
       $('mcp-perm-first-send').onchange = () => { perms.workerFirstSend = $('mcp-perm-first-send').checked; };
       $('mcp-perm-replies').onchange = () => { perms.allowReplies = $('mcp-perm-replies').checked; };
       $('mcp-perm-drafts').onchange = () => { perms.allowDrafts = $('mcp-perm-drafts').checked; };
+      $('mcp-perm-auto-worktrees').onchange = () => { perms.autoWorktrees = $('mcp-perm-auto-worktrees').checked; };
       $('mcp-perm-mentions').onchange = () => { perms.allowMentions = $('mcp-perm-mentions').checked; };
       $('mcp-perm-cards').onchange = () => { perms.allowCards = $('mcp-perm-cards').checked; paintPerms(); };
       $('mcp-perm-card-edits').onchange = () => { perms.allowCardEdits = $('mcp-perm-card-edits').checked; };
@@ -572,11 +495,8 @@ export function createMcpSettings(host) {
       $('mcp-auth-hint').hidden = !!editing;
       save.disabled = false;
       showError(permError, null, ''); showError(projectError, select, ''); showError(rootError, root, ''); showError(moreError, null, '');
-      showError(worktreeError, null, '');
-      worktreeNote.hidden = true; worktreeNote.textContent = '';
       paintScope();
       paintPerms();
-      paintWorktrees();
       /* a directory the client holds that does not resolve now (a disk not
          connected) is said so, and kept: saving does not drop it */
       if (editing && !initial.all) {
@@ -612,18 +532,16 @@ export function createMcpSettings(host) {
         if (pending || closed) return;
         const problem = workerTypesProblem(perms);
         if (problem) { showError(permError, null, t(problem)); return; }
-        const worktreeIssue = worktreesProblem(worktreeRows, reachable());
-        if (worktreeIssue) { showError(worktreeError, null, t(worktreeIssue)); return; }
         const clientName = name.value.trim();
         const identity = editing ? {} : { name: clientName };
         /* an edit that leaves the scope as it was sends none (no directory
            is checked again) */
         if (editing && JSON.stringify(scopeNow()) === JSON.stringify(initial)) {
-          done({ permissions: chosenPermissions(), allProjects: initial.all, scopes: null }); return;
+          done({ permissions: permissionsPayload(perms), allProjects: initial.all, scopes: null }); return;
         }
         if (all.checked) {
           if (!clientName) { name.focus(); return; }
-          done({ ...identity, allProjects: true, scopes: [], permissions: chosenPermissions() }); return;
+          done({ ...identity, allProjects: true, scopes: [], permissions: permissionsPayload(perms) }); return;
         }
         const project = selected();
         const authorizationRoot = root.value.trim();
@@ -684,7 +602,7 @@ export function createMcpSettings(host) {
         }
         done({ ...identity, allProjects: false,
           scopes: [{ project, root: preview.root }, ...extras.map((extra, i) => ({ project: extra.project, root: previews[i].root }))],
-          permissions: chosenPermissions() });
+          permissions: permissionsPayload(perms) });
       };
       $('mcp-auth-no').onclick = () => done(null);
       modal.onkeydown = event => {
@@ -707,7 +625,6 @@ export function createMcpSettings(host) {
     $('set-mcp-add').onclick = async () => {
       const authorization = await mcpAuthorizationDialog(store.projects, {
         previewRoot: root => inv('mcp_scope_preview', { root }),
-        suggestWorktrees: repos => inv('mcp_worktree_suggest', { repos }),
         projectExists: projectId => store.projects.some(project => project.id === projectId),
       });
       if (!authorization) return;
@@ -721,7 +638,7 @@ export function createMcpSettings(host) {
         await renderMcpSettings();
       } catch (error) {
         toast(String(error).includes('MCP project no longer exists') ? t('mcp.projectUnavailable')
-          : t(workerTypeErrorKey(error) || worktreeErrorKey(error) || 'mcp.actionFailed'));
+          : t(workerTypeErrorKey(error) || 'mcp.actionFailed'));
       }
     };
     $('set-mcp-worker-capacity').oninput = paintCapacityHint;

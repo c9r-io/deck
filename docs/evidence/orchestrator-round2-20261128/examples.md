@@ -4,9 +4,8 @@
 
 ## 1. 从外置 worktree 直接开卡
 
-前提：用户已在 Permissions… ›「Git 关联工作树」为项目「第七梦」保存一行：仓库
-`/Users/chenhan/UnityProjects/architect-of-the-seventh-dream`，文件夹 `/Volumes/YottaUnity`。
-`deck_capabilities` 的 `worktreeRules` 会列出它。
+前提：用户已在 Permissions… 勾选「自动允许已授权项目的关联工作树」。`deck_capabilities.autoLinkedWorktrees`
+为 `{"enabled": true, "projects": [{"projectId": …, "root": …, "anchored": true}, …]}`。
 
 ```json
 {"tool": "deck_worker_start", "arguments": {
@@ -15,14 +14,15 @@
   "text": "…任务…完成后调用 deck_worker_report（fields.status、branch、完整 commit、report_path）"}}
 ```
 
-失败时：
+接受时 `result.cwdGrant` 为 `auto-worktree`；`deck_operation_get` 的 `result.launch` 记录实际启动前的最终准入。失败时：
 
 ```json
 {"ok": false, "error": {"code": "PATH_NOT_ACCESSIBLE", "reason": "worktree-unverified",
   "detail": "separate-repository", "message": "…", "nextAction": "…"}}
 ```
 
-`reason` 为 `volume-unavailable` 表示外置盘未挂；`PATH_AMBIGUOUS` 时带上 `project_id` 重试同一 dir。
+`reason` 为 `volume-unavailable` 表示外置盘未挂；`PATH_AMBIGUOUS` 时带上 `project_id` 重试同一 dir；
+最终准入拒绝时 operation 为 `rejected`、`code: launch-refused`、`result.launch.reason` 说明原因。
 
 ## 2. 工人提交 handoff
 

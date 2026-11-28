@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false, closing = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false, closing = false, worktreeSwitch = false, worktreeRelaunch = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -895,8 +895,75 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await provider.close(orch.id);
     await report('done', !failed, 1, 6);
   };
+  /* `worktree-switch` / `worktree-switch-relaunch` (2026-11-28): the
+     linked-worktree switch saved in the real Permissions… dialog, restored
+     after a relaunch, then used by a real MCP client. Phase 1: a project
+     "Repo" whose directory is the fixture's repository, one client of all
+     projects (a Claude worker type, its first line never sent without
+     interaction), the switch off, then ticked and saved through the dialog
+     (`wt-saved` b: 1 off before, 2 on after). Phase 2 (after the runner
+     relaunched the carrier on the same data): the switch still on
+     (`wt-restored`); a project "Later" made only now (its directory the
+     fixture's second repository), and ONE plain-shell card "Orch W" in
+     "Repo" (`wt-armed`). The runner then creates a linked worktree of each
+     repository in folders of their own and types
+     scripts/mcp-worktree-e2e.py into "Orch W"; the page waits for its two
+     worker cards and checks each one's project and directory as the Board
+     holds them (`wt-cards` b: 1 Repo's, 2 Later's). */
+  const worktreeRun = async ({ fixture }) => {
+    const { setPermission } = await import('./smoke-mcp-helpers.mjs');
+    const repo = `${fixture}/repo`;
+    const later = `${fixture}/repo2`;
+    const statusOf = async () => (await inv('mcp_status')).clients.find(c => c.name === 'orchestrator') || null;
+    if (!worktreeRelaunch) {
+      const made = await provider.createProject('Repo');
+      await provider.setProjectDefaults(made.id, { dir: repo, cmd: '' });
+      await inv('mcp_enable');
+      await inv('mcp_client_add', { name: 'orchestrator', projects: [],
+        permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: false,
+          /* `claude --version`: the card's shell starts in its directory and
+             nothing interactive opens there (no state written to the host's
+             Claude config for the worktrees) */
+          workerTypes: [{ name: 'claude', cmd: 'claude --version', description: 'Write code' }], workerFirstSend: false,
+          allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false, allProjects: true } });
+      const listed = await until(async () => {
+        const status = await inv('mcp_status');
+        return status.enabled && status.socketReady && status.clients.some(c => c.name === 'orchestrator') ? status : null;
+      }, 15_000, 250);
+      await report('workers-client', !!listed);
+      const before = (await statusOf())?.autoWorktrees === false;
+      await setPermission('orchestrator', 'mcp-perm-auto-worktrees', true);
+      const after = await until(async () => ((await statusOf())?.autoWorktrees === true ? true : null), 10_000, 250);
+      await report('wt-saved', before && !!after, 1, (before ? 1 : 0) + (after ? 2 : 0));
+      await report('done', !failed, 1, 7);
+      return;
+    }
+    const restored = await until(async () => ((await statusOf())?.autoWorktrees === true ? true : null), 15_000, 250);
+    await report('wt-restored', !!restored);
+    const repoProject = provider.projects().find(p => p.name === 'Repo');
+    const made = await provider.createProject('Later');
+    await provider.setProjectDefaults(made.id, { dir: later, cmd: '' });
+    const orch = (await provider.createStarted({ projectId: repoProject.id, columnId: repoProject.columns[0].id,
+      title: 'Orch W', dir: repo, cmd: '' }, { requireCreated: true })).card;
+    await report('wt-armed', !!orch?.session);
+    const typed = () => store.cards.filter(card => card.origin?.source === 'worker');
+    const both = await until(() => (typed().length >= 2 ? typed() : null), 900_000, 1000);
+    const marker = await inv('smoke_native_fixture');
+    const root = marker.slice(0, marker.lastIndexOf('/'));
+    const inRepo = (both || []).find(card => card.projectId === repoProject.id && card.dir === `${root}/disk2/wt1`);
+    const inLater = (both || []).find(card => card.projectId === made.id && card.dir === `${root}/disk3/wt2/src`);
+    await report('wt-cards', !!inRepo && !!inLater, 1, (inRepo ? 1 : 0) + (inLater ? 2 : 0));
+    await pause(20_000);
+    for (const card of [...typed(), orch]) await provider.close(card.id);
+    await report('done', !failed, 1, 8);
+  };
   let first = null;
   try {
+    if (worktreeSwitch || worktreeRelaunch) {
+      const marker = await inv('smoke_native_fixture');
+      await worktreeRun({ fixture: marker.slice(0, marker.lastIndexOf('/')) });
+      return;
+    }
     if (store.cards.length) throw new Error('nonempty isolated board');
     /* `live`: Claude Code workers (parts A and B); `codex`: one Codex
        `--no-daemon` worker through part A only (no reply is forwarded for

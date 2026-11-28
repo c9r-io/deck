@@ -6,15 +6,15 @@
   shows every one (a row each) and saves them all; changing another choice
   no longer drops the extra ones, and a directory on a disk that is not
   connected stays in the list and works again once it is back.
-- Linked Git worktrees: in the same dialog, name a project's repository and
-  the folder you make its worktrees in. An orchestrator can then start a
-  worker card (or a managed session) directly in any worktree of that
-  repository there, including ones created later, in the right project and
-  with that project's environment; Deck verifies each one from the
-  repository's own files and runs no `git`. Anything else in the folder is
-  refused with the reason. **Fill in worktree folders** finds those folders
-  from each repository's own worktree list, so one click and Save is
-  enough.
+- **Allow the linked worktrees of these projects** (one switch per MCP
+  client, off by default): an orchestrator can start a worker card (or a
+  managed session) directly in any linked worktree of an authorized
+  project's repository, wherever it is and including ones created later;
+  with all projects, projects added later too. Deck verifies each one from
+  the repository's own files and runs no `git`; file reads stay on the
+  project directories. Every MCP start is also decided again right before
+  it launches, so a permission withdrawn after a start was accepted still
+  stops it.
 - Worker reports may say `status: "handoff"`; the tool schema now lists the
   status words as a real enum.
 - `deck_worker_close close_mode: "instance"`: an orchestrator that is done

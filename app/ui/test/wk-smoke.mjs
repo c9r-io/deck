@@ -3560,6 +3560,19 @@ export async function verifyWorkerClose() {
   await runWorkersSmoke({ closing: true });
 }
 
+// The linked-worktree switch saved in the real dialog (phase 1), restored
+// after a relaunch and used by a real MCP client (phase 2;
+// workers-smoke.mjs `worktreeRun`).
+export async function verifyWorktreeSwitch() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ worktreeSwitch: true });
+}
+
+export async function verifyWorktreeSwitchRelaunch() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ worktreeRelaunch: true });
+}
+
 // A Claude worker type under a second config folder (a second account):
 // the `types` run with `CLAUDE_CONFIG_DIR=<folder> claude …`
 // (workers-smoke.mjs, scenario `account`).

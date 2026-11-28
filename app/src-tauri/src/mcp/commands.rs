@@ -55,8 +55,8 @@ pub(crate) struct ClientView {
     /// Reaches every project through its default directory.
     pub(super) all_projects: bool,
     pub(super) projects: Vec<ProjectScope>,
-    /// Its linked-worktree rules (`grants::worktree_scope`).
-    pub(super) worktrees: Vec<WorktreeRule>,
+    /// Its linked-worktree switch (`grants::auto_worktree_scope`).
+    pub(super) auto_worktrees: bool,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
     /// the answer otherwise.
@@ -100,7 +100,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 rule_column: client.rule_column,
                 all_projects: client.all_projects,
                 projects: client.projects.clone(),
-                worktrees: client.worktrees.clone(),
+                auto_worktrees: client.auto_worktrees,
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
             })
@@ -307,37 +307,6 @@ pub(crate) fn mcp_scope_preview_now(root: String) -> ScopePreview {
     }
 }
 
-/// One repository the dialog asks folders for (`mcp_worktree_suggest`).
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct WorktreeRepoInput {
-    pub(super) project_id: String,
-    pub(super) repo: String,
-}
-
-/// The dialog's "Fill in worktree folders": for each project and its
-/// repository, the folders its registered linked worktrees lie in
-/// (`grants::suggest_worktree_folders`). Reads only; off the IPC thread,
-/// since a repository or its worktrees may be on an external volume.
-#[tauri::command]
-pub(crate) async fn mcp_worktree_suggest(
-    repos: Vec<WorktreeRepoInput>,
-) -> Result<Vec<super::grants::WorktreeSuggestion>, crate::error::DeckError> {
-    crate::session_runtime::off_ipc_thread(
-        "mcp_worktree_suggest",
-        std::time::Duration::from_secs(5),
-        move || {
-            Ok(repos
-                .iter()
-                .take(MAX_PROJECTS_PER_CLIENT)
-                .filter(|r| valid_id(&r.project_id) && Path::new(&r.repo).is_absolute())
-                .flat_map(|r| super::grants::suggest_worktree_folders(&r.project_id, &r.repo))
-                .collect())
-        },
-    )
-    .await
-}
-
 #[tauri::command]
 pub(crate) fn mcp_enable() -> Result<(), DeckError> {
     let runtime = runtime()?;
@@ -433,9 +402,8 @@ pub(crate) fn mcp_client_add(
         rule_column,
         all_projects,
         projects: _,
-        worktrees,
+        auto_worktrees,
     } = permissions;
-    let worktrees = checked_worktree_rules(&worktrees.unwrap_or_default())?;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
     let allow_card_edits = allow_cards && allow_card_edits;
@@ -456,17 +424,6 @@ pub(crate) fn mcp_client_add(
     let scopes = validate_new_client_scopes(projects, enforce_projects, |project_id| {
         crate::documents::board_project_exists(project_id)
     })?;
-    // a rule names a project this client reaches
-    if !worktrees.iter().all(|rule| {
-        if all_projects {
-            !enforce_projects
-                || crate::documents::board_project_exists(&rule.project_id).unwrap_or(false)
-        } else {
-            scopes.iter().any(|s| s.project_id == rule.project_id)
-        }
-    }) {
-        return Err(DeckError::new(ErrorKind::Invalid, "mcp-worktree-project"));
-    }
     let client_id = random_id("client_", 16)?;
     let credential = random_id("mcp_", 16)?;
     if runtime.app.is_some() {
@@ -502,7 +459,7 @@ pub(crate) fn mcp_client_add(
             allow_card_edits,
             rule_column,
             lanes: Default::default(),
-            worktrees,
+            auto_worktrees,
             send_epoch: 0,
         };
         doc.config.clients.push(client.clone());
@@ -523,7 +480,7 @@ pub(crate) fn mcp_client_add(
             allow_card_edits: client.allow_card_edits,
             rule_column: client.rule_column,
             all_projects: client.all_projects,
-            worktrees: client.worktrees.clone(),
+            auto_worktrees: client.auto_worktrees,
             projects: client.projects,
         })
     });
@@ -823,40 +780,11 @@ pub(crate) struct PermissionsInput {
     /// `all_projects` off). Absent, and `all_projects` off, keeps its scope.
     #[serde(default)]
     pub(super) projects: Option<Vec<ProjectScopeInput>>,
-    /// Its linked-worktree rules from now on (`grants::worktree_scope`);
-    /// absent keeps them.
+    /// Worker starts and managed sessions may also start in a registered
+    /// linked worktree of a reached project's repository
+    /// (`grants::auto_worktree_scope`); absent = off.
     #[serde(default)]
-    pub(super) worktrees: Option<Vec<WorktreeRuleInput>>,
-}
-
-/// One linked-worktree rule as the dialog sends it.
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct WorktreeRuleInput {
-    pub(super) project_id: String,
-    pub(super) repo: String,
-    pub(super) parent: String,
-}
-
-/// The rules as saved: each checked and canonicalized
-/// (`grants::checked_worktree_rule`), repeats dropped, at most
-/// `MAX_WORKTREE_RULES`. Whether each one's project is in the client's
-/// reach is checked under the write.
-pub(super) fn checked_worktree_rules(
-    rules: &[WorktreeRuleInput],
-) -> Result<Vec<WorktreeRule>, DeckError> {
-    if rules.len() > super::grants::MAX_WORKTREE_RULES {
-        return Err(DeckError::new(ErrorKind::Invalid, "mcp-worktree-list"));
-    }
-    let mut out: Vec<WorktreeRule> = Vec::new();
-    for rule in rules {
-        let rule =
-            super::grants::checked_worktree_rule(&rule.project_id, &rule.repo, &rule.parent)?;
-        if !out.contains(&rule) {
-            out.push(rule);
-        }
-    }
-    Ok(out)
+    pub(super) auto_worktrees: bool,
 }
 
 #[tauri::command(async)]
@@ -1579,6 +1507,148 @@ pub(crate) async fn mcp_start_session(
     .await
 }
 
+/// The closed word a launch refused by `admit_launch` carries to the
+/// webview, which then reports the operation `rejected`, never ambiguous:
+/// nothing was started.
+pub(crate) const LAUNCH_REFUSED: &str = "mcp-launch-refused";
+
+/// The final launch admission of an MCP start (approved 2026-11-28): the
+/// last decision before a worker card's or a managed session's first
+/// native side effect, under the delivery lock and inside one ledger write,
+/// so a permission save (which takes the same lock) is either wholly before
+/// it or wholly after it. Accepted, claimed and planned are not admitted:
+/// this re-reads the operation (still executing, of this kind, its own
+/// directory, command and project), the client and its choice (workers or
+/// create) and the emergency fences, the project in the client's reach now
+/// (a project left or deleted refuses), and the directory's grant as it is
+/// now (`grants::project_cwd`: the roots, else the linked-worktree switch
+/// as saved now — a switch turned off refuses a start that needed it — with
+/// the repository read again) and identity (`grants::dir_identity`: the
+/// same path naming another directory refuses). It records the outcome in
+/// the operation (`result.launch`); a refusal rejects it (`launch-refused`)
+/// and answers `LAUNCH_REFUSED`. What it admitted then goes on whatever is
+/// saved later, and its result is the launch's own (committed, rejected or
+/// ambiguous); a card already running is never stopped by this.
+pub(super) fn admit_launch_locked(
+    runtime: &Runtime,
+    operation_id: &str,
+    kind: &str,
+    dir: &str,
+    cmd: Option<&str>,
+    project_id: Option<&str>,
+) -> Result<(), DeckError> {
+    let client_id = runtime.read(|doc| {
+        doc.operations
+            .iter()
+            .find(|o| o.operation_id == operation_id)
+            .map(|o| o.client_id.clone())
+    })?;
+    let fenced = client_id
+        .as_deref()
+        .and_then(|client| emergency_fence_error(runtime, client, ""));
+    let verdict = runtime.write(|doc| -> Result<Result<(), &'static str>, DeckError> {
+        let Some(index) = doc.operations.iter().position(|o| {
+            o.operation_id == operation_id && o.kind == kind && o.state == "executing"
+        }) else {
+            return Err(DeckError::new(
+                ErrorKind::ContextChanged,
+                "MCP start operation is no longer executable",
+            ));
+        };
+        let operation = doc.operations[index].clone();
+        let plan = operation.result.clone().unwrap_or(Value::Null);
+        let text = |key: &str| {
+            plan.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let choice = if kind == "session-create" {
+            Choice::Create
+        } else {
+            Choice::Workers
+        };
+        let reason = (|| -> Result<(PathBuf, super::grants::CwdGrant), &'static str> {
+            if fenced.is_some() {
+                return Err("client-revoked");
+            }
+            let client =
+                permitted(doc, &operation.client_id, choice).map_err(|_| "client-revoked")?;
+            let planned_dir = text(if kind == "session-create" {
+                "cwd"
+            } else {
+                "dir"
+            });
+            if planned_dir != dir
+                || cmd.is_some_and(|c| text("cmd") != c)
+                || project_id.is_some_and(|p| text("projectId") != p)
+            {
+                return Err("context-changed");
+            }
+            let scope =
+                scoped_project(client, &text("projectId")).map_err(|_| "project-withdrawn")?;
+            let (cwd, grant) = super::grants::project_cwd(client, &scope, dir)
+                .map_err(|_| "cwd-not-authorized")?;
+            if cwd.display().to_string() != dir {
+                return Err("cwd-changed");
+            }
+            if let Some(recorded) = plan.get("cwdIdentity").and_then(Value::as_array) {
+                let now = super::grants::dir_identity(&cwd)
+                    .map(|(dev, ino)| vec![json!(dev), json!(ino)]);
+                if now.as_deref() != Some(recorded.as_slice()) {
+                    return Err("cwd-replaced");
+                }
+            }
+            Ok((cwd, grant))
+        })();
+        let saved = &mut doc.operations[index];
+        saved.updated_at = now_ms();
+        let launch = match &reason {
+            Ok((_, grant)) => json!({"admittedAt": now_ms(), "grant": grant.word()}),
+            Err(why) => json!({"refusedAt": now_ms(), "reason": why}),
+        };
+        if let Some(Value::Object(fields)) = saved.result.as_mut() {
+            fields.insert("launch".into(), launch);
+        }
+        Ok(match reason {
+            Ok(_) => Ok(()),
+            Err(why) => {
+                saved.state = "rejected".into();
+                saved.code = Some("launch-refused".into());
+                Err(why)
+            }
+        })
+    })?;
+    verdict.map_err(|why| {
+        crate::applog::applog(&format!("[mcp] launch refused reason={why}"));
+        DeckError::new(
+            ErrorKind::ContextChanged,
+            format!("{LAUNCH_REFUSED}: {why}"),
+        )
+    })
+}
+
+/// `admit_launch_locked` for a worker card's start, from the ordinary
+/// `start_session` the webview calls with the operation (`mcp.js`
+/// `startWorker`): it takes the delivery lock itself.
+pub(crate) fn admit_worker_launch(
+    operation_id: &str,
+    dir: &str,
+    cmd: &str,
+    project_id: Option<&str>,
+) -> Result<(), DeckError> {
+    let runtime = runtime()?;
+    let _delivery = runtime.delivery.lock_or_recover();
+    admit_launch_locked(
+        runtime,
+        operation_id,
+        super::workers::WORKER_START_KIND,
+        dir,
+        Some(cmd),
+        project_id,
+    )
+}
+
 /// Managed starts in flight (their own bound, beside ordinary starts').
 static MCP_START_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -1629,6 +1699,8 @@ fn start_managed(
                 "MCP create context changed",
             ));
         }
+        // the final launch admission, under the same lock
+        admit_launch_locked(runtime, operation_id, "session-create", &dir, None, None)?;
         let socket = plan
             .get("runnerSocket")
             .and_then(Value::as_str)

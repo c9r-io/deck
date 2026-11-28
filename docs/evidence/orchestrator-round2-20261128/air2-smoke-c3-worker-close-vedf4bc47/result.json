@@ -1,0 +1,106 @@
+{
+  "run": "vedf4bc47",
+  "root": "/private/tmp/deck-verify-vedf4bc47",
+  "socket": "/private/tmp/deck-verify-vedf4bc47/t/tmux-501/deck-smoke-vedf4bc47",
+  "mode": "worker-close",
+  "head": "8c8f8c95",
+  "dirty": [
+    "M CHANGELOG.md",
+    " M app/run.sh",
+    " M app/src-tauri/mcp-adapter/src/main.rs",
+    " M app/src-tauri/src/commands.rs",
+    " M app/src-tauri/src/diagnostics.rs",
+    " M app/src-tauri/src/main.rs",
+    " M app/src-tauri/src/mcp/admission_tests.rs",
+    " M app/src-tauri/src/mcp/cards/tests.rs",
+    " M app/src-tauri/src/mcp/commands.rs",
+    " M app/src-tauri/src/mcp/grants.rs",
+    " M app/src-tauri/src/mcp/mod.rs",
+    " M app/src-tauri/src/mcp/session.rs",
+    " M app/src-tauri/src/mcp/state.rs",
+    " M app/src-tauri/src/mcp/tests.rs",
+    " M app/src-tauri/src/mcp/workers.rs",
+    " M app/src-tauri/src/terminal.rs",
+    " M app/src-tauri/tests/ipc_thread.rs",
+    " M app/ui/js/extension-mcp.js",
+    " M app/ui/js/i18n/de.js",
+    " M app/ui/js/i18n/en.js",
+    " M app/ui/js/i18n/es.js",
+    " M app/ui/js/i18n/ja.js",
+    " M app/ui/js/i18n/ko.js",
+    " M app/ui/js/i18n/zh-Hans.js",
+    " M app/ui/js/mcp-permissions-model.js",
+    " M app/ui/js/mcp.js",
+    " M app/ui/style.css",
+    " M app/ui/test/dom.test.mjs",
+    " M app/ui/test/fixtures/smoke-manifest.json",
+    " M app/ui/test/mcp-permissions-model.test.mjs",
+    " M app/ui/test/mcp.test.mjs",
+    " M app/ui/test/smoke-manifest.test.mjs",
+    " M app/ui/test/wk-smoke.mjs",
+    " M app/ui/test/workers-smoke.mjs",
+    " M docs/ipc-thread.md",
+    " M docs/mcp.md",
+    "?? research_notes/",
+    "?? scripts/mcp-worktree-e2e.py"
+  ],
+  "binMtime": "2026-11-28 16:44:48",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "6",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "Brave Browser",
+  "claudeAuth": true,
+  "version": "0.8.45",
+  "trustAdded": "add True",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-vedf4bc47/experiment.json"
+  ],
+  "caffeinatePid": "33171",
+  "appPid": "33179",
+  "registerApp": [
+    0,
+    "registered process pid 33179 started Sat Nov 28 16:46:29 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 33195 started Sat Nov 28 16:46:30 2026"
+  ],
+  "operator": {
+    "panesAtArmed": [
+      "deck-orch-c-pwc6 %0 zsh"
+    ],
+    "clientTypedAt": 0.9,
+    "evidence": "{\n \"startedAt\": 1795851995,\n \"tag\": \"vedf4bc47\",\n \"steps\": [\n  {\n   \"name\": \"initialize\",\n   \"ok\": true,\n   \"at\": 1795851995.6\n  },\n  {\n   \"name\": \"tools-list\",\n   \"ok\": true,\n   \"at\": 1795851995.6,\n   \"count\": 40,\n   \"status_enum\": \"in_progress,blocked,failed,ready_for_review,ready_to_merge,handoff\",\n   \"close_modes\": \"episode,instance\"\n  },\n  {\n   \"name\": \"caller-is-a-card\",\n   \"ok\": true,\n   \"at\": 1795851995.6\n  },\n  {\n   \"name\": \"worker-started\",\n   \"ok\": true,\n   \"at\": 1795851996.6,\n   \"state\": \"committed\",\n   \"code\": null\n  },\n  {\n   \"name\": \"report-wait-returned\",\n   \"ok\": true,\n   \"at\": 1795852028.1,\n   \"reason\": \"report\",\n   \"seconds\": 31.5,\n   \"sequence\": 1,\n   \"status\": \"handoff\"\n  },\n  {\n   \"name\": \"decided-while-working\",\n   \"ok\": true,\n   \"at\": 1795852028.1,\n   \"state\": \"working\",\n   \"episode\": 1,\n   \"instance\": true\n  },\n  {\n   \"name\": \"report-awaits-ack\",\n   \"ok\": true,\n   \"at\": 1795852028.1,\n   \"acknowledged\": 0\n  },\n  {\n   \"name\": \"acknowledged\",\n   \"ok\": true,\n   \"at\": 1795852034.2,\n   \"code\": null\n  },\n  {\n   \"name\": \"future-sequence-refused\",\n   \"ok\": true,\n   \"at\": 1795852034.2,\n   \"code\": \"REPORT_NOT_FOUND\"\n  },\n  {\n   \"name\": \"worker-turn-ended\",\n   \"ok\": true,\n   \"at\": 1795852072.8,\n   \"episode\": 2,\n   \"same_instance\": true\n  },\n  {\n   \"name\": \"episode-close-refused\",\n   \"ok\": true,\n   \"at\": 1795852072.8,\n   \"code\": \"EPISODE_MOVED\",\n   \"stage\": \"precheck\",\n   \"current\": 2,\n   \"observed_state\": \"turn-done\"\n  },\n  {\n   \"name\": \"instance-close-accepted\",\n   \"ok\": true,\n   \"at\": 1795852072.8,\n   \"state\": \"accepted\",\n   \"code\": null\n  },\n  {\n   \"name\": \"instance-close-committed\",\n   \"ok\": true,\n   \"at\": 1795852073.8,\n   \"state\": \"committed\",\n   \"code\": null,\n   \"refusal\": \"null\"\n  },\n  {\n   \"name\": \"replay-is-the-same-operation\",\n   \"ok\": true,\n   \"at\": 1795852073.8,\n   \"state\": \"committed\"\n  },\n  {\n   \"name\": \"card-gone\",\n   \"ok\": true,\n   \"at\": 1795852073.9\n  }\n ],\n \"card\": \"W7cca57a148161eb378a4d6e7cc1f0ada\",\n \"adapterStderrBytes\": 0,\n \"failures\": []\n}",
+    "orchPane": "(⎈|BINARY-N/A:N/A)➜  work python3 /private/tmp/deck-verify-vedf4bc47/scripts/mcp\n-close-e2e.py --adapter /private/tmp/deck-verify-vedf4bc47/deck-smoke.app/Conten\nts/MacOS/deck-mcp --socket /private/tmp/deck-verify-vedf4bc47/run/data/mcp-contr\nol.sock --client-id client_2a9dcae7e581df6a3b6fa352f19c7908 --credential-file /p\nrivate/tmp/deck-verify-vedf4bc47/run/data/evidence/mcp-credential-client_2a9dcae\n7e581df6a3b6fa352f19c7908 --evidence /private/tmp/deck-verify-vedf4bc47/run/data\n/evidence/close --tag vedf4bc47\nok   initialize \nok   tools-list count=40 status_enum=in_progress,blocked,failed,ready_for_review,ready_to_merge,handoff close_modes=episode,instance\nok   caller-is-a-card \nok   worker-started state=committed code=None\nok   report-wait-returned reason=report seconds=31.5 sequence=1 status=handoff\nok   decided-while-working state=working episode=1 instance=True\nok   report-awaits-ack acknowledged=0\nok   acknowledged code=None\nok   future-sequence-refused code=REPORT_NOT_FOUND\nok   worker-turn-ended episode=2 same_instance=True\nok   episode-close-refused code=EPISODE_MOVED stage=precheck current=2 observed_state=turn-done\nok   instance-close-accepted state=accepted code=None\nok   instance-close-committed state=committed code=None refusal=null\nok   replay-is-the-same-operation state=committed\nok   card-gone \nPASS\n(⎈|BINARY-N/A:N/A)➜  work \n",
+    "ledger": "22 [('W7cca57a148161eb378a4d6e7cc1f0ada', 1, 1)] [('worker-close', 'committed', None)]"
+  },
+  "seconds": 126,
+  "finished": true,
+  "verdict": "PASS",
+  "verdictDetail": [
+    "smoke-verdict worker-close: PASS (6/6 expected checkpoints, 6 lines)"
+  ],
+  "checksOfInterest": [
+    "smoke-check workers-client a=1 b=0\n",
+    "smoke-check close-armed a=1 b=0\n",
+    "smoke-check close-card a=1 b=0\n",
+    "smoke-check close-label a=1 b=3\n",
+    "smoke-check close-closed a=1 b=0\n",
+    "smoke-check done a=1 b=6\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 33179 started Sat Nov 28 16:46:29 2026: running\ntmux-server pid 33195 started Sat Nov 28 16:46:30 2026 socket /private/tmp/deck-verify-vedf4bc47/t/tmux-501/deck-smoke-vedf4bc47: running"
+  ],
+  "cleanup": [
+    0,
+    "process pid 33179 started Sat Nov 28 16:46:29 2026: running\ntmux-server pid 33195 started Sat Nov 28 16:46:30 2026 socket /private/tmp/deck-verify-vedf4bc47/t/tmux-501/deck-smoke-vedf4bc47: running\nstopped tmux-server pid 33195\nstopped process pid 33179"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 2400",
+  "rootTrashed": true,
+  "trustRemoved": "remove False",
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

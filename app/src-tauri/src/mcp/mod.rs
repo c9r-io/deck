@@ -20,18 +20,20 @@
 //! the client had there with it (`grants::withdraw_projects`). A ledger
 //! holding a client of all projects is written at
 //! `STATE_VERSION_ALL_PROJECTS` (sticky).
-//! Linked-worktree rules (approved 2026-11-28, `Client.worktrees`,
-//! `grants::worktree_scope`): for one project the client reaches (either
-//! mode), the user names a repository's main checkout and the folder its
-//! worktrees are made in. A directory there that Deck verifies, from Git's
-//! own files read in-process (bounded, no `git`, no spawn), to be a linked
-//! worktree OF that repository — the worktree's `.git` file and the
-//! repository's `worktrees/<id>/{gitdir,commondir}` naming each other —
-//! scopes worker starts and managed-session creation in that project
-//! (`grants::project_cwd`, `workers::start_project`); the folder alone
-//! grants nothing, structured reads stay on the roots. Checked again at
-//! each use, revoked with the scope; a ledger holding one is written at
-//! `STATE_VERSION_WORKTREES` (sticky).
+//! Linked worktrees (approved 2026-11-28, `Client.auto_worktrees`, one
+//! switch per client): a worker start or managed-session create of a
+//! project the client reaches may also start in a registered linked
+//! worktree of that project's repository, wherever it lies
+//! (`grants::auto_worktree_scope`). The repository is anchored by the
+//! project's own authorized root (a main checkout's or a linked worktree's
+//! top; never a `.git` found above a subdirectory root), read at each use;
+//! the candidate is checked both ways from Git's own files, read
+//! in-process with `O_NOFOLLOW` (bounded, no `git`, no spawn). The roots
+//! decide first; the switch adds start directories only — reads, execution,
+//! stdin, sharing and every other choice are unchanged, and
+//! `authorizedWorkspaces` stays the roots. Its grant is decided again at
+//! the launch (`commands::admit_launch`). A ledger holding it is written at
+//! `STATE_VERSION_AUTO_WORKTREES` (sticky).
 //! Jobs run under `host-terminal-env-v1` (`ENVIRONMENT_PROFILE`): the Deck
 //! session environment minus Deck's control-plane coordinates, applied by
 //! the runner; a grant stored under a legacy profile loads as history and
@@ -583,12 +585,12 @@ const STATE_VERSION_LANE_EPOCHS: u32 = 21;
 /// (`reports::uses_report_acks`): a v21 build would call the status
 /// damaged and refuse the member.
 const STATE_VERSION_REPORT_ACKS: u32 = 22;
-/// The sticky version a ledger takes once a client holds a linked-worktree
-/// rule (`grants::uses_worktree_rules`): a v22 build would refuse the member,
-/// and must never start a card in a directory it cannot verify.
-const STATE_VERSION_WORKTREES: u32 = 23;
+/// The sticky version a ledger takes once a client has the linked-worktree
+/// switch on (`grants::uses_auto_worktrees`): a v22 build would refuse the
+/// member, never drop it and write the ledger back without it.
+const STATE_VERSION_AUTO_WORKTREES: u32 = 23;
 /// The newest version this build reads and writes.
-const STATE_VERSION_LATEST: u32 = STATE_VERSION_WORKTREES;
+const STATE_VERSION_LATEST: u32 = STATE_VERSION_AUTO_WORKTREES;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

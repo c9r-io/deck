@@ -1,0 +1,111 @@
+{
+ "startedAt": 1795851995,
+ "tag": "vedf4bc47",
+ "steps": [
+  {
+   "name": "initialize",
+   "ok": true,
+   "at": 1795851995.6
+  },
+  {
+   "name": "tools-list",
+   "ok": true,
+   "at": 1795851995.6,
+   "count": 40,
+   "status_enum": "in_progress,blocked,failed,ready_for_review,ready_to_merge,handoff",
+   "close_modes": "episode,instance"
+  },
+  {
+   "name": "caller-is-a-card",
+   "ok": true,
+   "at": 1795851995.6
+  },
+  {
+   "name": "worker-started",
+   "ok": true,
+   "at": 1795851996.6,
+   "state": "committed",
+   "code": null
+  },
+  {
+   "name": "report-wait-returned",
+   "ok": true,
+   "at": 1795852028.1,
+   "reason": "report",
+   "seconds": 31.5,
+   "sequence": 1,
+   "status": "handoff"
+  },
+  {
+   "name": "decided-while-working",
+   "ok": true,
+   "at": 1795852028.1,
+   "state": "working",
+   "episode": 1,
+   "instance": true
+  },
+  {
+   "name": "report-awaits-ack",
+   "ok": true,
+   "at": 1795852028.1,
+   "acknowledged": 0
+  },
+  {
+   "name": "acknowledged",
+   "ok": true,
+   "at": 1795852034.2,
+   "code": null
+  },
+  {
+   "name": "future-sequence-refused",
+   "ok": true,
+   "at": 1795852034.2,
+   "code": "REPORT_NOT_FOUND"
+  },
+  {
+   "name": "worker-turn-ended",
+   "ok": true,
+   "at": 1795852072.8,
+   "episode": 2,
+   "same_instance": true
+  },
+  {
+   "name": "episode-close-refused",
+   "ok": true,
+   "at": 1795852072.8,
+   "code": "EPISODE_MOVED",
+   "stage": "precheck",
+   "current": 2,
+   "observed_state": "turn-done"
+  },
+  {
+   "name": "instance-close-accepted",
+   "ok": true,
+   "at": 1795852072.8,
+   "state": "accepted",
+   "code": null
+  },
+  {
+   "name": "instance-close-committed",
+   "ok": true,
+   "at": 1795852073.8,
+   "state": "committed",
+   "code": null,
+   "refusal": "null"
+  },
+  {
+   "name": "replay-is-the-same-operation",
+   "ok": true,
+   "at": 1795852073.8,
+   "state": "committed"
+  },
+  {
+   "name": "card-gone",
+   "ok": true,
+   "at": 1795852073.9
+  }
+ ],
+ "card": "W7cca57a148161eb378a4d6e7cc1f0ada",
+ "adapterStderrBytes": 0,
+ "failures": []
+}

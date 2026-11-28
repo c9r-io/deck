@@ -2724,10 +2724,11 @@ fn column_not_permitted() -> Value {
 /// The project a worker card opens in, decided by its directory alone
 /// (approved 2026-11-23): the caller may run anywhere, so where it runs
 /// decides nothing. The directory must exist; the candidates are the
-/// projects this client reaches whose roots hold it, and those whose
-/// linked-worktree rule verifies it (`grants::worktree_scope`, approved
-/// 2026-11-28: a worktree of the rule's repository under the rule's
-/// folder; the scope's root is then that worktree). None:
+/// projects this client reaches whose roots hold it, and — only when none
+/// does and the client's linked-worktree switch is on — those whose
+/// repository the directory's linked worktree belongs to
+/// (`grants::auto_worktree_scope`, approved 2026-11-28; the scope's root is
+/// then that worktree, the grant `AutoWorktree`). None:
 /// `PATH_NOT_ACCESSIBLE` with a `reason` (`not-found`,
 /// `volume-unavailable`, `not-accessible`, `outside-scope`, or
 /// `worktree-unverified` with the rule's word in `detail`). One: that
@@ -2741,14 +2742,14 @@ fn start_project(
     client: &Client,
     dir: &str,
     named: Option<&str>,
-) -> Result<Result<ProjectScope, Value>, DeckError> {
+) -> Result<Result<(ProjectScope, super::grants::CwdGrant), Value>, DeckError> {
     let refuse = |reason: &str, message: &str, detail: Option<&str>| {
         let next = match reason {
             "volume-unavailable" => "The volume that directory is on is not mounted: ask the local user to connect it, then start again. Deck keeps the client's configuration as it is.",
             "not-found" => "Create the directory first (for a worktree: git worktree add), then start again with the same dir.",
             "not-accessible" => "Deck cannot read that directory (permissions or an unavailable volume); ask the local user, or use another directory.",
-            "worktree-unverified" => "Deck could not verify that directory as a linked worktree of the repository the local user named for that folder (detail says why). Create worktrees with git worktree add from that repository, or ask the local user to add the directory to the project.",
-            _ => "Use an existing directory inside one of the projects deck_capabilities authorizedWorkspaces lists or one of its worktreeRules, or ask the local Deck user to give this client that project or folder.",
+            "worktree-unverified" => "Deck could not verify that directory as a registered linked worktree of a repository one of your projects anchors (detail says why; deck_capabilities autoLinkedWorktrees lists each project's anchor). Create it with git worktree add from that repository, or ask the local user to add the directory to the project.",
+            _ => "Use an existing directory inside one of the projects deck_capabilities authorizedWorkspaces lists (or, when autoLinkedWorktrees is enabled, a linked worktree of one of their repositories), or ask the local Deck user to give this client that project.",
         };
         let mut error = json!({
             "code": "PATH_NOT_ACCESSIBLE",
@@ -2792,7 +2793,6 @@ fn start_project(
                 .is_some_and(|root| path.starts_with(root))
         })
     };
-    let (worktrees, refused) = super::grants::worktree_scope(client, &path);
     let mut candidates: Vec<ProjectScope> = match named {
         Some(id) => {
             let scope = scoped_project(client, id)?;
@@ -2800,13 +2800,24 @@ fn start_project(
         }
         None => client_scopes(client).into_iter().filter(holds).collect(),
     };
-    for scope in worktrees {
-        if named.is_some_and(|id| id != scope.project_id) {
-            continue;
-        }
-        // a project already held through its own roots stays one candidate
-        if !candidates.iter().any(|c| c.project_id == scope.project_id) {
-            candidates.push(scope);
+    // the roots decide first; the switch only when they hold nothing
+    let mut grant = super::grants::CwdGrant::Roots;
+    let mut refused = None;
+    if candidates.is_empty() && client.auto_worktrees {
+        match super::grants::auto_worktree_scope(client, &path) {
+            Ok(scopes) => {
+                candidates = scopes
+                    .into_iter()
+                    .filter(|s| named.is_none_or(|id| id == s.project_id))
+                    .collect();
+                grant = super::grants::CwdGrant::AutoWorktree;
+            }
+            // a plain directory outside every root is just outside
+            Err("not-a-worktree") => {}
+            Err(why) => {
+                debug_assert!(super::grants::WORKTREE_REASONS.contains(&why));
+                refused = Some(why);
+            }
         }
     }
     match candidates.len() {
@@ -2825,7 +2836,7 @@ fn start_project(
             "that directory is not inside any project this client reaches",
             None,
         ),
-        1 => Ok(Ok(candidates.remove(0))),
+        1 => Ok(Ok((candidates.remove(0), grant))),
         _ => {
             let names: HashMap<String, String> = crate::documents::board_layout()
                 .into_iter()
@@ -2909,16 +2920,8 @@ pub(super) fn worker_start(
     let hash = request_hash("deck_worker_start", &args);
     let orchestrator = super::origin::orchestrator();
     let orchestrator = orchestrator.as_deref();
-    // the project comes from the directory, never from where the caller
-    // runs (resolved before the write: a client of all projects reads the
-    // project's directory from disk)
-    let scope = runtime
-        .read(|doc| -> Result<Result<ProjectScope, Value>, DeckError> {
-            let client = permitted(doc, client_id, Choice::Workers)?;
-            start_project(client, &args.dir, args.project_id.as_deref())
-        })
-        .map_err(map_error)?
-        .map_err(map_error)??;
+    // the same request again answers its operation first, whatever the
+    // scope says now: a replay never becomes a new decision
     if let Some(mut replayed) =
         replay_worker(runtime, client_id, orchestrator, &args.request_id, &hash)?
     {
@@ -2927,6 +2930,18 @@ pub(super) fn worker_start(
         }
         return Ok(replayed);
     }
+    // the project comes from the directory, never from where the caller
+    // runs (resolved before the write: a client of all projects reads the
+    // project's directory from disk)
+    let (scope, _) = runtime
+        .read(
+            |doc| -> Result<Result<(ProjectScope, super::grants::CwdGrant), Value>, DeckError> {
+                let client = permitted(doc, client_id, Choice::Workers)?;
+                start_project(client, &args.dir, args.project_id.as_deref())
+            },
+        )
+        .map_err(map_error)?
+        .map_err(map_error)??;
     if let Some(column) = args.column_id.as_deref() {
         named_column(runtime, client_id, &scope.project_id, column)?;
     }
@@ -2993,8 +3008,8 @@ pub(super) fn worker_start(
             // decided again under the write, on the client as it is now: a
             // scope or worktree rule withdrawn meanwhile refuses the start,
             // and the directory still lies where it was verified
-            let project = match start_project(&client, &args.dir, Some(&scope.project_id))? {
-                Ok(again) if again.project_id == scope.project_id => again,
+            let (project, grant) = match start_project(&client, &args.dir, Some(&scope.project_id))? {
+                Ok(again) if again.0.project_id == scope.project_id => again,
                 Ok(_) => return Ok(Err(error_value(
                     "PATH_NOT_ACCESSIBLE",
                     "that directory no longer belongs to the project it was checked in",
@@ -3004,6 +3019,7 @@ pub(super) fn worker_start(
             };
             let project = &project;
             let dir = canonical_scope(&args.dir, &project.roots)?;
+            let identity = super::grants::dir_identity(&dir);
             if let Err(full) = room_for_worker(doc, client_id, orchestrator) {
                 return Ok(Err(full));
             }
@@ -3023,6 +3039,10 @@ pub(super) fn worker_start(
                     "cmd": cmd,
                     "model": listed,
                     "dir": dir,
+                    // how the directory was authorized and which directory it
+                    // was: decided again at the launch (`commands::admit_launch`)
+                    "cwdGrant": grant.word(),
+                    "cwdIdentity": identity.map(|(dev, ino)| json!([dev, ino])),
                     "title": title,
                     "type": worker_type.name,
                     // the first line waits here until the card exists, then
@@ -3138,6 +3158,7 @@ struct Choices {
     cards: bool,
     card_edits: bool,
     rule_column: bool,
+    auto_worktrees: bool,
 }
 
 impl Choices {
@@ -3154,6 +3175,7 @@ impl Choices {
             cards: client.allow_cards,
             card_edits: client.allow_card_edits,
             rule_column: client.rule_column,
+            auto_worktrees: client.auto_worktrees,
         }
     }
 
@@ -3172,6 +3194,7 @@ impl Choices {
             cards: input.allow_cards,
             card_edits: input.allow_cards && input.allow_card_edits,
             rule_column: input.rule_column,
+            auto_worktrees: input.auto_worktrees,
         }
     }
 
@@ -3187,6 +3210,7 @@ impl Choices {
         client.allow_cards = self.cards;
         client.allow_card_edits = self.card_edits;
         client.rule_column = self.rule_column;
+        client.auto_worktrees = self.auto_worktrees;
     }
 }
 
@@ -3233,11 +3257,7 @@ pub(super) fn client_permissions(
     } else {
         None
     };
-    let rules = permissions
-        .worktrees
-        .as_deref()
-        .map(super::commands::checked_worktree_rules)
-        .transpose()?;
+
     let withdrew_automations;
     let mut withdrew_drafts = false;
     let mut fenced = Vec::new();
@@ -3257,24 +3277,11 @@ pub(super) fn client_permissions(
             let mut reach_before = reach(client);
             reach_before.extend(held);
             let scope_before = (client.all_projects, scope_key(&client.projects));
-            let rules_before = client.worktrees.clone();
             if let Some((all, scopes)) = &scope {
                 client.all_projects = *all;
                 client.projects = scopes.clone();
             }
-            // a rule stands only for a project the client reaches: one
-            // named now must be reached, and a project that left the scope
-            // takes its rules with it
-            let reached = reach(client);
-            if let Some(rules) = &rules {
-                if !rules.iter().all(|r| reached.contains(&r.project_id)) {
-                    return Err(DeckError::new(ErrorKind::Invalid, "mcp-worktree-project"));
-                }
-                client.worktrees = rules.clone();
-            }
-            client.worktrees.retain(|r| reached.contains(&r.project_id));
-            let scope_changed = scope_before != (client.all_projects, scope_key(&client.projects))
-                || rules_before != client.worktrees;
+            let scope_changed = scope_before != (client.all_projects, scope_key(&client.projects));
             // a client of all projects keeps every project: nothing leaves
             // only a scope change withdraws anything
             let removed: HashSet<String> = if client.all_projects || scope.is_none() {
@@ -3291,6 +3298,29 @@ pub(super) fn client_permissions(
             let withdrew_automations = before.automations && !after.automations;
             let withdrew_create = before.create && !after.create;
             let withdrew_workers = before.workers && !after.workers;
+            // the linked-worktree switch off: a start or create accepted on
+            // it and not yet taken by the Board is rejected now; one the
+            // Board took is decided at its launch (`commands::admit_launch`),
+            // and cards already running stay as they are
+            if before.auto_worktrees && !after.auto_worktrees {
+                doc.reject_pending(
+                    |operation| {
+                        operation.client_id == client_id
+                            && operation.state == "accepted"
+                            && matches!(
+                                operation.kind.as_str(),
+                                WORKER_START_KIND | "session-create"
+                            )
+                            && operation
+                                .result
+                                .as_ref()
+                                .and_then(|r| r.get("cwdGrant"))
+                                .and_then(Value::as_str)
+                                == Some(super::grants::CwdGrant::AutoWorktree.word())
+                    },
+                    "auto-worktrees-withdrawn",
+                );
+            }
             if withdrew_automations {
                 doc.reject_pending(
                     |operation| operation.client_id == client_id && operation.kind == TRIGGER_KIND,

@@ -338,3 +338,11 @@ test('a card update whose Board save failed is ambiguous, never rejected', async
   assert.deepEqual(run.done, [['ambiguous', 'board-transaction-unknown']]);
   assert.equal(store.cards[0].title, 'old');
 });
+
+test('a start refused by native final launch admission ends rejected, never ambiguous', async () => {
+  const { startFailure } = await import('../js/mcp.js');
+  assert.equal(startFailure(Object.assign(new Error('ContextChanged: mcp-launch-refused: cwd-not-authorized'), { effectAttempted: true })), 'rejected');
+  assert.equal(startFailure({ effectAttempted: true }), 'ambiguous');
+  assert.equal(startFailure({ effectAttempted: false }), 'rejected');
+  assert.equal(startFailure('mcp-launch-refused: project-withdrawn'), 'rejected');
+});

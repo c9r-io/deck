@@ -75,15 +75,13 @@ pub(super) struct Client {
     /// empty. A project without one is seen, never worked in.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) all_projects: bool,
-    /// The user's linked-worktree rules (approved 2026-11-28,
-    /// `grants::worktree_scope`): for one project the client reaches, a
-    /// repository's main checkout and the folder its linked worktrees live
-    /// in. A directory there that Deck verifies, from the repository's own
-    /// files, to be a linked worktree OF THAT repository (or a folder
-    /// inside one) opens worker cards and managed sessions in that project;
-    /// the folder alone grants nothing. Read and revoked with the scope.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) worktrees: Vec<WorktreeRule>,
+    /// The user's choice (approved 2026-11-28, `grants::auto_worktree_scope`)
+    /// that a worker card or managed session of a project this client
+    /// reaches may also start in a registered linked worktree of that
+    /// project's repository, wherever it is. It adds start directories only:
+    /// file reads stay on the roots, and every other choice is its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) auto_worktrees: bool,
     /// Creates this client has had accepted. A create must name the current
     /// value, so a create whose record was retired can never be accepted again.
     #[serde(default)]
@@ -160,24 +158,11 @@ fn is_zero_epoch(n: &u64) -> bool {
     *n == 0
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ProjectScope {
     pub(super) project_id: String,
     pub(super) roots: Vec<String>,
-}
-
-/// One linked-worktree rule of a client (`Client.worktrees`): canonical
-/// absolute directories, checked when saved and verified again at each use.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct WorktreeRule {
-    pub(super) project_id: String,
-    /// The repository's main checkout (the directory holding its `.git`
-    /// directory).
-    pub(super) repo: String,
-    /// The folder its linked worktrees are made in: a path boundary only.
-    pub(super) parent: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -850,8 +835,8 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
 /// Validation requires at least it; a write raises to it and never lowers
 /// (sticky). The versions rise in this order (`mod.rs`).
 fn needed_version(doc: &DiskDoc) -> u32 {
-    if super::grants::uses_worktree_rules(doc) {
-        STATE_VERSION_WORKTREES
+    if super::grants::uses_auto_worktrees(doc) {
+        STATE_VERSION_AUTO_WORKTREES
     } else if super::reports::uses_report_acks(doc) {
         STATE_VERSION_REPORT_ACKS
     } else if super::admit::uses_lane_epochs(doc) {
@@ -918,14 +903,6 @@ pub(super) fn validate_doc(doc: &DiskDoc) -> Result<(), DeckError> {
                             .roots
                             .iter()
                             .all(|root| Path::new(root).is_absolute())
-                })
-                && client.worktrees.len() <= super::grants::MAX_WORKTREE_RULES
-                && client.worktrees.iter().all(|rule| {
-                    valid_id(&rule.project_id)
-                        && Path::new(&rule.repo).is_absolute()
-                        && Path::new(&rule.parent).is_absolute()
-                        && rule.repo.len() <= 1024
-                        && rule.parent.len() <= 1024
                 })
         });
     let mut session_ids = HashSet::new();

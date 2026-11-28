@@ -1094,6 +1094,23 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "worktree-switch": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "wt-saved": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
+    "worktree-switch-relaunch": {
+      "terminal": "done",
+      "checks": {
+        "wt-restored": {},
+        "wt-armed": {},
+        "wt-cards": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "reentry-shapes": {
       "terminal": "done",
       "checks": {

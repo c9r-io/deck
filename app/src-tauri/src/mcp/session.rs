@@ -77,9 +77,9 @@ pub(super) fn capabilities(
                 "structuredProjectRead": true,
                 "reliableJobExitTracking": true,
                 "authorizedWorkspaces": client_scopes(client),
-                // linked-worktree rules: a verified worktree of `repo` under
-                // `parent` opens cards in `projectId` (`grants::worktree_scope`)
-                "worktreeRules": client.worktrees,
+                // the linked-worktree switch: start directories beyond the
+                // roots, never more reads (`grants::auto_worktree_scope`)
+                "autoLinkedWorktrees": super::grants::auto_worktrees_view(client),
                 // every project of the Board, those made later too, each
                 // through its default directory (`grants::scoped_project`)
                 "allProjects": client.all_projects,
@@ -208,7 +208,8 @@ pub(super) fn session_create(
             }
             let client = permitted(doc, client_id, Choice::Create)?;
             let project = scoped_project(client, &args.project_id)?;
-            let cwd = super::grants::project_cwd(client, &project, &args.cwd)?;
+            let (cwd, grant) = super::grants::project_cwd(client, &project, &args.cwd)?;
+            let identity = super::grants::dir_identity(&cwd);
             let operation_id = random_id("op_", 16)?;
             let card_id = random_id("M", 16)?;
             let session_id = random_id("mcp_", 16)?;
@@ -222,6 +223,9 @@ pub(super) fn session_create(
                 "projectId": args.project_id,
                 "title": title,
                 "cwd": cwd,
+                // decided again at the launch (`commands::admit_launch`)
+                "cwdGrant": grant.word(),
+                "cwdIdentity": identity.map(|(dev, ino)| json!([dev, ino])),
                 "generation": generation,
                 "controlSequence": 0,
                 "runnerSocket": socket

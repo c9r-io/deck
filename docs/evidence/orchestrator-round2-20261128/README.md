@@ -7,8 +7,8 @@
 
 按使用场景：
 
-1. **外置盘上的 linked worktree 直接开卡。** 在 设置 › MCP › 客户端「Permissions…」的「Git 关联工作树」里，为项目（如「第七梦」）填仓库主 checkout（`/Users/chenhan/UnityProjects/architect-of-the-seventh-dream`）和工作树所在文件夹（`/Volumes/YottaUnity`），保存一次。之后编排者对 `/Volumes/YottaUnity/seventh-dev45`（或它的子目录，或以后新建的 `seventh-devNN`）调 `deck_worker_start`，卡片直接开在「第七梦」项目、cwd 就是该 worktree、拿该项目的环境变量。不再需要先在主仓库开卡再 cd。
-2. **规则只认这个仓库的 worktree。** 同一文件夹里的独立 clone、其他仓库的 worktree、submodule、伪造的单向 `.git` 指针、普通目录都开不了卡，错误里 `reason: worktree-unverified` 加 `detail` 说明原因。
+1. **外置盘上的 linked worktree 直接开卡（只设一次）。** 在 设置 › MCP › 客户端「Permissions…」勾选「自动允许已授权项目的关联工作树」并保存。之后编排者对 `/Volumes/YottaUnity/seventh-dev45`（或它的子目录，或以后在任何文件夹新建的 worktree）调 `deck_worker_start`，卡片直接开在「第七梦」项目、cwd 就是该 worktree、拿该项目的环境变量。客户端是「所有项目」时，以后新增的项目也自动适用；指定项目模式只覆盖列出的项目。
+2. **只认这些项目仓库登记过的 worktree。** 仓库由项目自己的目录决定（主 checkout 的顶层，或本身是 linked worktree 的顶层）；独立 clone、其他仓库的 worktree、submodule、单向 `.git` 指针、链接形式的指针文件、普通目录都开不了卡，错误里 `reason: worktree-unverified` 加 `detail` 说明原因。只授权了仓库子目录的项目不锚定仓库，因此不会扩大到整个仓库。
 3. **一个项目多个目录。** 同一对话框里一个项目可以有多行目录，全部显示、全部保存；只改别的权限不会丢目录；外置盘没挂时，已有目录保留并在对话框里提示「目前不可用」。
 4. **报告可以写 `status: handoff`。** 工具 schema 里 status 是真正的 enum（含 handoff），未知值报错带 `field` 与 `allowed`。
 5. **报告后马上关卡不再反复 EPISODE_MOVED。** 编排者在长等待拿到报告时就决定关闭，用 `deck_worker_close close_mode: "instance"`（带列表里的 `instance` 和 `lastLine`）；工人随后自己结束回合（新 episode）不会再让关闭失效。旧的 `after_episode` 模式照旧。
@@ -17,8 +17,9 @@
 
 仍然做不到的：
 
-- worktree 规则只作用于开工人卡和托管 session 的 cwd；结构化读取（`deck_project_list/read/search`）仍只在项目目录里。
-- Deck 不建、不删、不切 worktree，也不跑 git；只认 `git worktree add` 写出的标准布局（`.git` 文件 ↔ `worktrees/<id>/gitdir` + `commondir`，绝对或相对路径）。bare 仓库为主的布局、`$GIT_DIR` 被移走的布局不支持，会给出 `unreadable-metadata` 或 `other-repository`。
+- 开关只扩展开工人卡和托管 session 的 cwd；结构化读取（`deck_project_list/read/search`）、执行许可、stdin、输出共享、会话控制和卡片管理都不变，`authorizedWorkspaces` 仍只列项目目录。
+- Git 双向登记是一致性检查，不是签名：能同时改写两边元数据的本机程序可以造出一致的记录；这不是 OS 沙箱。
+- Deck 不建、不删、不切 worktree，也不跑 git；只认 `git worktree add` 写出的标准布局（`.git` 文件 ↔ `worktrees/<id>/gitdir` + `commondir`，绝对或相对路径）。项目根是 submodule 或 bare 仓库时不作为锚点（`unsupported-layout` / `not-a-repository-root`），`$GIT_DIR` 被移走的布局也不支持。
 - 「待接收」只说最新一份报告是否被确认收到，不是未读条数，也不表示已审阅或已处理。升级前就有报告的旧卡显示原来的「已报告」，直到下一份新报告。
 - 按实例关闭要求 Deck 读得到前台进程；读不到（`INSTANCE_UNKNOWN`）或活着的 agent 没有观察（`OBSERVATION_UNKNOWN`，如 Deck 重启后尚未见新回合）时拒绝，此时可退回 episode 模式。
 - 旧版 Deck（≤0.8.45）读到 v22/v23 的 mcp.json 会拒绝（MCP 在旧版里不可用），回退版本前要知道这一点。
@@ -33,13 +34,21 @@
 
 ## 关键设计
 
-### A：项目多目录与 worktree 规则
+### A：项目多目录与关联工作树开关（2026-11-28 收敛）
 
 - `ProjectScope.roots` 原本就支持多个；前端改为一目录一行（`initialScope`/`scopePayload` 合并回同一项目），后端 `validate_client_scopes` 合并重复项目、规范化后去重（符号链接与目标算一个），并把「客户端已持有、此刻解析不了」的目录原样保留（外置盘未挂）；新目录必须存在。
-- 新增 `Client.worktrees: [{projectId, repo, parent}]`（保存时规范化：repo 必须含 `.git` 目录，parent 走 root policy）。两种 scope 模式都可用；规则的项目必须在客户端可达范围内，项目离开范围时规则随之删除。
-- 选择了「仓库限定」而非「专用父目录」：父目录只是路径边界。`grants::verify_linked_worktree` 在进程内有界读取（每个指针文件 ≤4 KiB，`.git` 文件不跟随符号链接，无子进程）：目标的最近 `.git` 必须是**文件**，指向 `<repo>/.git/worktrees/<id>`；该目录的 `commondir` 解析为 `<repo>/.git`；其 `gitdir` 回指这个 `.git` 文件。remote、分支、HEAD、目录名都不读。
-- 候选项目 = 根目录包含 dir 的项目 ∪ 规则验证通过的项目；多个 → `PATH_AMBIGUOUS`，`project_id` 只能在候选里选。写入阶段在账本写锁内用当时的客户端再判一次（撤销与开卡竞争）。失败不回退到主仓库目录。错误 `reason`：`not-found`、`volume-unavailable`、`not-accessible`、`outside-scope`、`worktree-unverified`（`detail` 为五个闭集词之一）。
-- 同一规则也用于 `deck_session_create` 的 cwd（`grants::project_cwd`）。EDR：未新增任何 spawn。
+- 原先未发布的逐项目「仓库 + 父目录」规则（`Client.worktrees`、`WorktreeRule`、预填按钮与 `mcp_worktree_suggest`）已删除，没有迁移或回退路径。改为 `Client.auto_worktrees`（默认关）。
+- 仓库锚点（`grants::repository_anchor`）只来自客户端此刻可达项目的根目录：根的 `.git` 是目录 → 该目录；根本身是 linked worktree → 双向校验后取其仓库 Git 目录；子目录根、submodule、bare 不锚定。每次使用时重新读取，项目默认目录改了就用新目录。
+- 候选目录（`grants::auto_worktree_scope`）：最近的 `.git` 必须是文件，指向 `<common>/worktrees/<id>`，`commondir` 回到 `<common>`，`gitdir` 回指；`<common>` 等于某个项目的锚点。worktree 顶层还要通过 `mcp_fs::root_policy`（拒绝 `/`、home 及其祖先、敏感目录），不再有父目录白名单。指针文件以 `O_NOFOLLOW` 打开，在打开的描述符上检查是常规文件且 ≤4 KiB。
+- 普通 roots 先判；只有 roots 不包含时才查开关。同一仓库属于多个项目 → `PATH_AMBIGUOUS`，`project_id` 只在合法候选里选。
+- 接受时计划里记录 `cwdGrant`（`roots` / `auto-worktree`）和 cwd 的 (dev, ino)。
+
+### A follow-up：实际启动前的最终准入
+
+- `commands::admit_launch_locked`：在 delivery 锁 + 一次账本写事务内，于首次原生副作用之前执行。托管 session 在 `mcp_start_session` 的计划读取段内调用；工人卡由 `mcp.js` `startWorker` 把 `mcpOperation` 交给普通 `start_session`，在其 worker 线程里、`start_session_gated` 之前调用。
+- 检查：operation 仍为 executing 且类型对；目录、命令、项目与计划一致；客户端未撤销、仍有 workers / create 权限、无应急 fence；项目仍在可达范围；`project_cwd` 按此刻的 roots 与开关重新授权（仓库登记重新读取）；目录身份 (dev, ino) 未变。结果写入 `result.launch`（`admittedAt` + `grant`，或 `refusedAt` + `reason`）；拒绝时 operation 置 `rejected`、码 `launch-refused`，webview 据 `mcp-launch-refused` 报 rejected 而非 ambiguous。
+- 时序：保存权限与准入都取 delivery 锁，互斥。关开关时，尚未被 Board 取走的依赖开关的 start/create 直接 `auto-worktrees-withdrawn`；已取走但未通过准入的在准入处被拒；已通过准入的按自身结果完成；已运行的卡不受影响；撤销 client/项目/workers/create 仍走原有更强路径。
+- 同一 `request_id` 的精确重放现在先于目录判定（之前权限变化后重放会得到新拒绝），始终返回原 operation。
 
 ### B：handoff
 
@@ -58,13 +67,29 @@
 
 ## 兼容与升级
 
-- mcp.json：handoff 或确认字段 → sticky v22（`STATE_VERSION_REPORT_ACKS`）；worktree 规则 → v23（`STATE_VERSION_WORKTREES`）。本版本起，读取前先只读版本号，未来版本明确报「written by a newer Deck」，不再走成员解析失败。旧版（v21 读者）遇到 v22/v23 会拒绝整个账本（MCP 不可用、文件不动）；回退前需注意。
+- mcp.json：handoff 或确认字段 → sticky v22（`STATE_VERSION_REPORT_ACKS`）；关联工作树开关 → v23（`STATE_VERSION_AUTO_WORKTREES`；v23 从未在任何已发布版本里出现过）。本版本起，读取前先只读版本号，未来版本明确报「written by a newer Deck」，不再走成员解析失败。旧版（v21 读者）遇到 v22/v23 会拒绝整个账本（MCP 不可用、文件不动）；回退前需注意。
 - 关闭计划的新字段在 `result` 里，旧版读到也不会执行（重启后都是 ambiguous）。
 - 新工具 `deck_worker_reports_ack`、新参数 `close_mode`/`instance`/`last_line`、视图新字段对旧客户端无害。客户端需要重新 `tools/list` 才看得到：Claude Code / Codex 新会话自动；隧道等长驻 adapter 需重启集成（Settings 的 MCP 行在协议号不同时才会提示，本轮协议号未变）。
 
 ## 可复制示例
 
 见 `docs/mcp.md` 工具表与本目录 `examples.md`。
+
+## 验证（2026-11-28 收敛为开关之后，最终代码）
+
+| 项 | 地点 / 构建 | 结果 |
+|---|---|---|
+| fmt、clippy（CI 形式） | 本机 | 通过 |
+| CI 同款 llvm-cov | 本机，隔离 HOME/TMPDIR | exit 0；deck-app 1588 通过 0 失败；行 85.16%、函数 82.86%；TMPDIR 无遗留 |
+| deck-mcp 单元 3 + stdio 8；IPC 普查、EDR 测试 | 本机 | 通过 |
+| `a_linked_worktree_belongs_to_the_project_whose_root_anchors_its_repository`（不同位置 worktree、子目录、clone、其他仓库、submodule、单向指针、链接指针、超长指针、开关关闭、子目录根不扩大、linked-worktree 根锚定、双项目歧义、roots 优先） | 本机 | 通过 |
+| `the_worktree_switch_is_decided_again_at_the_launch`（所有项目模式新增项目自动适用、指定项目不含未列项目、歧义消歧；claim 后关开关被拒并记录、未 claim 的被 `auto-worktrees-withdrawn`、roots 授权的不受影响；已准入的照常完成；精确重放返回原 operation、改参冲突；登记被移除、目录被替换、计划外目录、项目被删、workers 权限撤销；托管 session 同样被挡） | 本机 | 通过 |
+| `a_project_keeps_every_directory_it_was_given` | 本机 | 通过 |
+| `scripts/ui-tests` | 本机 | 1069/1069 |
+| air2 `worktree-switch` → 重启 → `worktree-switch-relaunch`，真实 WKWebView 窗口、真实 Permissions… 对话框勾选保存、真实 debug adapter（run `v134f94f9`） | air2 | **PASS** 阶段一 3/3、阶段二 4/4，客户端 7/7：重启后开关仍开；重启后才建的项目「Later」与两个不同文件夹的 worktree（`git worktree add`，开关保存之后才创建）直接开卡，项目与 cwd 正确，`result.launch.grant = auto-worktree`；clone 被拒 `separate-repository`；普通目录 `outside-scope`；`authorizedWorkspaces` 不含 worktree |
+| air2 `worker-close` 回归（run `vedf4bc47`，工人卡经最终准入启动） | air2 | **PASS** 6/6，客户端 15/15 |
+
+以下为收敛前（逐项目规则版本）的记录，保留作历史：
 
 ## 验证（逐项，地点与构建）
 
@@ -82,7 +107,8 @@
 
 **UNRUN / 未验证：**
 
-- 真实窗口里在 Permissions… 对话框中添加 worktree 规则、多目录行与「外置盘不可用」提示的外观与操作（只有 DOM 级单元测试）。
+- 多目录行与「外置盘不可用」提示在真实窗口里的外观与操作（只有 DOM 级单元测试）。
+- 项目环境变量随 worktree 卡生效：代码路径与普通卡相同（`start_session` 的 `projectId`），但端到端没有写 Keychain 去验证。
 - 真实外置盘 `/Volumes/YottaUnity` 上的 linked worktree 开卡（单元测试用同样布局的临时目录；没有在生产 Deck 上改用户配置）。
 - 实际出错编排者的 adapter 版本与工具缓存；Codex、Pi 编排者调用新参数；发布包。
 - 旧版 Deck 读到 v22/v23 账本的实际表现（按代码推断为整体拒绝，未运行旧版）。

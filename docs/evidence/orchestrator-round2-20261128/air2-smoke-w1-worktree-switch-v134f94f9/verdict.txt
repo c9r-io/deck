@@ -1,0 +1,1 @@
+smoke-verdict worktree-switch: PASS (3/3 expected checkpoints, 3 lines)

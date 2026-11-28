@@ -331,7 +331,7 @@ fn client_record(root: &Path) -> Client {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
-        worktrees: Vec::new(),
+        auto_worktrees: false,
         send_epoch: 0,
     }
 }
@@ -870,7 +870,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
-        worktrees: Vec::new(),
+        auto_worktrees: false,
         send_epoch: 0,
     });
     let disabled = match client(&doc, "client_a") {
@@ -2233,7 +2233,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
-        worktrees: Vec::new(),
+        auto_worktrees: false,
         send_epoch: 0,
     });
     assert!(validate_doc(&invalid).is_err());
@@ -5988,7 +5988,7 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             rule_column: false,
             all_projects: false,
             projects: None,
-            worktrees: None,
+            auto_worktrees: false,
         },
     )
     .unwrap();
@@ -6142,7 +6142,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             rule_column: false,
             all_projects: false,
             projects: None,
-            worktrees: None,
+            auto_worktrees: false,
         };
     assert!(client_permissions(
         &runtime,
@@ -6851,7 +6851,7 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         rule_column: false,
         all_projects: false,
         projects: None,
-        worktrees: None,
+        auto_worktrees: false,
     }
 }
 
@@ -7556,7 +7556,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
     let permissions = |rule_column: bool| super::commands::PermissionsInput {
         all_projects: false,
         projects: None,
-        worktrees: None,
+        auto_worktrees: false,
         allow_create: false,
         allow_automations: true,
         allow_workers: true,
@@ -10384,144 +10384,262 @@ fn fake_worktree(repo: &Path, id: &str, at: &Path) {
     std::fs::write(at.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
 }
 
-/// The verification itself (`grants::verify_linked_worktree`): both ways,
-/// from the repository's own files; a clone, a submodule, a one-way
-/// pointer, another repository's worktree and a plain directory are each
-/// refused with their word.
+/// A main checkout and its `.git` directory, written by hand (no git runs).
+fn fake_repo(at: &Path) {
+    std::fs::create_dir_all(at.join(".git")).unwrap();
+}
+
+/// A test client of `projects` (id, root) with the linked-worktree switch.
+fn switch_client(projects: &[(&str, &Path)], on: bool) -> Client {
+    let mut client = client_record(projects[0].1);
+    client.projects = projects
+        .iter()
+        .map(|(id, root)| ProjectScope {
+            project_id: (*id).into(),
+            roots: vec![root.display().to_string()],
+        })
+        .collect();
+    client.auto_worktrees = on;
+    client
+}
+
+/// The repository a project anchors comes from its own root (a main
+/// checkout's or a linked worktree's top, never a `.git` above a
+/// subdirectory root), and a linked worktree is the project's only when its
+/// pointers name that repository both ways — wherever it lies. Clones,
+/// other repositories, one-way pointers, links and oversized pointer files
+/// are refused with their word; the switch off admits nothing.
 #[test]
-fn a_linked_worktree_is_verified_both_ways_from_the_repositorys_own_files() {
-    let root = test_root("worktree-verify");
+fn a_linked_worktree_belongs_to_the_project_whose_root_anchors_its_repository() {
+    let root = test_root("auto-worktree-verify");
     let base = std::fs::canonicalize(&*root).unwrap();
     let repo = base.join("repo");
     let other = base.join("other");
-    let parent = base.join("trees");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
-    std::fs::create_dir_all(other.join(".git")).unwrap();
-    std::fs::create_dir_all(&parent).unwrap();
-    fake_worktree(&repo, "w1", &parent.join("w1"));
-    std::fs::create_dir_all(parent.join("w1/sub/deeper")).unwrap();
-    fake_worktree(&other, "o1", &parent.join("o1"));
-    // a clone of its own
-    std::fs::create_dir_all(parent.join("clone/.git")).unwrap();
-    // a submodule's pointer into modules/
+    fake_repo(&repo);
+    fake_repo(&other);
+    std::fs::create_dir_all(repo.join("docs")).unwrap();
+    // worktrees on "two disks": anywhere, no folder named for them
+    fake_worktree(&repo, "w1", &base.join("disk1/trees/w1"));
+    fake_worktree(&repo, "w2", &base.join("disk2/elsewhere/w2"));
+    std::fs::create_dir_all(base.join("disk1/trees/w1/Assets/deep")).unwrap();
+    fake_worktree(&other, "o1", &base.join("disk1/trees/o1"));
+    std::fs::create_dir_all(base.join("disk1/trees/clone/.git")).unwrap();
     std::fs::create_dir_all(repo.join(".git/modules/sub")).unwrap();
-    std::fs::create_dir_all(parent.join("submod")).unwrap();
+    std::fs::create_dir_all(base.join("submod")).unwrap();
     std::fs::write(
-        parent.join("submod/.git"),
+        base.join("submod/.git"),
         format!("gitdir: {}\n", repo.join(".git/modules/sub").display()),
     )
     .unwrap();
-    // a one-way pointer at w1's metadata, which names w1 back, not this
-    std::fs::create_dir_all(parent.join("fake")).unwrap();
+    std::fs::create_dir_all(base.join("fake")).unwrap();
     std::fs::write(
-        parent.join("fake/.git"),
+        base.join("fake/.git"),
         format!("gitdir: {}\n", repo.join(".git/worktrees/w1").display()),
     )
     .unwrap();
-    std::fs::create_dir_all(parent.join("plain")).unwrap();
-    let verify =
-        |dir: &str| super::grants::verify_linked_worktree(&repo, &parent, &parent.join(dir));
-    assert_eq!(verify("w1"), Ok(parent.join("w1")));
-    assert_eq!(verify("w1/sub/deeper"), Ok(parent.join("w1")));
-    assert_eq!(verify("o1"), Err("other-repository"));
-    assert_eq!(verify("clone"), Err("separate-repository"));
-    assert_eq!(verify("submod"), Err("other-repository"));
-    assert_eq!(verify("fake"), Err("not-registered"));
-    assert_eq!(verify("plain"), Err("not-a-worktree"));
+    std::fs::create_dir_all(base.join("plain")).unwrap();
+    // a pointer that is a link to a well-formed file: never followed
+    std::fs::create_dir_all(base.join("linked")).unwrap();
+    std::os::unix::fs::symlink(base.join("disk1/trees/w1/.git"), base.join("linked/.git")).unwrap();
+    std::fs::create_dir_all(base.join("huge")).unwrap();
+    std::fs::write(base.join("huge/.git"), "x".repeat(5000)).unwrap();
+
+    // anchors
     assert_eq!(
-        super::grants::verify_linked_worktree(&repo, &parent, &parent),
-        Err("not-a-worktree")
+        super::grants::repository_anchor(&repo),
+        Ok(repo.join(".git"))
     );
-    // a relative pointer, as `git worktree add --relative-paths` writes it
-    let rel = parent.join("w2");
-    std::fs::create_dir_all(&rel).unwrap();
-    let admin = repo.join(".git/worktrees/w2");
-    std::fs::create_dir_all(&admin).unwrap();
-    std::fs::write(admin.join("commondir"), "../..\n").unwrap();
-    std::fs::write(admin.join("gitdir"), "../../../../trees/w2/.git\n").unwrap();
-    std::fs::write(rel.join(".git"), "gitdir: ../../repo/.git/worktrees/w2\n").unwrap();
-    assert_eq!(verify("w2"), Ok(rel.clone()));
-    // a pointer file too long to be Git's
-    std::fs::create_dir_all(parent.join("huge")).unwrap();
-    std::fs::write(parent.join("huge/.git"), "x".repeat(5000)).unwrap();
-    assert_eq!(verify("huge"), Err("unreadable-metadata"));
+    assert_eq!(
+        super::grants::repository_anchor(&base.join("disk1/trees/w1")),
+        Ok(repo.join(".git"))
+    );
+    assert_eq!(
+        super::grants::repository_anchor(&repo.join("docs")),
+        Err("not-a-repository-root")
+    );
+    assert_eq!(
+        super::grants::repository_anchor(&base.join("submod")),
+        Err("unsupported-layout")
+    );
+    assert_eq!(
+        super::grants::repository_anchor(&base.join("plain")),
+        Err("not-a-repository-root")
+    );
+
+    let client = switch_client(&[("PG", &repo), ("PO", &base.join("plain"))], true);
+    let scope = |dir: &str| super::grants::auto_worktree_scope(&client, &base.join(dir));
+    let one = |dir: &str| {
+        scope(dir).map(|s| {
+            s.iter()
+                .map(|x| (x.project_id.clone(), x.roots[0].clone()))
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        one("disk1/trees/w1"),
+        Ok(vec![(
+            "PG".into(),
+            base.join("disk1/trees/w1").display().to_string()
+        )])
+    );
+    assert_eq!(
+        one("disk1/trees/w1/Assets/deep"),
+        Ok(vec![(
+            "PG".into(),
+            base.join("disk1/trees/w1").display().to_string()
+        )])
+    );
+    assert_eq!(
+        one("disk2/elsewhere/w2"),
+        Ok(vec![(
+            "PG".into(),
+            base.join("disk2/elsewhere/w2").display().to_string()
+        )])
+    );
+    assert_eq!(scope("disk1/trees/o1").err(), Some("other-repository"));
+    assert_eq!(
+        scope("disk1/trees/clone").err(),
+        Some("separate-repository")
+    );
+    assert_eq!(scope("submod").err(), Some("other-repository"));
+    assert_eq!(scope("fake").err(), Some("not-registered"));
+    assert_eq!(scope("plain").err(), Some("not-a-worktree"));
+    assert_eq!(scope("linked").err(), Some("unreadable-metadata"));
+    assert_eq!(scope("huge").err(), Some("unreadable-metadata"));
+    // the switch off: nothing
+    let off = switch_client(&[("PG", &repo)], false);
+    assert_eq!(
+        super::grants::auto_worktree_scope(&off, &base.join("disk1/trees/w1")),
+        Ok(Vec::new())
+    );
+    // only a subdirectory authorized: the repository is not anchored, so
+    // neither its worktrees nor its main checkout come with it
+    let docs = switch_client(&[("PD", &repo.join("docs"))], true);
+    assert_eq!(
+        super::grants::auto_worktree_scope(&docs, &base.join("disk1/trees/w1")).err(),
+        Some("other-repository")
+    );
+    assert_eq!(
+        super::grants::auto_worktree_scope(&docs, &repo).err(),
+        Some("separate-repository")
+    );
+    // a project rooted at one linked worktree anchors the repository: the others come
+    let tree = switch_client(&[("PT", &base.join("disk1/trees/w1"))], true);
+    assert_eq!(
+        super::grants::auto_worktree_scope(&tree, &base.join("disk2/elsewhere/w2"))
+            .map(|s| s.len()),
+        Ok(1)
+    );
+    // one repository in two projects: two candidates
+    let two = switch_client(&[("PA", &repo), ("PB", &repo)], true);
+    assert_eq!(
+        super::grants::auto_worktree_scope(&two, &base.join("disk2/elsewhere/w2")).map(|s| s.len()),
+        Ok(2)
+    );
+    // the cwd grant: roots first, the switch after
+    let project = ProjectScope {
+        project_id: "PG".into(),
+        roots: vec![repo.display().to_string()],
+    };
+    assert_eq!(
+        super::grants::project_cwd(&client, &project, &repo.join("docs").display().to_string())
+            .map(|(_, g)| g),
+        Ok(super::grants::CwdGrant::Roots)
+    );
+    assert_eq!(
+        super::grants::project_cwd(
+            &client,
+            &project,
+            &base.join("disk2/elsewhere/w2").display().to_string()
+        )
+        .map(|(_, g)| g),
+        Ok(super::grants::CwdGrant::AutoWorktree)
+    );
+    assert!(super::grants::project_cwd(
+        &off,
+        &project,
+        &base.join("disk2/elsewhere/w2").display().to_string()
+    )
+    .is_err());
     for word in [
         "not-a-worktree",
         "separate-repository",
         "other-repository",
         "not-registered",
         "unreadable-metadata",
+        "not-a-repository-root",
+        "unsupported-layout",
     ] {
         assert!(super::grants::WORKTREE_REASONS.contains(&word));
     }
     drop(root);
 }
 
-/// A rule (A): a client of all projects or of a list keeps the worktree
-/// folder of one project; a worktree created later under it starts a
-/// worker card in that project directly, with that directory; a
-/// subdirectory too. An unverifiable one says why, one repository in two
-/// projects' rules is ambiguous until `project_id` names one, a withdrawn
-/// rule grants nothing, and a project may have several directories that
-/// a save keeps (a missing one it already held stays as stored).
+/// The switch end to end inside Deck (A, follow-up): saved once, a worker
+/// start in a linked worktree of an authorized project's repository is
+/// accepted with that project and directory; with all projects, a project
+/// added later is covered at once; a list never covers an unlisted project;
+/// one repository in two projects is ambiguous until `project_id`. The
+/// launch is decided again (`admit_launch_locked`): after the Board claimed
+/// it, turning the switch off, removing the Git registration, replacing the
+/// directory, withdrawing the project or the worker choice refuses it (and
+/// records why); one admitted before the switch went off goes on; the
+/// roots alone still start what they hold. A managed session the same.
 #[test]
-fn a_worktree_rule_lets_later_worktrees_start_worker_cards_in_their_project() {
-    let (runtime, _runner, root) = fixture("worktree-start", "svc_test");
+fn the_worktree_switch_is_decided_again_at_the_launch() {
+    let (runtime, _runner, root) = fixture("auto-worktree-start", "svc_test");
     let _board = crate::documents::test_door::hold();
     let base = std::fs::canonicalize(&*root).unwrap();
     let repo = base.join("repo");
-    let parent = base.join("trees");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
-    std::fs::create_dir_all(&parent).unwrap();
+    let later_repo = base.join("later");
+    fake_repo(&repo);
+    fake_repo(&later_repo);
     let repo_s = repo.display().to_string();
-    let other_dir = base.join("elsewhere");
-    std::fs::create_dir_all(&other_dir).unwrap();
-    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| {
-        *cell.borrow_mut() = Some(vec![
-            ("PG".into(), repo_s.clone()),
-            ("PH".into(), other_dir.display().to_string()),
-        ])
-    });
+    let board = |extra: bool| {
+        let mut projects = vec![("PG".to_string(), repo_s.clone())];
+        if extra {
+            projects.push(("PL".to_string(), later_repo.display().to_string()));
+        }
+        super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(projects));
+    };
+    board(false);
     let column = |id: &str| json!([{"id": format!("C{id}"), "name": "Doing"}]);
     crate::documents::test_door::commit(
         json!({"projects": [
             {"id": "PG", "name": "Game", "columns": column("PG")},
-            {"id": "PH", "name": "Other", "columns": column("PH")}
+            {"id": "PL", "name": "Later", "columns": column("PL")}
         ], "cards": [
             {"id": "OG", "session": "deck-og", "title": "Orch", "cmd": "", "dir": repo_s, "projectId": "PG", "columnId": "CPG"}
         ]}),
         true,
     );
-    let rule = |project: &str| super::commands::WorktreeRuleInput {
-        project_id: project.into(),
-        repo: repo_s.clone(),
-        parent: parent.display().to_string(),
-    };
-    let save = |all: bool,
-                projects: Option<Vec<super::commands::ProjectScopeInput>>,
-                rules: Option<Vec<super::commands::WorktreeRuleInput>>| {
+    let save = |all: bool, projects: Option<Vec<super::commands::ProjectScopeInput>>, on: bool| {
         client_permissions(
             &runtime,
             "client_a",
             super::commands::PermissionsInput {
                 all_projects: all,
                 projects,
-                worktrees: rules,
+                auto_worktrees: on,
+                allow_create: true,
                 ..round2_workers_on(true)
             },
         )
     };
-    save(true, None, Some(vec![rule("PG")])).unwrap();
+    save(true, None, true).unwrap();
     assert_eq!(
         runtime.read(|doc| doc.version).unwrap(),
-        STATE_VERSION_WORKTREES
+        STATE_VERSION_AUTO_WORKTREES
     );
     let call = |tool: &str, args: Value| {
         let _as = super::origin::enter_as(Some("OG"));
         route(&runtime, request(tool, args))
     };
     let caps = call("deck_capabilities", json!({}));
-    assert_eq!(caps["worktreeRules"][0]["projectId"], "PG", "{caps}");
+    assert_eq!(caps["autoLinkedWorktrees"]["enabled"], true, "{caps}");
+    assert_eq!(caps["autoLinkedWorktrees"]["projects"][0]["anchored"], true);
+    // the file-read scope is the roots, never the worktrees
+    assert_eq!(caps["authorizedWorkspaces"][0]["roots"], json!([repo_s]));
     let epoch = || {
         call("deck_worker_list", json!({}))["laneEpoch"]
             .as_u64()
@@ -10535,201 +10653,281 @@ fn a_worktree_rule_lets_later_worktrees_start_worker_cards_in_their_project() {
         call("deck_worker_start", args)
     };
     let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
-    // a worktree made after the rule was saved, and a folder inside it
-    fake_worktree(&repo, "dev45", &parent.join("dev45"));
-    std::fs::create_dir_all(parent.join("dev45/Assets")).unwrap();
-    let started = start("w-1", &parent.join("dev45"), None);
+    // a worktree made after the switch was saved, on another "disk"
+    let w = base.join("disk2/dev45");
+    fake_worktree(&repo, "dev45", &w);
+    let started = start("a-1", &w, None);
     assert_eq!(started["state"], "accepted", "{started}");
     assert_eq!(started["result"]["projectId"], "PG");
-    assert_eq!(
-        started["result"]["dir"],
-        parent.join("dev45").display().to_string()
-    );
-    let inside = start("w-2", &parent.join("dev45/Assets"), None);
-    assert_eq!(
-        inside["result"]["dir"],
-        parent.join("dev45/Assets").display().to_string(),
-        "{inside}"
-    );
-    // the main checkout as before
-    assert_eq!(start("w-3", &repo, None)["result"]["projectId"], "PG");
-    // not one of the repository's worktrees: said why, never the main checkout instead
-    std::fs::create_dir_all(parent.join("clone/.git")).unwrap();
-    let clone = start("w-4", &parent.join("clone"), None);
-    assert_eq!(code(&clone), "PATH_NOT_ACCESSIBLE", "{clone}");
-    assert_eq!(clone["error"]["reason"], "worktree-unverified");
-    assert_eq!(clone["error"]["detail"], "separate-repository");
-    let missing = start("w-5", &parent.join("nope"), None);
-    assert_eq!(missing["error"]["reason"], "not-found", "{missing}");
-    let volume = start(
-        "w-6",
-        Path::new("/Volumes/deck-test-no-such-volume/w"),
-        None,
-    );
-    assert_eq!(volume["error"]["reason"], "volume-unavailable", "{volume}");
-    let outside = start("w-7", Path::new("/"), None);
-    assert_eq!(outside["error"]["reason"], "outside-scope", "{outside}");
-    // one repository in two projects' rules: ambiguous until project_id names one
-    save(true, None, Some(vec![rule("PG"), rule("PH")])).unwrap();
-    let both = start("w-8", &parent.join("dev45"), None);
-    assert_eq!(code(&both), "PATH_AMBIGUOUS", "{both}");
-    assert_eq!(both["error"]["projects"].as_array().unwrap().len(), 2);
-    let named = start("w-9", &parent.join("dev45"), Some("PH"));
-    assert_eq!(named["result"]["projectId"], "PH", "{named}");
-    // a project_id only chooses among the candidates
-    save(true, None, Some(vec![rule("PG")])).unwrap();
-    assert_eq!(
-        code(&start("w-10", &parent.join("dev45"), Some("PH"))),
-        "PATH_NOT_ACCESSIBLE"
-    );
-    // withdrawn: nothing there any more
-    save(true, None, Some(Vec::new())).unwrap();
-    let gone = start("w-11", &parent.join("dev45"), None);
-    assert_eq!(gone["error"]["reason"], "outside-scope", "{gone}");
-
-    // a list of projects: PG with two directories; a rule for a project the
-    // list does not reach is refused; a project leaving takes its rules
-    let second = base.join("second");
-    std::fs::create_dir_all(&second).unwrap();
-    let scope = |roots: Vec<String>| {
-        vec![super::commands::ProjectScopeInput {
-            project_id: "PG".into(),
-            roots,
-        }]
-    };
-    let unreached = save(
-        false,
-        Some(scope(vec![repo_s.clone()])),
-        Some(vec![rule("PH")]),
-    );
-    assert!(unreached
-        .unwrap_err()
-        .to_string()
-        .contains("mcp-worktree-project"));
+    assert_eq!(started["result"]["dir"], w.display().to_string());
+    assert_eq!(started["result"]["cwdGrant"], "auto-worktree");
+    // a project added to the Board later is covered at once
+    board(true);
+    let lw = base.join("disk3/l1");
+    fake_worktree(&later_repo, "l1", &lw);
+    let later = start("a-2", &lw, None);
+    assert_eq!(later["result"]["projectId"], "PL", "{later}");
+    // a list never covers a project it does not name
     save(
         false,
-        Some(scope(vec![
-            repo_s.clone(),
-            second.display().to_string(),
-            repo_s.clone(),
-        ])),
-        Some(vec![rule("PG")]),
+        Some(vec![super::commands::ProjectScopeInput {
+            project_id: "PG".into(),
+            roots: vec![repo_s.clone()],
+        }]),
+        true,
     )
     .unwrap();
-    let saved = runtime.read(|doc| doc.config.clients[0].clone()).unwrap();
-    assert_eq!(
-        saved.projects[0].roots,
-        vec![repo_s.clone(), second.display().to_string()],
-        "deduplicated, both kept"
+    let unlisted = start("a-3", &lw, None);
+    assert_eq!(code(&unlisted), "PATH_NOT_ACCESSIBLE", "{unlisted}");
+    assert_eq!(unlisted["error"]["detail"], "other-repository");
+    // one repository in two projects: ambiguous until project_id names one
+    save(
+        false,
+        Some(vec![
+            super::commands::ProjectScopeInput {
+                project_id: "PG".into(),
+                roots: vec![repo_s.clone()],
+            },
+            super::commands::ProjectScopeInput {
+                project_id: "PL".into(),
+                roots: vec![repo_s.clone()],
+            },
+        ]),
+        true,
+    )
+    .unwrap();
+    assert_eq!(code(&start("a-4", &w, None)), "PATH_AMBIGUOUS");
+    let chosen = start("a-5", &w, Some("PL"));
+    assert_eq!(chosen["result"]["projectId"], "PL", "{chosen}");
+    save(true, None, true).unwrap();
+
+    // the launch, decided again after the Board took the operation
+    let op_of = |v: &Value| v["operationId"].as_str().unwrap().to_owned();
+    let launch = |op: &str, dir: &Path| {
+        let _delivery = runtime.delivery.lock_or_recover();
+        super::commands::admit_launch_locked(
+            &runtime,
+            op,
+            WORKER_START_KIND,
+            &dir.display().to_string(),
+            Some("claude"),
+            Some("PG"),
+        )
+    };
+    let reason = |op: &str| {
+        let (state, code, result) = round2_state(&runtime, op);
+        (
+            state,
+            code,
+            result["launch"]["reason"].as_str().map(str::to_owned),
+            result["launch"]["grant"].as_str().map(str::to_owned),
+        )
+    };
+    // admitted: the grant it rested on is recorded
+    let ok_op = op_of(&start("b-1", &w, None));
+    claim(&runtime, &ok_op).unwrap();
+    assert!(launch(&ok_op, &w).is_ok());
+    assert_eq!(reason(&ok_op).3.as_deref(), Some("auto-worktree"));
+    // claimed, then the switch off before the launch: refused, recorded
+    let b2 = json!({"request_id": "b-2", "lane_epoch": epoch(), "text": "go", "dir": w.display().to_string()});
+    let off_op = op_of(&call("deck_worker_start", b2.clone()));
+    let pending_op = op_of(&start("b-3", &w, None));
+    let roots_op = op_of(&start("b-4", &repo, None));
+    claim(&runtime, &off_op).unwrap();
+    save(true, None, false).unwrap();
+    let refused = launch(&off_op, &w).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains(super::commands::LAUNCH_REFUSED),
+        "{refused}"
     );
-    assert_eq!(saved.worktrees.len(), 1);
     assert_eq!(
-        start("w-12", &parent.join("dev45"), None)["result"]["projectId"],
-        "PG"
+        reason(&off_op),
+        (
+            "rejected".into(),
+            Some("launch-refused".into()),
+            Some("cwd-not-authorized".into()),
+            None
+        )
     );
-    // editing another choice keeps both directories and the rule
+    // a start still waiting for the Board on the switch is rejected by the save;
+    // one the roots authorize is not
+    assert_eq!(
+        reason(&pending_op).1.as_deref(),
+        Some("auto-worktrees-withdrawn")
+    );
+    assert_eq!(round2_state(&runtime, &roots_op).0, "accepted");
+    claim(&runtime, &roots_op).unwrap();
+    assert!(
+        launch(&roots_op, &repo).is_ok(),
+        "the roots alone still start what they hold"
+    );
+    // admitted before the switch went off: its own result stands
+    complete(
+        &runtime,
+        ok_op.clone(),
+        "committed".into(),
+        None,
+        Some("deck-w".into()),
+    )
+    .unwrap();
+    assert_eq!(round2_state(&runtime, &ok_op).0, "committed");
+    // the same request again: the same operation, never a new launch
+    // (lost answer, switch still off): the exact request is the same
+    // rejected operation, never a new start
+    let replay = call("deck_worker_start", b2.clone());
+    assert_eq!(replay["operationId"], off_op, "{replay}");
+    assert_eq!(replay["state"], "rejected");
+    // the same id with another directory is a conflict
+    let mut moved = b2.clone();
+    moved["dir"] = json!(repo_s);
+    assert_eq!(
+        code(&call("deck_worker_start", moved)),
+        "REQUEST_ID_CONFLICT"
+    );
+    save(true, None, true).unwrap();
+    // the Git registration removed while it waited
+    let reg_op = op_of(&start("c-1", &w, None));
+    claim(&runtime, &reg_op).unwrap();
+    std::fs::rename(
+        repo.join(".git/worktrees/dev45/gitdir"),
+        repo.join(".git/worktrees/dev45/gitdir.off"),
+    )
+    .unwrap();
+    assert!(launch(&reg_op, &w).is_err());
+    assert_eq!(reason(&reg_op).2.as_deref(), Some("cwd-not-authorized"));
+    std::fs::rename(
+        repo.join(".git/worktrees/dev45/gitdir.off"),
+        repo.join(".git/worktrees/dev45/gitdir"),
+    )
+    .unwrap();
+    // the directory replaced by another at the same path
+    let sub = repo.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let rep_op = op_of(&start("c-2", &sub, None));
+    claim(&runtime, &rep_op).unwrap();
+    std::fs::remove_dir(&sub).unwrap();
+    std::fs::create_dir_all(&sub).unwrap();
+    assert!(launch(&rep_op, &sub).is_err());
+    assert_eq!(reason(&rep_op).2.as_deref(), Some("cwd-replaced"));
+    // another directory than the plan's
+    let ctx_op = op_of(&start("c-3", &w, None));
+    claim(&runtime, &ctx_op).unwrap();
+    assert!(launch(&ctx_op, &repo).is_err());
+    assert_eq!(reason(&ctx_op).2.as_deref(), Some("context-changed"));
+    // the project gone from the Board
+    let gone_op = op_of(&start("c-4", &w, None));
+    claim(&runtime, &gone_op).unwrap();
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(vec![("PL".into(), later_repo.display().to_string())])
+    });
+    assert!(launch(&gone_op, &w).is_err());
+    assert_eq!(reason(&gone_op).2.as_deref(), Some("project-withdrawn"));
+    board(true);
+    // the worker choice withdrawn: a claimed start is refused at its launch
+    let w_op = op_of(&start("c-5", &w, None));
+    claim(&runtime, &w_op).unwrap();
     client_permissions(
         &runtime,
         "client_a",
         super::commands::PermissionsInput {
-            allow_cards: true,
-            ..round2_workers_on(true)
+            all_projects: true,
+            auto_worktrees: true,
+            allow_create: true,
+            ..Default::default()
         },
     )
     .unwrap();
-    let kept = runtime.read(|doc| doc.config.clients[0].clone()).unwrap();
-    assert_eq!(kept.projects[0].roots.len(), 2);
-    assert_eq!(kept.worktrees.len(), 1);
-    // a held directory that is gone now (an unmounted disk) is kept as stored;
-    // a new one that does not resolve is refused
-    std::fs::remove_dir(&second).unwrap();
-    save(
-        false,
-        Some(scope(vec![repo_s.clone(), second.display().to_string()])),
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        runtime
-            .read(|doc| doc.config.clients[0].projects[0].roots.len())
-            .unwrap(),
-        2
+    assert!(launch(&w_op, &w).is_err());
+    assert_eq!(reason(&w_op).2.as_deref(), Some("client-revoked"));
+
+    // a managed session: the same grant, the same final decision
+    save(true, None, true).unwrap();
+    let created = route(
+        &runtime,
+        request(
+            "deck_session_create",
+            json!({
+        "request_id": "s-1", "project_id": "PG", "cwd": w.display().to_string(), "title": "wt shell",
+        "create_sequence": runtime.read(|doc| doc.config.clients[0].create_sequence).unwrap()}),
+        ),
     );
-    assert!(save(
-        false,
-        Some(scope(vec![
-            repo_s.clone(),
-            base.join("never").display().to_string()
-        ])),
-        None
-    )
-    .is_err());
-    // the project leaves the list: its rule leaves with it
-    let ph = vec![super::commands::ProjectScopeInput {
-        project_id: "PH".into(),
-        roots: vec![other_dir.display().to_string()],
-    }];
-    save(false, Some(ph), None).unwrap();
-    assert!(runtime
-        .read(|doc| doc.config.clients[0].worktrees.is_empty())
-        .unwrap());
+    assert_eq!(created["state"], "accepted", "{created}");
+    assert_eq!(created["result"]["cwdGrant"], "auto-worktree");
+    let s_op = op_of(&created);
+    claim(&runtime, &s_op).unwrap();
+    save(true, None, false).unwrap();
+    let refused = {
+        let _delivery = runtime.delivery.lock_or_recover();
+        super::commands::admit_launch_locked(
+            &runtime,
+            &s_op,
+            "session-create",
+            &w.display().to_string(),
+            None,
+            None,
+        )
+    };
+    assert!(refused.is_err());
+    assert_eq!(reason(&s_op).2.as_deref(), Some("cwd-not-authorized"));
     super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
     drop(root);
 }
 
-/// "Fill in worktree folders" (`grants::suggest_worktree_folders`): the
-/// repository's own registry names its worktrees; each verified one counts
-/// for the folder it sits in, most first. One inside the repository, a
-/// one-way or broken entry and a folder that is gone are not proposed.
+/// A project keeps every directory it was given (A1): rows of one project
+/// merge, a link and its target count once, saving another choice keeps
+/// them, a directory it holds that is gone now (an unmounted disk) stays as
+/// stored, and a new one that does not resolve is refused.
 #[test]
-fn worktree_folders_are_suggested_from_the_repositorys_own_registry() {
-    let root = test_root("worktree-suggest");
+fn a_project_keeps_every_directory_it_was_given() {
+    let (runtime, _runner, root) = fixture("multi-root", "svc_test");
+    let _board = crate::documents::test_door::hold();
     let base = std::fs::canonicalize(&*root).unwrap();
-    let repo = base.join("repo");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
-    let ext = base.join("ext");
-    let other = base.join("other");
-    fake_worktree(&repo, "a", &ext.join("a"));
-    fake_worktree(&repo, "b", &ext.join("b"));
-    fake_worktree(&repo, "c", &other.join("c"));
-    fake_worktree(&repo, "inside", &repo.join(".worktrees/inside"));
-    // registered, but its .git now names another worktree's metadata
-    fake_worktree(&repo, "moved", &ext.join("moved"));
-    std::fs::write(
-        ext.join("moved/.git"),
-        format!("gitdir: {}\n", repo.join(".git/worktrees/a").display()),
-    )
-    .unwrap();
-    // registered, its folder gone (a disk not connected)
-    let admin = repo.join(".git/worktrees/gone");
-    std::fs::create_dir_all(&admin).unwrap();
-    std::fs::write(admin.join("commondir"), "../..\n").unwrap();
-    std::fs::write(
-        admin.join("gitdir"),
-        "/Volumes/deck-test-no-such-volume/w/.git\n",
-    )
-    .unwrap();
-    let found = super::grants::suggest_worktree_folders("PG", &repo.display().to_string());
-    let seen: Vec<(String, usize)> = found
-        .iter()
-        .map(|s| (s.parent.clone(), s.worktrees))
-        .collect();
-    assert_eq!(
-        seen,
-        vec![
-            (ext.display().to_string(), 2),
-            (other.display().to_string(), 1)
-        ]
+    let (one, two) = (base.join("one"), base.join("two"));
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    std::os::unix::fs::symlink(&one, base.join("alias")).unwrap();
+    crate::documents::test_door::commit(
+        json!({"projects": [{"id": "P1", "name": "P", "columns": []}], "cards": []}),
+        true,
     );
-    assert!(found
-        .iter()
-        .all(|s| s.project_id == "PG" && s.repo == repo.display().to_string()));
-    // each suggestion is a rule that saves and lets its worktrees in
-    let rule =
-        super::grants::checked_worktree_rule("PG", &found[0].repo, &found[0].parent).unwrap();
-    assert_eq!(rule.parent, ext.display().to_string());
-    // not a repository, or one without worktrees: nothing
-    assert!(super::grants::suggest_worktree_folders("PG", &ext.display().to_string()).is_empty());
-    assert!(super::grants::suggest_worktree_folders("PG", "/nonexistent-deck-test").is_empty());
+    let s = |p: &Path| p.display().to_string();
+    let save = |roots: Vec<String>, cards: bool| {
+        client_permissions(
+            &runtime,
+            "client_a",
+            super::commands::PermissionsInput {
+                projects: (!roots.is_empty()).then(|| {
+                    vec![
+                        super::commands::ProjectScopeInput {
+                            project_id: "P1".into(),
+                            roots: roots[..1].to_vec(),
+                        },
+                        super::commands::ProjectScopeInput {
+                            project_id: "P1".into(),
+                            roots: roots[1..].to_vec(),
+                        },
+                    ]
+                }),
+                allow_cards: cards,
+                ..round2_workers_on(true)
+            },
+        )
+    };
+    save(vec![s(&one), s(&two), s(&base.join("alias"))], false).unwrap();
+    let roots = || {
+        runtime
+            .read(|doc| doc.config.clients[0].projects.clone())
+            .unwrap()
+    };
+    assert_eq!(roots().len(), 1);
+    assert_eq!(roots()[0].roots, vec![s(&one), s(&two)]);
+    save(Vec::new(), true).unwrap();
+    assert_eq!(roots()[0].roots, vec![s(&one), s(&two)]);
+    std::fs::remove_dir(&two).unwrap();
+    save(vec![s(&one), s(&two)], true).unwrap();
+    assert_eq!(roots()[0].roots, vec![s(&one), s(&two)]);
+    assert!(save(vec![s(&one), s(&base.join("never"))], true).is_err());
     drop(root);
 }

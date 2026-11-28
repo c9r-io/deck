@@ -494,6 +494,7 @@ pub(crate) async fn start_session(
     restore_shell: bool,
     project_id: Option<String>,
     cardless: Option<bool>,
+    mcp_operation: Option<String>,
 ) -> Result<StartSessionResult, DeckError> {
     validate_session_name(&name)?;
     let cardless = cardless.unwrap_or(false);
@@ -515,12 +516,20 @@ pub(crate) async fn start_session(
                 Some(id) => crate::project_env::for_project(id),
                 None => Ok(Vec::new()),
             };
-            let result = {
+            // an MCP worker card's start: the final launch admission comes
+            // before the first native side effect (`mcp::admit_launch_locked`)
+            let admitted = match mcp_operation.as_deref() {
+                Some(operation) => {
+                    crate::mcp::admit_worker_launch(operation, &dir, &cmd, project_id.as_deref())
+                }
+                None => Ok(()),
+            };
+            let result = admitted.and_then(|()| {
                 let _bounded = crate::session_runtime::Deadline::until(end);
                 start_session_gated(name.clone(), dir, cmd, restore_shell, &env, &|| {
                     cell.commit()
                 })
-            };
+            });
             finish_start(&name, cardless, &cell, result)
         },
     )

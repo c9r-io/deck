@@ -1,0 +1,130 @@
+{
+  "run": "v134f94f9",
+  "root": "/private/tmp/deck-verify-v134f94f9",
+  "socket": "/private/tmp/deck-verify-v134f94f9/t/tmux-501/deck-smoke-v134f94f9",
+  "mode": "worktree-switch",
+  "head": "8c8f8c95",
+  "dirty": [
+    "M CHANGELOG.md",
+    " M app/run.sh",
+    " M app/src-tauri/mcp-adapter/src/main.rs",
+    " M app/src-tauri/src/commands.rs",
+    " M app/src-tauri/src/diagnostics.rs",
+    " M app/src-tauri/src/main.rs",
+    " M app/src-tauri/src/mcp/admission_tests.rs",
+    " M app/src-tauri/src/mcp/cards/tests.rs",
+    " M app/src-tauri/src/mcp/commands.rs",
+    " M app/src-tauri/src/mcp/grants.rs",
+    " M app/src-tauri/src/mcp/mod.rs",
+    " M app/src-tauri/src/mcp/session.rs",
+    " M app/src-tauri/src/mcp/state.rs",
+    " M app/src-tauri/src/mcp/tests.rs",
+    " M app/src-tauri/src/mcp/workers.rs",
+    " M app/src-tauri/src/terminal.rs",
+    " M app/src-tauri/tests/ipc_thread.rs",
+    " M app/ui/js/extension-mcp.js",
+    " M app/ui/js/i18n/de.js",
+    " M app/ui/js/i18n/en.js",
+    " M app/ui/js/i18n/es.js",
+    " M app/ui/js/i18n/ja.js",
+    " M app/ui/js/i18n/ko.js",
+    " M app/ui/js/i18n/zh-Hans.js",
+    " M app/ui/js/mcp-permissions-model.js",
+    " M app/ui/js/mcp.js",
+    " M app/ui/style.css",
+    " M app/ui/test/dom.test.mjs",
+    " M app/ui/test/fixtures/smoke-manifest.json",
+    " M app/ui/test/mcp-permissions-model.test.mjs",
+    " M app/ui/test/mcp.test.mjs",
+    " M app/ui/test/smoke-manifest.test.mjs",
+    " M app/ui/test/wk-smoke.mjs",
+    " M app/ui/test/workers-smoke.mjs",
+    " M docs/ipc-thread.md",
+    " M docs/mcp.md",
+    "?? research_notes/",
+    "?? scripts/mcp-worktree-e2e.py"
+  ],
+  "binMtime": "2026-11-28 16:44:48",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "1",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "Brave Browser",
+  "version": "0.8.45",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-v134f94f9/experiment.json"
+  ],
+  "caffeinatePid": "29626",
+  "appPid": "29632",
+  "registerApp": [
+    0,
+    "registered process pid 29632 started Sat Nov 28 16:45:02 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 29653 started Sat Nov 28 16:45:03 2026"
+  ],
+  "seconds": 3,
+  "finished": true,
+  "killApp": [
+    0,
+    "process pid 29632 started Sat Nov 28 16:45:02 2026: running\nstopped process pid 29632"
+  ],
+  "phase1Lines": 10,
+  "appPid2": "30320",
+  "registerApp2": [
+    0,
+    "registered process pid 30320 started Sat Nov 28 16:45:15 2026"
+  ],
+  "registerServer2": [
+    3,
+    "edr-runtime: REFUSED, nothing was stopped: pid 29653 is registered already"
+  ],
+  "operator": {
+    "git": "made",
+    "panesAtArmed": [
+      "deck-orch-w-3zb6 %0 zsh"
+    ],
+    "evidence": "{\n \"startedAt\": 1795851922,\n \"tag\": \"v134f94f9\",\n \"steps\": [\n  {\n   \"name\": \"initialize\",\n   \"ok\": true,\n   \"at\": 1795851922.2\n  },\n  {\n   \"name\": \"tools-list\",\n   \"ok\": true,\n   \"at\": 1795851922.2,\n   \"count\": 40\n  },\n  {\n   \"name\": \"capabilities\",\n   \"ok\": true,\n   \"at\": 1795851922.2,\n   \"enabled\": true,\n   \"anchored\": \"/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo,/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo2\",\n   \"roots\": \"/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo,/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo2\"\n  },\n  {\n   \"name\": \"start-wt1\",\n   \"ok\": true,\n   \"at\": 1795851923.3,\n   \"state\": \"committed\",\n   \"code\": null,\n   \"project_ok\": true,\n   \"launch\": \"{\\\"admittedAt\\\": 1795851922263, \\\"grant\\\": \\\"auto-worktree\\\"}\"\n  },\n  {\n   \"name\": \"start-wt2\",\n   \"ok\": true,\n   \"at\": 1795851924.3,\n   \"state\": \"committed\",\n   \"code\": null,\n   \"project_ok\": true,\n   \"launch\": \"{\\\"admittedAt\\\": 1795851923304, \\\"grant\\\": \\\"auto-worktree\\\"}\"\n  },\n  {\n   \"name\": \"clone-refused\",\n   \"ok\": true,\n   \"at\": 1795851924.3,\n   \"code\": \"PATH_NOT_ACCESSIBLE\",\n   \"reason\": \"worktree-unverified\",\n   \"detail\": \"separate-repository\"\n  },\n  {\n   \"name\": \"plain-refused\",\n   \"ok\": true,\n   \"at\": 1795851924.4,\n   \"code\": \"PATH_NOT_ACCESSIBLE\",\n   \"reason\": \"outside-scope\"\n  }\n ],\n \"adapterStderrBytes\": 0,\n \"failures\": []\n}",
+    "ledger": "23 [('orchestrator', True)] [('worker-start', 'committed', None, 'auto-worktree'), ('worker-start', 'committed', None, 'auto-worktree')]"
+  },
+  "relaunchFinished": true,
+  "verdict-phase1": [
+    "PASS",
+    [
+      "smoke-verdict worktree-switch: PASS (3/3 expected checkpoints, 3 lines)"
+    ]
+  ],
+  "verdict-phase2": [
+    "PASS",
+    [
+      "smoke-verdict worktree-switch-relaunch: PASS (4/4 expected checkpoints, 4 lines)"
+    ]
+  ],
+  "verdict": "PASS",
+  "verdictDetail": [
+    "smoke-verdict worktree-switch: PASS (3/3 expected checkpoints, 3 lines)"
+  ],
+  "checksOfInterest": [
+    "smoke-check workers-client a=1 b=0\n",
+    "smoke-check wt-saved a=1 b=3\n",
+    "smoke-check done a=1 b=7\n",
+    "smoke-check wt-restored a=1 b=0\n",
+    "smoke-check wt-armed a=1 b=0\n",
+    "smoke-check wt-cards a=1 b=3\n",
+    "smoke-check done a=1 b=8\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 29632 started Sat Nov 28 16:45:02 2026: gone\ntmux-server pid 29653 started Sat Nov 28 16:45:03 2026 socket /private/tmp/deck-verify-v134f94f9/t/tmux-501/deck-smoke-v134f94f9: running\nprocess pid 30320 started Sat Nov 28 16:45:15 2026: running"
+  ],
+  "cleanup": [
+    0,
+    "process pid 29632 started Sat Nov 28 16:45:02 2026: gone\ntmux-server pid 29653 started Sat Nov 28 16:45:03 2026 socket /private/tmp/deck-verify-v134f94f9/t/tmux-501/deck-smoke-v134f94f9: running\nprocess pid 30320 started Sat Nov 28 16:45:15 2026: running\nstopped tmux-server pid 29653\nstopped process pid 30320"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 2400",
+  "rootTrashed": true,
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

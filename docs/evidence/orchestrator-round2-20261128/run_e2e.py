@@ -273,6 +273,54 @@ def close_operator(t0):
     return facts
 
 
+def prepare_worktree_fixture():
+    """`worktree-switch`: copy_agent.py, two repositories with one commit
+    each (git here is the runner's own tool; Deck runs none) and a plain
+    folder. The worktrees are made only in phase 2, after the switch."""
+    git = "git -c user.name=deck-test -c user.email=deck-test@invalid -c init.defaultBranch=main -c commit.gpgsign=false"
+    remote(f"mkdir -p {FIXTURE}/repo {FIXTURE}/repo2 {FIXTURE}/plain && : > {FIXTURE}/copy_agent.py && chmod 700 {FIXTURE} && "
+           f"for r in repo repo2; do cd {FIXTURE}/$r && {git} init -q && mkdir -p src && echo x > src/f && {git} add . && {git} commit -qm init; done")
+    remote(f"mkdir -p {ROOT}/scripts")
+    for name in ("mcp-worktree-e2e.py", "mcp-agent-e2e.py"):
+        subprocess.run(["scp", "-q", "-o", "BatchMode=yes", str(WORKTREE / "scripts" / name), f"{HOST}:{ROOT}/scripts/{name}"], check=True)
+
+
+def worktree_operator(t0):
+    """Phase 2, after `wt-armed`: the worktrees (and a clone) made now, in
+    folders of their own, then the client typed into "Orch W"."""
+    facts = {}
+    if not wait_checkpoint("wt-armed", 420):
+        facts["armed"] = False
+        return facts
+    git = "git -c user.name=deck-test -c user.email=deck-test@invalid"
+    facts["git"] = remote(f"mkdir -p {FIXTURE}/disk2 {FIXTURE}/disk3 && cd {FIXTURE}/repo && {git} worktree add -q {FIXTURE}/disk2/wt1 -b wt1 && "
+                          f"cd {FIXTURE}/repo2 && {git} worktree add -q {FIXTURE}/disk3/wt2 -b wt2 && "
+                          f"git clone -q {FIXTURE}/repo {FIXTURE}/disk2/clone && echo made", check=False).strip()
+    client, cred, sock = client_args()
+    env = f"TMUX_TMPDIR={shlex.quote(TMUX_TMPDIR)}"
+    panes = remote(f"{env} {shlex.quote(TMUX)} -L {SOCKET} list-panes -a -F '#{{session_name}} #{{pane_id}} #{{pane_current_command}}'",
+                   check=False).strip().splitlines()
+    facts["panesAtArmed"] = panes
+    if len(panes) != 1:
+        facts["error"] = "not exactly one pane at armed"
+        return facts
+    pane = panes[0].split()[1]
+    evidence = f"{DATA}/evidence/worktree"
+    line = (f"python3 {ROOT}/scripts/mcp-worktree-e2e.py --adapter {shlex.quote(APP_MCP)} --socket {shlex.quote(sock)} "
+            f"--client-id {client} --credential-file {shlex.quote(cred)} --evidence {evidence} --tag {RUN} --fixture {FIXTURE}")
+    remote(f"{env} {shlex.quote(TMUX)} -L {SOCKET} send-keys -t {pane} -l {shlex.quote(line)} && "
+           f"{env} {shlex.quote(TMUX)} -L {SOCKET} send-keys -t {pane} Enter")
+    end = time.time() + 600
+    while time.time() < end:
+        if remote(f"test -f {evidence}/worktree-e2e-{RUN}.json && ! grep -q '\"partial\": true' {evidence}/worktree-e2e-{RUN}.json && echo y",
+                  check=False).strip() == "y":
+            break
+        time.sleep(3)
+    facts["evidence"] = remote(f"cat {evidence}/worktree-e2e-{RUN}.json 2>/dev/null", check=False)[-12000:]
+    facts["ledger"] = remote(f"python3 -c \"import json;d=json.load(open('{DATA}/mcp.json'));print(d.get('version'), [(c['name'], c.get('autoWorktrees')) for c in d['config']['clients']], [(o['kind'], o['state'], o.get('code'), (o.get('result') or {{}}).get('cwdGrant')) for o in d.get('operations', []) if o['kind'] == 'worker-start'])\"", check=False).strip()
+    return facts
+
+
 def prepare_interject_fixture():
     """`worker-interject`: copy_agent.py, work/, and the worker's Claude Code
     settings: the Signal hooks of Deck's current Claude table calling this
@@ -653,6 +701,8 @@ def main():
     if MODE == "worker-close":
         prepare_close_fixture()
         result["trustAdded"] = trust("add")
+    if MODE == "worktree-switch":
+        prepare_worktree_fixture()
     if MODE == "quota-live":
         prepare_quota_live()
         result["trustAdded"] = trust("add")
@@ -718,14 +768,48 @@ def main():
         time.sleep(3)
         if count_done() > 0: finished = True; break
     result["seconds"], result["finished"] = round(time.time() - t0), finished
+    if MODE == "worktree-switch" and finished:
+        # the carrier stopped (no quit path), then the same data again
+        result["killApp"] = registry("stop", f"--pid {pid}") if pid else "no pid"
+        result["phase1Lines"] = int(remote(f"wc -l < {DATA}/app.log", check=False).strip() or 0)
+        time.sleep(3)
+        args2 = " ".join(shlex.quote(a) for a in ["--smoke-data-dir", DATA, "--smoke-tmux-socket", SOCKET, "--smoke-wkwebview", "worktree-switch-relaunch"])
+        remote(f"open -n {shlex.quote(APP)} --env TMUX_TMPDIR={shlex.quote(TMUX_TMPDIR)} --env DISABLE_AUTO_UPDATE=true --args {args2}")
+        time.sleep(5)
+        pid2 = remote(f"pgrep -f {shlex.quote('^' + EXE)} | head -1", check=False).strip()
+        result["appPid2"] = pid2
+        if pid2:
+            result["registerApp2"] = registry("add-process", f"--pid {pid2}")
+        for _ in range(60):
+            if remote(f"test -S {shlex.quote(SOCKET_PATH)} && echo y", check=False).strip() == "y":
+                result["registerServer2"] = registry("add-server", f"--socket {shlex.quote(SOCKET_PATH)} --tmux {shlex.quote(TMUX)}"); break
+            time.sleep(1)
+        t1 = time.time()
+        result["operator"] = worktree_operator(t1)
+        result["relaunchFinished"] = False
+        while time.time() - t1 < 900:
+            time.sleep(3)
+            if count_done() > 1:
+                result["relaunchFinished"] = True; break
     subprocess.run(["scp", "-q", "-o", "BatchMode=yes", f"{HOST}:{DATA}/app.log", str(OUT / "app.log")], check=False)
     subprocess.run(f"ssh -o BatchMode=yes {HOST} " + shlex.quote(f"cd {DATA} && [ -d evidence ] && tar -cf - evidence") + " | tar -C " + shlex.quote(str(OUT)) + " -xf - 2>/dev/null", shell=True, check=False)
-    v = subprocess.run([str(WORKTREE / "scripts/smoke-verdict"), str(OUT), MODE], capture_output=True, text=True)
+    if result.get("phase1Lines"):
+        lines = open(OUT / "app.log", errors="replace").read().splitlines(keepends=True)
+        for name, part, mode in (("phase1", lines[:result["phase1Lines"]], MODE),
+                                 ("phase2", lines[result["phase1Lines"]:], MODE + "-relaunch")):
+            (OUT / name).mkdir(exist_ok=True)
+            (OUT / name / "app.log").write_text("".join(part))
+            pv = subprocess.run([str(WORKTREE / "scripts/smoke-verdict"), str(OUT / name), mode], capture_output=True, text=True)
+            (OUT / name / "verdict.txt").write_text(pv.stdout + pv.stderr)
+            result[f"verdict-{name}"] = ("PASS" if pv.returncode == 0 else f"FAIL (exit {pv.returncode})",
+                                         (pv.stdout + pv.stderr).strip().splitlines()[-6:])
+    v = subprocess.run([str(WORKTREE / "scripts/smoke-verdict"), str(OUT / "phase1") if result.get("phase1Lines") else str(OUT), MODE],
+                       capture_output=True, text=True)
     (OUT / "verdict.txt").write_text(v.stdout + v.stderr)
     result["verdict"] = "PASS" if v.returncode == 0 else f"FAIL (exit {v.returncode})"
     result["verdictDetail"] = (v.stdout + v.stderr).strip().splitlines()[-8:]
     result["checksOfInterest"] = [l.split("[ui] ")[-1] for l in open(OUT / "app.log", errors="replace")
-                                  if "smoke-check cards-" in l or "smoke-check workers-" in l or "smoke-check interject-" in l or "smoke-check close-" in l or "smoke-check capacity-" in l or "smoke-check shape-" in l or "smoke-check quota-" in l or "smoke-check attention-card" in l or "smoke-check done " in l
+                                  if "smoke-check cards-" in l or "smoke-check workers-" in l or "smoke-check interject-" in l or "smoke-check close-" in l or "smoke-check wt-" in l or "smoke-check capacity-" in l or "smoke-check shape-" in l or "smoke-check quota-" in l or "smoke-check attention-card" in l or "smoke-check done " in l
                                   or "smoke-check page-visible " in l or "smoke-check input-isolation-proof " in l]
     if MODE == "cards-mcp":
         result["agent"] = agent_outcome()

@@ -10,7 +10,7 @@
 // text — native keeps the operation pending/admitted and restart turns it
 // ambiguous, so nothing is guessed. Pending work that predates a Deck restart
 // is never replayed here: native marks it ambiguous on load.
-import { inv, listen, state } from './state.js';
+import { ctx, inv, listen, state } from './state.js';
 import { provider } from './board.js';
 import { newSessionColumn } from './pure.js';
 import { workerOf } from './workers.js';
@@ -26,6 +26,14 @@ async function finish(operationId, state, code = null, tmuxSession = null) {
   } catch (_) {
     toast(t('mcp.boardSyncFailed'));
   }
+}
+
+/* how a failed MCP start ends: refused by native's final launch admission
+   (nothing started: `mcp-launch-refused`), else ambiguous once a start was
+   attempted, else rejected */
+export function startFailure(error) {
+  if (String(error?.message ?? error).includes('mcp-launch-refused')) return 'rejected';
+  return error?.effectAttempted ? 'ambiguous' : 'rejected';
 }
 
 async function createSession(pending) {
@@ -63,8 +71,7 @@ async function createSession(pending) {
     });
     await finish(pending.operationId, 'committed', null, card.session);
   } catch (error) {
-    await finish(pending.operationId, error?.effectAttempted ? 'ambiguous' : 'rejected',
-      error?.stage === 'orphan' ? 'orphan-session' : 'create-failed');
+    await finish(pending.operationId, startFailure(error), error?.stage === 'orphan' ? 'orphan-session' : 'create-failed');
   }
 }
 
@@ -98,11 +105,19 @@ async function startWorker(pending) {
       dir: plan.dir,
       origin: { source: 'worker', key: pending.operationId, badge: plan.type },
       quietDone: true,
-    }, { requireCreated: true });
+    }, {
+      requireCreated: true,
+      /* the ordinary start with the operation: native decides the launch
+         again before anything starts (mcp/commands.rs `admit_launch_locked`) */
+      start: card => inv('start_session', {
+        name: card.session, dir: card.dir, cmd: card.cmd,
+        restoreShell: !!ctx.settings.sessionRestore, projectId: card.projectId,
+        cardless: true, mcpOperation: pending.operationId,
+      }),
+    });
     await finish(pending.operationId, 'committed', null, card.session);
   } catch (error) {
-    await finish(pending.operationId, error?.effectAttempted ? 'ambiguous' : 'rejected',
-      error?.stage === 'orphan' ? 'orphan-session' : 'create-failed');
+    await finish(pending.operationId, startFailure(error), error?.stage === 'orphan' ? 'orphan-session' : 'create-failed');
   }
 }
 

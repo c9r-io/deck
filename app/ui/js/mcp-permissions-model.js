@@ -31,11 +31,10 @@
 //   all saved (`initialScope`, `scopePayload`); a directory the client
 //   already holds that does not resolve now (an unmounted volume) is kept
 //   as stored (`heldRoot`; the backend `validate_client_scopes`).
-// - Linked-worktree rules (`initialWorktrees`, `worktreesPayload`,
-//   `worktreesProblem`): a project, its repository's main checkout and the
-//   folder its worktrees are made in. Only directories Deck verifies as
-//   worktrees of THAT repository open cards there; the folder alone grants
-//   nothing (mcp/grants.rs `verify_linked_worktree`).
+// - One switch, `autoWorktrees` (mcp/grants.rs `auto_worktree_scope`):
+//   worker cards and managed sessions may also start in a registered linked
+//   worktree of a reached project's repository, wherever it is. It adds
+//   start directories only; reads stay on the directories above.
 // - The default list offers a Claude type (`--permission-mode auto`) and a
 //   Codex type (`--no-daemon --yolo`), so driving worker cards needs no
 //   further configuration.
@@ -89,6 +88,7 @@ export function initialPermissions(client) {
     allowCards: client?.allowCards === true,
     allowCardEdits: client?.allowCards === true && client?.allowCardEdits === true,
     ruleColumn: client?.ruleColumn === true,
+    autoWorktrees: client?.autoWorktrees === true,
     workerTypes: Array.isArray(client?.workerTypes) ? client.workerTypes.map(t => ({ ...t })) : [],
   };
 }
@@ -117,6 +117,7 @@ export function permissionsPayload(p) {
     allowCards: p.allowCards === true,
     allowCardEdits: p.allowCards === true && p.allowCardEdits === true,
     ruleColumn: p.ruleColumn === true,
+    autoWorktrees: p.autoWorktrees === true,
     workerTypes: workers ? p.workerTypes.map(t => ({
       name: String(t.name || '').trim(),
       cmd: String(t.cmd || '').trim().replace(/\s+/g, ' '),
@@ -226,74 +227,6 @@ export function scopePayload({ allProjects, scopes }) {
     else projects.push({ projectId: s.project.id, roots: [s.root] });
   }
   return { allProjects: false, projects };
-}
-
-/* ---------- linked-worktree rules (mcp/grants.rs `worktree_scope`) ---------- */
-
-export const MAX_WORKTREE_RULES = 16;
-
-/* the rules as the dialog starts: the client's own (editing) or none */
-export function initialWorktrees(client) {
-  return (Array.isArray(client?.worktrees) ? client.worktrees : [])
-    .map(r => ({ projectId: String(r.projectId || ''), repo: String(r.repo || ''), parent: String(r.parent || '') }));
-}
-
-/* the rules as the backend takes them: complete rows only, trimmed */
-export function worktreesPayload(rows) {
-  return (rows || []).map(r => ({ projectId: String(r.projectId || ''), repo: String(r.repo || '').trim(), parent: String(r.parent || '').trim() }))
-    .filter(r => r.projectId || r.repo || r.parent);
-}
-
-/* the first thing wrong with the rule rows, as an i18n key, or null: a
-   row without its project, repository or folder, a project the scope does
-   not reach (`reachable` ids; null = every project), too many rows */
-export function worktreesProblem(rows, reachable) {
-  const list = worktreesPayload(rows);
-  if (list.length > MAX_WORKTREE_RULES) return 'mcp.worktreeList';
-  for (const r of list) {
-    if (!r.projectId) return 'mcp.worktreeProject';
-    if (!r.repo.startsWith('/')) return 'mcp.worktreeRepo';
-    if (!r.parent.startsWith('/')) return 'mcp.worktreeParent';
-    if (reachable && !reachable.includes(r.projectId)) return 'mcp.worktreeProject';
-  }
-  return null;
-}
-
-/* "Fill in worktree folders": the repositories to ask about — each scope
-   row's directory, or (all projects) each project's default directory */
-export function worktreeRepos(all, scopeRows, projects) {
-  const rows = all
-    ? (projects || []).filter(p => p?.id && typeof p.dir === 'string' && p.dir.trim().startsWith('/'))
-      .map(p => ({ projectId: p.id, repo: p.dir.trim() }))
-    : (scopeRows || []).filter(r => r.projectId && String(r.root || '').startsWith('/'))
-      .map(r => ({ projectId: r.projectId, repo: String(r.root) }));
-  const seen = new Set();
-  return rows.filter(r => { const key = `${r.projectId}\u0000${r.repo}`; if (seen.has(key)) return false; seen.add(key); return true; });
-}
-
-/* the rows after a fill-in: the existing ones, then each suggestion not
-   already there (same project, repository and folder), at most
-   MAX_WORKTREE_RULES; `added` says how many were new */
-export function withSuggestions(rows, suggestions) {
-  const out = (rows || []).filter(r => r.projectId || r.repo || r.parent).map(r => ({ ...r }));
-  let added = 0;
-  for (const s of suggestions || []) {
-    if (out.length >= MAX_WORKTREE_RULES) break;
-    if (out.some(r => r.projectId === s.projectId && r.repo === s.repo && r.parent === s.parent)) continue;
-    out.push({ projectId: s.projectId, repo: s.repo, parent: s.parent });
-    added++;
-  }
-  return { rows: out, added };
-}
-
-/* the backend's closed refusal word for a rule, as an i18n key */
-export function worktreeErrorKey(error) {
-  const text = String(error);
-  if (text.includes('mcp-worktree-repo')) return 'mcp.worktreeRepo';
-  if (text.includes('mcp-worktree-parent')) return 'mcp.worktreeParent';
-  if (text.includes('mcp-worktree-project')) return 'mcp.worktreeProject';
-  if (text.includes('mcp-worktree-list')) return 'mcp.worktreeList';
-  return null;
 }
 
 /* one shell word: as is when plain, else single-quoted */

@@ -1,0 +1,60 @@
+{
+ "startedAt": 1795851922,
+ "tag": "v134f94f9",
+ "steps": [
+  {
+   "name": "initialize",
+   "ok": true,
+   "at": 1795851922.2
+  },
+  {
+   "name": "tools-list",
+   "ok": true,
+   "at": 1795851922.2,
+   "count": 40
+  },
+  {
+   "name": "capabilities",
+   "ok": true,
+   "at": 1795851922.2,
+   "enabled": true,
+   "anchored": "/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo,/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo2",
+   "roots": "/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo,/private/tmp/deck-verify-v134f94f9/run/data/translation-fixture/repo2"
+  },
+  {
+   "name": "start-wt1",
+   "ok": true,
+   "at": 1795851923.3,
+   "state": "committed",
+   "code": null,
+   "project_ok": true,
+   "launch": "{\"admittedAt\": 1795851922263, \"grant\": \"auto-worktree\"}"
+  },
+  {
+   "name": "start-wt2",
+   "ok": true,
+   "at": 1795851924.3,
+   "state": "committed",
+   "code": null,
+   "project_ok": true,
+   "launch": "{\"admittedAt\": 1795851923304, \"grant\": \"auto-worktree\"}"
+  },
+  {
+   "name": "clone-refused",
+   "ok": true,
+   "at": 1795851924.3,
+   "code": "PATH_NOT_ACCESSIBLE",
+   "reason": "worktree-unverified",
+   "detail": "separate-repository"
+  },
+  {
+   "name": "plain-refused",
+   "ok": true,
+   "at": 1795851924.4,
+   "code": "PATH_NOT_ACCESSIBLE",
+   "reason": "outside-scope"
+  }
+ ],
+ "adapterStderrBytes": 0,
+ "failures": []
+}

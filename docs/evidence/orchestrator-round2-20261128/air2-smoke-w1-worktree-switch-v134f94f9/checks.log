@@ -1,0 +1,9 @@
+1795851906 [ui] smoke-check workers-client a=1 b=0
+1795851906 [ui] smoke-check wt-saved a=1 b=3
+1795851906 [ui] smoke-check done a=1 b=7
+1795851917 [ui] smoke-check wt-restored a=1 b=0
+1795851917 [ui] smoke-check wt-armed a=1 b=0
+1795851923 [ui] smoke-check wt-cards a=1 b=3
+1795851924 [mcp] refused deck_worker_start code=PATH_NOT_ACCESSIBLE relation=-
+1795851924 [mcp] refused deck_worker_start code=PATH_NOT_ACCESSIBLE relation=-
+1795851943 [ui] smoke-check done a=1 b=8

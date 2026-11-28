@@ -34,24 +34,26 @@ item or background service is created.
    external disk not connected) stays as it was, the dialog says so, and it
    works again once it is back; a new directory must exist. A project's
    directories decide where the client reads files, opens managed sessions
-   and starts worker cards. **Linked Git worktrees** names, for one project,
-   its repository (the main checkout) and the folder you make its worktrees
-   in: any directory in that folder that Deck verifies from the
-   repository's own files to be a linked worktree OF that repository (or a
-   folder inside one) may then be a worker card's or a managed session's
-   directory in that project, worktrees you create later included, with no
-   further setting. **Fill in worktree folders** does the typing: Deck
-   reads each reached project's repository's own list of its linked
-   worktrees (`.git/worktrees/*/gitdir`, no `git`) and adds a row for each
-   folder they lie in outside the project directory; nothing is saved
-   until you Save. The folder alone grants nothing: a separate clone, a
-   submodule, another repository's worktree or a plain directory there is
-   refused with the reason. Deck runs no `git` for it; it reads the
-   worktree's `.git` file and the repository's `worktrees/<id>/gitdir` and
-   `commondir`, and both must name each other (layouts that `git worktree
-   add` writes, absolute or relative paths). Rules apply in both scope
-   modes, can be changed or removed in **Permissions…**, and a project that
-   leaves the scope takes its rules with it. **All projects, including new
+   and starts worker cards. **Allow the linked worktrees of these
+   projects** (one switch, off by default) lets worker cards and managed
+   sessions — under the client's own choices for them — also start in any
+   registered linked worktree of a reached project's repository, wherever
+   it lies, worktrees created later included; with all projects, projects
+   added later too. The repository is the one the project's own directory
+   is the top of (a main checkout, or itself a linked worktree); a project
+   whose directory is a subdirectory of a repository anchors none, so its
+   worktrees and the rest of that checkout are not reached. Deck runs no
+   `git`: it reads the candidate's `.git` file and the repository's
+   `worktrees/<id>/gitdir` and `commondir` (opened without following links,
+   bounded) and both must name each other. That consistency is what Git
+   registered, not a signature: a local program that can rewrite both
+   sides can make a consistent pair. The roots decide first; the switch
+   adds start directories only — file reads, execution, stdin, sharing and
+   every other permission stay as they are, and `authorizedWorkspaces`
+   still lists the roots (`autoLinkedWorktrees` says the switch and each
+   project's anchor). A start is decided again right before it launches:
+   turning the switch off refuses starts that needed it and have not
+   launched; cards already running keep running. **All projects, including new
    ones** reaches every project of the Board, those you create later too,
    each through its own default directory, read and checked (canonical,
    existing, not too broad) every time it is used; `deck_capabilities`
@@ -179,7 +181,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_worker_reports` | A worker card's kept reports (the newest 4, each with its sequence, time, text and the worker's fields, `inReplyTo`, `baseDir` when given; `after` for newer ones only; `firstKept`). Durable; needs the **replies** choice. |
 | `deck_worker_reports_ack` | The calling orchestrator card says it received report `sequence` of a worker card it started (`card_id`, `sequence`): the sequence of a report whose text it was given (`deck_worker_reports` or a wait's inline `reports`), never the summary's `latest`. Keeps the highest acknowledged; an older or repeated one changes nothing (repeat it after a lost answer); `REPORT_NOT_FOUND` for a sequence never given, `WORKER_NOT_FOUND` for any other card and from no card. It acknowledges THAT report only and says received, not reviewed. Under **Share replies**; a metadata write that wakes no wait. |
 | `deck_worker_reply` | A worker card's final Claude Code message of one turn ending (its episode), head and tail when long; memory only, the newest 64 (`REPLY_GONE` otherwise). Needs the further **replies** choice. |
-| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the absolute directory `dir` (required), which decides the project: the one whose directory holds it, or whose linked-worktree rule verifies it (`PATH_NOT_ACCESSIBLE` when none does, with `reason`: `not-found`, `volume-unavailable`, `not-accessible`, `outside-scope`, or `worktree-unverified` with `detail` `not-a-worktree` / `separate-repository` / `other-repository` / `not-registered` / `unreadable-metadata`; never another directory instead; `PATH_AMBIGUOUS`, listing the candidates, when several do — start again naming one with `project_id`), with its first line, and optionally one of the type's listed `models` (`model`, byte for byte: the card's command is the type's plus `--model <that entry>`; any other is `MODEL_NOT_LISTED`, listing the type's models, and starts nothing). It opens beside the orchestrator card when that is in the same project, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most the user's worker capacity per orchestrator card on the Board (Settings › MCP, default 16, 1–32; callers from no card together), four times that per client; `deck_capabilities` `workerCapacity` says both. |
+| `deck_worker_start` | Start one worker card of one of the worker types you listed for this client (the type, never a command), in the absolute directory `dir` (required), which decides the project: the one whose directory holds it, or, with the linked-worktree switch, a registered linked worktree of such a project's repository (`PATH_NOT_ACCESSIBLE` when none does, with `reason`: `not-found`, `volume-unavailable`, `not-accessible`, `outside-scope`, or `worktree-unverified` with `detail` `separate-repository` / `other-repository` / `not-registered` / `unreadable-metadata` / `path-policy`; never another directory instead; decided again at the launch, a refusal there `rejected` with `launch-refused`; `PATH_AMBIGUOUS`, listing the candidates, when several do — start again naming one with `project_id`), with its first line, and optionally one of the type's listed `models` (`model`, byte for byte: the card's command is the type's plus `--model <that entry>`; any other is `MODEL_NOT_LISTED`, listing the type's models, and starts nothing). It opens beside the orchestrator card when that is in the same project, else where your own new cards open in that project; a client you also let **organize cards** may name the column (`column_id`, a column of that project: another project's is `COLUMN_NOT_FOUND`, listing the right ones; without that choice `PERMISSION_DENIED`). An operation to poll (`committed` with `cardId`); at most the user's worker capacity per orchestrator card on the Board (Settings › MCP, default 16, 1–32; callers from no card together), four times that per client; `deck_capabilities` `workerCapacity` says both. |
 | `deck_config_describe` | Before drafting: the workflow, every field of a template and an Agent handover rule with its rules, copyable examples, and the client's projects with their columns, templates (name and structure, never step text) and Agent rules. Needs the client's separate **draft** choice. |
 | `deck_config_propose` | Draft a template and/or one Agent handover rule. `validate_only: true` checks and previews and records nothing; every problem is `{field, code, message, fix}`. A valid submission (fresh `request_id`) waits in Needs attention as a proposal; an identical pending draft is refused (`DUPLICATE_PROPOSAL`), at most 4 wait per client. Writes and authorizes nothing. |
 | `deck_config_proposal_get` | One of the client's proposals: `pending`, `approved` (saved as drafted), `edited` (saved without automatic sending, finished in the editor), `rejected` or `withdrawn`, with the next action. |

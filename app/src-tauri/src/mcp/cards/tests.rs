@@ -32,7 +32,7 @@ fn client(id: &str, cards: bool) -> Client {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
-        worktrees: Vec::new(),
+        auto_worktrees: false,
         send_epoch: 0,
     }
 }
