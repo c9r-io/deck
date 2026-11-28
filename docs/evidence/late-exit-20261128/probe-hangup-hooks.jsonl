@@ -1,0 +1,13 @@
+{"t": 1795835273.317, "ppid": 51429, "event": "SessionStart", "session": "<uuid>", "reason": null, "source": "startup"}
+{"t": 1795835273.318, "ppid": 51455, "event": "SessionStart", "session": "<uuid>", "reason": null, "source": "startup"}
+{"t": 1795835273.319, "ppid": 51419, "event": "SessionStart", "session": "<uuid>", "reason": null, "source": "startup"}
+{"t": 1795835273.479, "ppid": 51470, "event": "SessionStart", "session": "<uuid>", "reason": null, "source": "startup"}
+{"t": 1795835273.515, "ppid": 51485, "event": "SessionStart", "session": "<uuid>", "reason": null, "source": "startup"}
+{"t": 1795835306.665, "ppid": 51470, "event": "SessionEnd", "session": "<uuid>", "reason": "clear", "source": null}
+{"t": 1795835306.887, "ppid": 51470, "event": "SessionStart", "session": "<uuid>", "reason": null, "source": "clear"}
+{"t": 1795835320.69, "ppid": 51419, "event": "SessionEnd", "session": "<uuid>", "reason": "other", "source": null}
+{"t": 1795835321.621, "ppid": 51429, "event": "SessionEnd", "session": "<uuid>", "reason": "other", "source": null}
+{"t": 1795835322.536, "ppid": 51455, "event": "SessionEnd", "session": "<uuid>", "reason": "other", "source": null}
+{"t": 1795835323.551, "ppid": 51470, "event": "SessionEnd", "session": "<uuid>", "reason": "other", "source": null}
+{"t": 1795835324.476, "ppid": 51485, "event": "SessionEnd", "session": "<uuid>", "reason": "other", "source": null}
+{"t": 1795835339.228, "ppid": 57372, "event": "SessionStart", "session": "<uuid>", "reason": null, "source": "resume"}

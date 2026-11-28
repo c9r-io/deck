@@ -1,0 +1,37 @@
+1795840107 [ui] smoke-check late-clean a=15 b=0
+1795840108 [ui] smoke-check late-observe a=3 b=0
+1795840133 [ui] smoke-check late-cards a=4 b=15
+1795840133 [ui] smoke-check relive-hold a=1 b=0
+1795840142 [agent-reentry] preview sessions=4 candidates=4 reasons=none
+1795840142 [ui] smoke-check late-preview a=7 b=1
+1795840142 [ui] smoke-check late-request a=4 b=0
+1795840142 [tmux-restart] begin prepare_budget_ms=23000 total_budget_ms=28000
+1795840142 [tmux-restart] validated sessions=4 panes=4 elapsed_ms=34
+1795840142 [agent-reentry] frozen entries=4 eligible=4 bypass=0
+1795840142 [tmux-restart] classified panes=4 agents=4 by_code=0 other_foreground=0
+1795840142 [tmux-restart] exit-request sess-910d9 elapsed_ms=7
+1795840142 [tmux-restart] exit-request sess-0a84c elapsed_ms=16
+1795840142 [tmux-restart] exit-request sess-6bfe0 elapsed_ms=23
+1795840142 [tmux-restart] exit-request sess-2af48 elapsed_ms=32
+1795840152 [tmux-restart] exit-timeout remaining=2 sessions=sess-0a84c,sess-2af48 elapsed_ms=10035
+1795840152 [tmux-restart] prepared agents=4 still_running=2 restore_enabled=false elapsed_ms=10163
+1795840152 [agent-reentry] late-exit sent=2 elapsed_ms=7
+1795840153 [agent-reentry] late-exit done sent=2 gone=2 elapsed_ms=678
+1795840153 [agent-reentry] sealed final=4 of=4 late=2
+1795840153 [tmux-restart] queue-paused count=0 elapsed_ms=10951
+1795840153 [tmux-restart] stopping
+1795840153 [tmux-restart] stopped elapsed_ms=27
+1795840153 [tmux-restart] starting
+1795840153 [tmux-restart] verified elapsed_ms=36
+1795840156 [agent-reentry] entry sess-910d9 outcome=confirmed reason=none route=exit
+1795840156 [agent-reentry] entry sess-0a84c outcome=confirmed reason=none route=late-exit
+1795840156 [agent-reentry] entry sess-6bfe0 outcome=confirmed reason=none route=exit
+1795840156 [agent-reentry] entry sess-2af48 outcome=confirmed reason=none route=late-exit
+1795840156 [agent-reentry] complete replaced=true entries=4 confirmed=4
+1795840156 [tmux-restart] finish result=ok elapsed_ms=13440
+1795840156 [ui] smoke-check late-routes a=2 b=4
+1795840156 [ui] smoke-check late-terms a=63 b=4
+1795840156 [ui] smoke-check late-result a=63 b=4
+1795840167 [ui] smoke-check late-screens a=7 b=0
+1795840167 [ui] smoke-check relive-hold a=2 b=0
+1795840177 [ui] smoke-check done a=1 b=0

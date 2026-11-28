@@ -831,6 +831,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "late-preview",
     "late-request",
     "late-terms",
+    "late-routes",
     "late-result",
     "late-screens",
     "late-stage",

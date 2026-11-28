@@ -491,11 +491,12 @@
       "checks": {
         "late-clean": {"a": 15},
         "late-observe": {"a": 3},
-        "late-cards": {"a": 3, "b": 7},
+        "late-cards": {"a": 4, "b": 15},
         "relive-hold": {},
         "late-preview": {"a": 7, "b": 1},
-        "late-request": {"a": 3},
+        "late-request": {"a": 4},
         "late-terms": {"metric": true},
+        "late-routes": {"metric": true},
         "late-result": {"a": 63},
         "late-screens": {"a": 7},
         "late-stage": {"metric": true, "failureOnly": true}

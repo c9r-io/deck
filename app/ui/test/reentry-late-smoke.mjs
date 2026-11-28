@@ -8,15 +8,20 @@
 //      answers with its own "Background work is running" question and does
 //      not leave (measured on 2.1.332, air2, 2026-11-28);
 //   B  `claude`, idle after one turn: the ordinary exit;
-//   C  `claude` with a FOREGROUND tool still running: a turn in progress;
-//   then ONE restart, the three ticked, the ordinary policy (A).
+//   C  `claude` with a FOREGROUND tool still running: a turn in progress
+//      (no background work: on 2.1.332 it leaves at Ctrl+D, measured in
+//      this mode's first run, 2026-11-28 r1);
+//   E  `claude` with a background shell AND a foreground tool running: the
+//      production case of 2026-11-28 11:22 (a turn behind the question);
+//   then ONE restart, the four ticked, the ordinary policy (A).
 // Judged:
-//   - the review offers the three and states the late-exit note once;
-//   - A and C are confirmed re-entered with the late-exit line, B is
-//     confirmed without it, and the result is the list (never the toast);
-//   - after the restart, C's pane shows its tool call interrupted and waits
-//     for input — nothing continued the turn — and A's pane shows that its
-//     background shell did not finish before the previous session ended.
+//   - the review offers the four and states the late-exit note once;
+//   - A is confirmed re-entered WITH the late-exit line, B without it, C and
+//     E confirmed (which route they took is recorded, `late-routes`: bit 1
+//     C, bit 2 E), and the result is the list (never the toast);
+//   - after the restart, C's and E's panes show their tool call interrupted
+//     and wait for input — nothing continued the turn — and A's pane shows
+//     that its background shell did not finish before the session ended.
 // What the page cannot see, the runner reads: the process table at each
 // `relive-hold` (1 before, 2 after) and app.log (`late-exit`, each entry's
 // route).
@@ -88,8 +93,20 @@ export async function runReentryLateSmoke() {
       if (running) await pause(3000);
       running = running && shows(C.session, BUSY) && !answered(C.session, 'deckfgdone');
     }
-    const states = [idle, background, running];
-    if (!await report('late-cards', states.every(Boolean) && store.cards.length === 3,
+    const Ecard = await start(project, `${work}/e`, 'claude');
+    let both = await waitReady(Ecard.session);
+    if (both) {
+      await say(Ecard.session, BG);
+      both = await waitFor(() => answered(Ecard.session, 'deckbgok'), 120000) && await waitReady(Ecard.session);
+    }
+    if (both) {
+      await say(Ecard.session, FG);
+      both = await waitFor(() => shows(Ecard.session, /deckfg/) && shows(Ecard.session, BUSY), 120000);
+      if (both) await pause(3000);
+      both = both && shows(Ecard.session, BUSY) && !answered(Ecard.session, 'deckfgdone');
+    }
+    const states = [idle, background, running, both];
+    if (!await report('late-cards', states.every(Boolean) && store.cards.length === 4,
       states.filter(Boolean).length, bits(states))) throw new Error('cards');
 
     // 4. the operator reads the process table before the restart
@@ -101,12 +118,12 @@ export async function runReentryLateSmoke() {
     const reviewed = await openReview();
     const notes = [...section().querySelectorAll('.reentry-notes > .reentry-scope-note')].map(node => node.textContent);
     const lateNote = notes.filter(line => line === t('reentry.note.lateExit')).length;
-    const offered = [reviewed, rows().filter(selectable).length === 3, [A, B, C].every(card => selectable(rowOf(card)))];
+    const offered = [reviewed, rows().filter(selectable).length === 4, [A, B, C, Ecard].every(card => selectable(rowOf(card)))];
     await report('late-preview', offered.every(Boolean), bits(offered), lateNote);
     selectAll()?.click();
     await pause(100);
-    const asked = ticked().length === 3 && radios()[0]?.checked === true && radios()[1]?.checked !== true
-      && $('tmux-restart').textContent === t('reentry.confirm', { count: 3 });
+    const asked = ticked().length === 4 && radios()[0]?.checked === true && radios()[1]?.checked !== true
+      && $('tmux-restart').textContent === t('reentry.confirm', { count: 4 });
     if (!await report('late-request', asked, ticked().length)) throw new Error('request');
     const toasts = [];
     const watch = new MutationObserver(records => records.forEach(record => record.addedNodes
@@ -122,9 +139,13 @@ export async function runReentryLateSmoke() {
     const rowA = says(A, 'reentry.result.confirmedOrdinary');
     const rowB = says(B, 'reentry.result.confirmedOrdinary');
     const rowC = says(C, 'reentry.result.confirmedOrdinary');
+    const rowE = says(Ecard, 'reentry.result.confirmedOrdinary');
     const terms = [ended, $('tmux-lifecycle-title').textContent === t('reentry.result.restarted'),
       !!rowA && details(rowA).includes(lateLine), !!rowB && !details(rowB).includes(lateLine),
-      !!rowC && details(rowC).includes(lateLine), !toasts.includes(t('reentry.result.quiet', { count: 3 }))];
+      !!rowC && !!rowE, !toasts.some(text => text === t('reentry.result.quiet', { count: 4 }))];
+    // which of C and E took the late exit: recorded, not judged
+    await metric('late-routes', (rowC && details(rowC).includes(lateLine) ? 1 : 0)
+      + (rowE && details(rowE).includes(lateLine) ? 2 : 0), resultRows().length);
     await metric('late-terms', bits(terms), resultRows().length);
     await report('late-result', terms.every(Boolean), bits(terms), resultRows().length);
     await leaveReview('tmux-done');
@@ -133,14 +154,16 @@ export async function runReentryLateSmoke() {
     // 7. what the re-entered clients show: C's turn interrupted and waiting
     //    for input, A's background shell unfinished. Each read while shown.
     stage = 7;
-    const [nowA, nowC] = ['a', 'c'].map(letter => store.cards.find(card => card.dir === `${work}/${letter}`));
-    const seenC = !!nowC && await show(nowC) && await waitFor(() => shows(nowC.session, INTERRUPTED), 60000)
-      && await waitReady(nowC.session, 30000) && !shows(nowC.session, BUSY);
-    await pause(5000);
-    const stillC = !!nowC && !shows(nowC.session, BUSY) && !answered(nowC.session, 'deckfgdone');
+    const [nowA, nowC, nowE] = ['a', 'c', 'e'].map(letter => store.cards.find(card => card.dir === `${work}/${letter}`));
+    // interrupted and waiting, and still waiting a while later: nothing continued the turn
+    const waiting = async card => !!card && await show(card) && await waitFor(() => shows(card.session, INTERRUPTED), 60000)
+      && await waitReady(card.session, 30000) && !shows(card.session, BUSY)
+      && (await pause(5000), !shows(card.session, BUSY) && !answered(card.session, 'deckfgdone'));
+    const seenC = await waiting(nowC);
+    const seenE = await waiting(nowE);
     const seenA = !!nowA && await show(nowA) && await waitFor(() => shows(nowA.session, UNFINISHED), 60000)
       && await waitReady(nowA.session, 30000);
-    const after = [seenC, stillC, seenA];
+    const after = [seenC, seenE, seenA];
     await report('late-screens', after.every(Boolean), bits(after));
     await hold(2, 10000);
     await report('done', !h.failed(), 1, 0);

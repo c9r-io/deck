@@ -1,0 +1,54 @@
+13:28:15 screen lock probe: ioreg=0 bytes=93180 0
+13:28:15 machine's own state recorded: b31be87b70a9a6b69b521095027a9d228b2832e74e18ed61948542db5569bb20 | 3 | 1421  | "<real-home>/Library/Keychains/login.keychain-db" | 
+13:28:16   ok   the private keychain is unlocked in the GUI session
+13:28:16 local carrier staging: /var/folders/9m/n6xsspfn4n34kx4_x0s_csbw0000gn/T/deck-relive-carrier-15en6qyy
+13:28:17 provenance: sidecar provenance ok: 6 files in <real-home>/c9r-io/deck/app/src-tauri/binaries are the debug build of this checkout
+13:28:19 carrier: debug build of 8e8daf9bd95d229147178f7bebe3f414ad824b49 + uncommitted changes, executable sha256 3652d269c606c72ab03771a1948246da1aec0845f10293bf6bfe74f87eef16b4
+13:28:23   registry add-process --pid 89529: exit 0: registered process pid 89529 started Sat Nov 28 13:28:23 2026
+13:28:25   registry add-process --pid 89597: exit 0: registered process pid 89597 started Sat Nov 28 13:28:24 2026
+13:28:25   ok   the launched application was registered
+13:28:26   registry add-server --socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r3 --tmux /private/tmp/deck-relive-1702b3c53a8d/home/Applications/deck.app/Contents/MacOS/tmux: exit 0: registered tmux-server pid 89643 started Sat Nov 28 13:28:25 2026
+13:28:26   ok   the carrier's own tmux server was registered by its full socket path
+13:28:28   ok   the carrier wrote its log into its isolated data directory
+13:28:30   check late-clean a=15 b=0
+13:28:30   check late-observe a=3 b=0
+13:28:54   check late-cards a=4 b=15
+13:28:54   check relive-hold a=1 b=0
+13:28:54   photo hold1: a=['claude']; b=['claude']; c=['claude']; e=['claude']
+13:29:04   check late-preview a=7 b=1
+13:29:04   check late-request a=4 b=0
+13:29:17   check late-routes a=2 b=4
+13:29:17   check late-terms a=63 b=4
+13:29:17   check late-result a=63 b=4
+13:29:28   check late-screens a=7 b=0
+13:29:28   check relive-hold a=2 b=0
+13:29:29   photo hold2: a=['claude --resume <uuid>']; b=['claude --resume <uuid>']; c=['claude --resume <uuid>']; e=['claude --resume <uuid>']
+13:29:39   check done a=1 b=0
+13:29:40 verdict reentry-late: smoke-verdict reentry-late: PASS (11/11 expected checkpoints, 12 lines)
+13:29:40   ok   scripts/smoke-verdict reentry-late
+13:29:40 == judging
+13:29:40   ok   two photographs were taken (before and after the restart)
+13:29:40   ok   before: a, b, c and e each run one plain `claude`
+13:29:40   ok   before: the background shells of a and e (deckbg) and the foreground tools of c and e (deckfg) were running
+13:29:40   ok   after: a, b and c each run ONE re-entered client
+13:29:40   ok   after: each was resumed in the session it was in before the restart (its newest transcript then)
+13:29:40   ok   after: the re-entered program runs as `claude` (argv[0]) with no flag but --resume
+13:29:40   ok   after: no background shell or foreground tool of the old clients runs any more
+13:29:40   log: frozen [('4', '4', '0')] exit-timeout [('2',)] late-exit [('2', '7')] [('2', '2', '678')] sealed [('4', '4', '2')] complete [('true', '4', '4')]
+13:29:40   log: entries [('confirmed', 'none', 'exit'), ('confirmed', 'none', 'late-exit'), ('confirmed', 'none', 'exit'), ('confirmed', 'none', 'late-exit')]
+13:29:40   ok   one transaction froze the four cards
+13:29:40   ok   at least one client outlived the exit wait (a: its background shell holds it)
+13:29:40   ok   the late exit hung up exactly the clients that outlived the wait, and all were gone after it
+13:29:40   ok   all four sessions were sealed, as many by the late exit as were hung up
+13:29:40   ok   one result line per entry, all confirmed: the hung-up ones by the late exit, the others by their own exit
+13:29:40   ok   the shell service was replaced and four entries confirmed
+13:29:40   recovery records after: 4 old client pids: 4
+13:29:40   ok   no recovery record of an old client is left (claimed, or ended by its own exit); the new clients' own are there
+13:29:40   ok   the settings file keeps the client's own keys and holds Deck's entries naming THIS carrier's helpers
+13:29:41   registry add-server --socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r3 --tmux /private/tmp/deck-relive-1702b3c53a8d/home/Applications/deck.app/Contents/MacOS/tmux: exit 0: registered tmux-server pid 90673 started Sat Nov 28 13:29:13 2026
+13:29:42   registry cleanup: exit 0: tmux-server pid 4556 started Sat Nov 28 12:52:19 2026 socket /private/tmp/deck-relive-1702b3c53a8d/login.sock: gone | process pid 63494 started Sat Nov 28 13:21:34 2026: gone | process pid 63520 started Sat Nov 28 13:21:35 2026: gone | tmux-server pid 63624 started Sat Nov 28 13:21:37 2026 socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r1: gone | tmux-server pid 65086 started Sat Nov 28 13:22:18 2026 socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r1: gone | process pid 83797 started Sat Nov 28 13:25:50 2026: gone | process pid 83868 started Sat Nov 28 13:25:50 2026: gone | tmux-server pid 83915 started Sat Nov 28 13:25:52 2026 socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r2: gone | tmux-server pid 87607 started Sat Nov 28 13:26:40 2026 socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r2: gone | process pid 89529 started Sat Nov 28 13:28:23 2026: running | process pid 89597 started Sat Nov 28 13:28:24 2026: running | tmux-server pid 89643 started Sat Nov 28 13:28:25 2026 socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r3: gone | tmux-server pid 90673 started Sat Nov 28 13:29:13 2026 socket /private/tmp/deck-relive-1702b3c53a8d/t/tmux-501/deck-smoke-r1702b3c5-r3: running | stopped tmux-server pid 90673 | stopped process pid 89529 | stopped process pid 89597
+13:29:42   ok   the registry cleanup stopped everything this run registered and nothing else runs from the root
+13:29:42 carrier processes left: none
+13:29:42 socket file of this attempt left: 0
+13:29:42   ok   the machine's own hooks file digest, ~/Applications, formal tmux server and default keychain are as before
+13:29:42 RESULT: PASS (0 problems)

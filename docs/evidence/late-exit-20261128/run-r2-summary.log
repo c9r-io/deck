@@ -1,0 +1,38 @@
+13:25:45   ok   the private keychain is unlocked in the GUI session
+13:25:51   ok   the launched application was registered
+13:25:53   ok   the carrier's own tmux server was registered by its full socket path
+13:25:54   ok   the carrier wrote its log into its isolated data directory
+13:25:56   check late-clean a=15 b=0
+13:25:56   check late-observe a=3 b=0
+13:26:20   check late-cards a=4 b=15
+13:26:20   check relive-hold a=1 b=0
+13:26:29   check late-preview a=7 b=1
+13:26:29   check late-request a=4 b=0
+13:26:43   check late-routes a=2 b=4
+13:26:43   check late-terms a=63 b=4
+13:26:43   check late-result a=63 b=4
+13:26:56   check late-screens a=7 b=0
+13:26:56   check relive-hold a=2 b=0
+13:27:06   check done a=1 b=0
+13:27:07 verdict reentry-late: smoke-verdict reentry-late: FAIL (10/11 expected checkpoints, 12 lines) |   FAIL late-request: a=4 (expected 3)
+13:27:07   FAIL scripts/smoke-verdict reentry-late
+13:27:07   ok   two photographs were taken (before and after the restart)
+13:27:07   ok   before: a, b, c and e each run one plain `claude`
+13:27:07   ok   before: the background shells of a and e (deckbg) and the foreground tools of c and e (deckfg) were running
+13:27:07   ok   after: a, b and c each run ONE re-entered client
+13:27:07   ok   after: each was resumed in the session it was in before the restart (its newest transcript then)
+13:27:07   ok   after: the re-entered program runs as `claude` (argv[0]) with no flag but --resume
+13:27:07   ok   after: no background shell or foreground tool of the old clients runs any more
+13:27:07   log: frozen [('4', '4', '0')] exit-timeout [('2',)] late-exit [('2', '11')] [('2', '2', '694')] sealed [('4', '4', '2')] complete [('true', '4', '4')]
+13:27:07   log: entries [('confirmed', 'none', 'exit'), ('confirmed', 'none', 'late-exit'), ('confirmed', 'none', 'exit'), ('confirmed', 'none', 'late-exit')]
+13:27:07   ok   one transaction froze the four cards
+13:27:07   ok   at least one client outlived the exit wait (a: its background shell holds it)
+13:27:07   ok   the late exit hung up exactly the clients that outlived the wait, and all were gone after it
+13:27:07   ok   all four sessions were sealed, as many by the late exit as were hung up
+13:27:07   ok   one result line per entry, all confirmed: the hung-up ones by the late exit, the others by their own exit
+13:27:07   ok   the shell service was replaced and four entries confirmed
+13:27:07   ok   no recovery record of an old client is left (claimed, or ended by its own exit); the new clients' own are there
+13:27:07   ok   the settings file keeps the client's own keys and holds Deck's entries naming THIS carrier's helpers
+13:27:09   ok   the registry cleanup stopped everything this run registered and nothing else runs from the root
+13:27:10   ok   the machine's own hooks file digest, ~/Applications, formal tmux server and default keychain are as before
+13:27:10 RESULT: FAIL (1 problems)
