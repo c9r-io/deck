@@ -40,9 +40,21 @@
 //! turn); any other value, a missing or repeated key, or a payload that does
 //! not parse sends nothing. agy has no per-turn id, so its lines are v1.
 //!
+//! A fourth, for Claude Code's `StopFailure` hook (an API error ended the
+//! turn; it fires INSTEAD of `Stop`): deck's entry runs
+//! `claude-code turn-failed`, never with `--reply`. The helper reads, in the
+//! same one pass, the prompt id, the presence of `agent_id` (a subagent's:
+//! nothing is sent) and the TOP-LEVEL string `error`, Claude Code's own
+//! error kind. The kind leaves this process only as one word of the closed
+//! `FAILURE_KINDS` list (anything else, a non-string or a missing value is
+//! `unknown`), as the line's `failure`; without a valid prompt id nothing is
+//! sent. `last_assistant_message` (there the rendered error text) and
+//! `error_details` are never read: the failure is no final message, no
+//! summary and no worker reply.
+//!
 //! Wire: v1 `{v:1, source, state, socket, server_pid, pane}`; v2 adds
-//! `interaction` (a source id, never synthesized); v3 adds `reply` (with or
-//! without `interaction`). deck accepts all three; it takes `reply` off
+//! `interaction` (a source id, never synthesized) and, on a `turn-failed`
+//! only, `failure`; v3 adds `reply` (with or without `interaction`). deck accepts all three; it takes `reply` off
 //! before its own parser sees the line (`turn_summary::split`).
 //!
 //! Identity: the pane id in the message is a claim; deck proves it by asking
@@ -152,6 +164,46 @@ fn first_invocation(payload: &[u8]) -> bool {
     de.end().is_ok() && found == Some(true)
 }
 
+/// The word deck's StopFailure entry runs for Claude Code (`hooks.rs`).
+const FAILED_WORD: &str = "turn-failed";
+
+/// The top-level key of Claude Code's StopFailure payload that names the
+/// error kind (2.1.332; the hook's matcher values).
+const ERROR_FIELD: &str = "error";
+
+/// The error kinds a `turn-failed` line may carry: Claude Code 2.1.332's
+/// StopFailure matcher values, the backend's `FAILURE_KINDS` the same list
+/// (`agent_status.rs` pins the two together). Anything else is `unknown`.
+const FAILURE_KINDS: [&str; 13] = [
+    "rate_limit",
+    "overloaded",
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "verification_required",
+    "billing_error",
+    "invalid_request",
+    "model_not_found",
+    "server_error",
+    "max_output_tokens",
+    "cloud_credential_error",
+    "unknown",
+];
+
+/// Whether this is the StopFailure hook deck wrote.
+fn turn_failed(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("claude-code")
+        && args.get(2).map(String::as_str) == Some(FAILED_WORD)
+        && args.len() == 3
+}
+
+/// The closed word for a payload's error kind.
+fn failure_kind(kind: Option<&str>) -> &'static str {
+    kind.and_then(|kind| FAILURE_KINDS.iter().find(|k| **k == kind))
+        .copied()
+        .unwrap_or("unknown")
+}
+
 /// Whether this is the PostToolUse hook deck wrote.
 fn after_tool(args: &[String]) -> bool {
     args.get(1).map(String::as_str) == Some("claude-code")
@@ -208,6 +260,9 @@ struct Fields {
     reply: Option<String>,
     /// The presence key was there (its value skipped, never kept).
     present: bool,
+    /// The kind field's string value, only when asked for
+    /// (`ERROR_FIELD` on a `turn-failed`).
+    kind: Option<String>,
 }
 
 /// Reads a JSON document whose top level is an object, keeping only the
@@ -220,6 +275,9 @@ struct TopLevel {
     reply: Option<&'static str>,
     /// A key whose presence alone is noted (`SUBAGENT_FIELD`).
     presence: Option<&'static str>,
+    /// A key whose string value is kept (`ERROR_FIELD`); a second one is an
+    /// error, a value of another type is simply not kept.
+    kind: Option<&'static str>,
 }
 
 impl<'de> Visitor<'de> for TopLevel {
@@ -231,7 +289,7 @@ impl<'de> Visitor<'de> for TopLevel {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut found = Fields::default();
-        let (mut seen_id, mut seen_reply) = (false, false);
+        let (mut seen_id, mut seen_reply, mut seen_kind) = (false, false, false);
         while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
             if key == self.id {
                 if seen_id {
@@ -246,6 +304,15 @@ impl<'de> Visitor<'de> for TopLevel {
                 }
                 seen_reply = true;
                 found.reply = match map.next_value::<serde_json::Value>()? {
+                    serde_json::Value::String(text) => Some(text),
+                    _ => None,
+                };
+            } else if Some(key.as_ref()) == self.kind {
+                if seen_kind {
+                    return Err(serde::de::Error::custom("duplicate kind key"));
+                }
+                seen_kind = true;
+                found.kind = match map.next_value::<serde_json::Value>()? {
                     serde_json::Value::String(text) => Some(text),
                     _ => None,
                 };
@@ -292,18 +359,20 @@ fn interaction_from(source: &str, payload: &[u8]) -> Option<String> {
 /// `fields_with` without a presence key (the tests' shorthand).
 #[cfg(test)]
 fn fields_from(source: &str, payload: &[u8], reply: bool) -> Fields {
-    fields_with(source, payload, reply, None)
+    fields_with(source, payload, reply, None, None)
 }
 
 /// The id, with `reply` (the `--reply` flag on Claude Code's `turn-done`)
 /// the final message, and with `presence` (`--after-tool`) whether that
-/// top-level key is there, from ONE pass over the payload. Any failure of
-/// the pass yields none of them.
+/// top-level key is there, and with `kind` (`turn-failed`) that key's
+/// string, from ONE pass over the payload. Any failure of the pass yields
+/// none of them.
 fn fields_with(
     source: &str,
     payload: &[u8],
     reply: bool,
     presence: Option<&'static str>,
+    kind: Option<&'static str>,
 ) -> Fields {
     let Some(field) = identity_field(source) else {
         return Fields::default();
@@ -319,6 +388,7 @@ fn fields_with(
         id: field,
         reply: reply.then_some(REPLY_FIELD),
         presence,
+        kind,
     };
     let Ok(found) = (&mut de).deserialize_map(visitor) else {
         return Fields::default();
@@ -330,6 +400,7 @@ fn fields_with(
         id: found.id.filter(|id| uuid_ok(id)),
         reply: found.reply.filter(|text| !text.trim().is_empty()),
         present: found.present,
+        kind: found.kind,
     }
 }
 
@@ -433,6 +504,21 @@ fn build_after_tool_message(tmux: &str, pane: &str, fields: &Fields) -> Option<S
     let plain = build_message("claude-code", "working", tmux, pane, Some(id))?;
     let base = plain.strip_suffix("}\n")?;
     Some(format!("{base},\"after_tool\":true}}\n"))
+}
+
+/// The StopFailure line: the v2 `turn-failed` line with `"failure"`, one
+/// word of `FAILURE_KINDS`. Nothing for a subagent's payload or without a
+/// valid id: deck pairs a failed turn with its interaction or not at all.
+fn build_failed_message(tmux: &str, pane: &str, fields: &Fields) -> Option<String> {
+    if fields.present {
+        return None;
+    }
+    let id = fields.id.as_deref().filter(|id| uuid_ok(id))?;
+    let plain = build_message("claude-code", FAILED_WORD, tmux, pane, Some(id))?;
+    let base = plain.strip_suffix("}\n")?;
+    let kind = failure_kind(fields.kind.as_deref());
+    // a word of the closed list: plain format! is safe JSON
+    Some(format!("{base},\"failure\":\"{kind}\"}}\n"))
 }
 
 /// The v3 line: `build_message`'s line with `reply` (JSON-escaped by
@@ -763,12 +849,14 @@ fn hook_main(args: Vec<String>) {
         return;
     }
     let after_tool = after_tool(&args);
+    let failed = turn_failed(&args);
     let wants_reply = wants_reply(&args);
     let fields = fields_with(
         source,
         &payload,
         wants_reply,
-        after_tool.then_some(SUBAGENT_FIELD),
+        (after_tool || failed).then_some(SUBAGENT_FIELD),
+        failed.then_some(ERROR_FIELD),
     );
     drop(payload);
     let (Ok(tmux), Ok(pane)) = (std::env::var("TMUX"), std::env::var("TMUX_PANE")) else {
@@ -777,6 +865,7 @@ fn hook_main(args: Vec<String>) {
     let interaction = fields.id.as_deref();
     let message = match fields.reply.as_deref() {
         _ if after_tool => build_after_tool_message(&tmux, &pane, &fields),
+        _ if failed => build_failed_message(&tmux, &pane, &fields),
         Some(reply) => build_reply_message(source, state, &tmux, &pane, interaction, reply),
         None => build_message(source, state, &tmux, &pane, interaction),
     };
@@ -1396,6 +1485,7 @@ mod tests {
             main_thread.as_bytes(),
             false,
             Some(SUBAGENT_FIELD),
+            None,
         );
         assert_eq!(found.id.as_deref(), Some(ID));
         assert!(!found.present);
@@ -1417,28 +1507,144 @@ mod tests {
             subagent.as_bytes(),
             false,
             Some(SUBAGENT_FIELD),
+            None,
         );
         assert!(found.present);
         assert_eq!(build_after_tool_message("/t/deck,9,0", "%1", &found), None);
         // whatever its value, and only at the top level
         let odd = format!(r#"{{"prompt_id":"{ID}","agent_id":null}}"#);
-        assert!(fields_with("claude-code", odd.as_bytes(), false, Some(SUBAGENT_FIELD)).present);
+        assert!(
+            fields_with(
+                "claude-code",
+                odd.as_bytes(),
+                false,
+                Some(SUBAGENT_FIELD),
+                None
+            )
+            .present
+        );
         let nested = format!(r#"{{"prompt_id":"{ID}","x":{{"agent_id":"a"}}}}"#);
         assert!(
             !fields_with(
                 "claude-code",
                 nested.as_bytes(),
                 false,
-                Some(SUBAGENT_FIELD)
+                Some(SUBAGENT_FIELD),
+                None
             )
             .present
         );
         // without an id there is nothing to pair with: no line, no v1 fallback
         let no_id = r#"{"tool_name":"Bash"}"#;
-        let found = fields_with("claude-code", no_id.as_bytes(), false, Some(SUBAGENT_FIELD));
+        let found = fields_with(
+            "claude-code",
+            no_id.as_bytes(),
+            false,
+            Some(SUBAGENT_FIELD),
+            None,
+        );
         assert_eq!(build_after_tool_message("/t/deck,9,0", "%1", &found), None);
         // presence is not read unless asked
         assert!(!fields_from("claude-code", subagent.as_bytes(), false).present);
+    }
+
+    #[test]
+    fn a_failed_turn_carries_its_id_and_a_closed_kind_never_its_text() {
+        let args = |words: &[&str]| -> Vec<String> {
+            std::iter::once("helper")
+                .chain(words.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        assert!(turn_failed(&args(&["claude-code", "turn-failed"])));
+        assert!(!turn_failed(&args(&["codex", "turn-failed"])));
+        assert!(!turn_failed(&args(&["claude-code", "turn-done"])));
+        assert!(!turn_failed(&args(&[
+            "claude-code",
+            "turn-failed",
+            "--reply"
+        ])));
+        // the StopFailure entry never asks for the message, even if a
+        // hand-written entry added the flag
+        assert!(!wants_reply(&args(&[
+            "claude-code",
+            "turn-failed",
+            "--reply"
+        ])));
+
+        // the payload shape Claude Code 2.1.332 sent in the isolated probe
+        let payload = format!(
+            r#"{{"session_id":"a0670b33-95b1-43ba-ab22-aaefb876e58b","transcript_path":"/x.jsonl","cwd":"/p","prompt_id":"{ID}","hook_event_name":"StopFailure","error":"rate_limit","error_details":"SECRET-DETAIL","last_assistant_message":"API Error: SECRET-TEXT"}}"#
+        );
+        let read = |payload: &str| {
+            fields_with(
+                "claude-code",
+                payload.as_bytes(),
+                false,
+                Some(SUBAGENT_FIELD),
+                Some(ERROR_FIELD),
+            )
+        };
+        let found = read(&payload);
+        assert_eq!(found.id.as_deref(), Some(ID));
+        assert_eq!(found.reply, None);
+        assert_eq!(found.kind.as_deref(), Some("rate_limit"));
+        let line = build_failed_message("/t/deck,9,0", "%1", &found).unwrap();
+        assert_eq!(
+            line,
+            format!(
+                "{{\"v\":2,\"source\":\"claude-code\",\"state\":\"turn-failed\",\"socket\":\"deck\",\"server_pid\":9,\"pane\":\"%1\",\"interaction\":\"{ID}\",\"failure\":\"rate_limit\"}}\n"
+            )
+        );
+        for leaked in ["SECRET", "API Error", "a0670b33", "/x.jsonl"] {
+            assert!(!line.contains(leaked), "{leaked} in {line}");
+        }
+
+        // a kind outside the closed list, a non-string or none: `unknown`
+        for (error, kind) in [
+            (r#""brand_new_kind""#, "unknown"),
+            (r#""rate_limit\"}""#, "unknown"),
+            (r#"{"type":"x"}"#, "unknown"),
+            (r#"null"#, "unknown"),
+            (r#""server_error""#, "server_error"),
+        ] {
+            let payload = format!(r#"{{"prompt_id":"{ID}","error":{error}}}"#);
+            let line = build_failed_message("/t/deck,9,0", "%1", &read(&payload)).unwrap();
+            assert!(
+                line.ends_with(&format!(",\"failure\":\"{kind}\"}}\n")),
+                "{line}"
+            );
+        }
+        let no_kind = format!(r#"{{"prompt_id":"{ID}"}}"#);
+        assert!(build_failed_message("/t/deck,9,0", "%1", &read(&no_kind))
+            .unwrap()
+            .contains("\"failure\":\"unknown\""));
+        // a repeated kind fails the whole pass: no id, nothing sent
+        let twice = format!(r#"{{"prompt_id":"{ID}","error":"a","error":"b"}}"#);
+        assert_eq!(
+            build_failed_message("/t/deck,9,0", "%1", &read(&twice)),
+            None
+        );
+        // a subagent's payload, or one without a valid id, sends nothing
+        let subagent = format!(r#"{{"prompt_id":"{ID}","agent_id":"a1","error":"overloaded"}}"#);
+        assert_eq!(
+            build_failed_message("/t/deck,9,0", "%1", &read(&subagent)),
+            None
+        );
+        let no_id = r#"{"error":"overloaded"}"#;
+        assert_eq!(
+            build_failed_message("/t/deck,9,0", "%1", &read(no_id)),
+            None
+        );
+        // the kind is not read unless asked
+        assert_eq!(
+            fields_from("claude-code", payload.as_bytes(), false).kind,
+            None
+        );
+        // every closed word fits the wire alphabet deck accepts
+        for kind in FAILURE_KINDS {
+            assert!(kind.len() <= 32 && kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
     }
 
     #[test]

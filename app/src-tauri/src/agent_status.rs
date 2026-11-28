@@ -190,11 +190,12 @@
 //! `effectiveCardStatus` (pure.js) — agent state OUTRANKS the 15s heuristic
 //! (card statuses `attention`/`done`; a working agent never shows amber). The
 //! Settings toggle is the user-driven writer of `~/.claude/settings.json`
-//! (five entries: UserPromptSubmit→working, Notification matcher
+//! (six entries: UserPromptSubmit→working, Notification matcher
 //! `permission_prompt` ONLY→needs-input, PermissionRequest→needs-input (the
 //! same question said as it is asked, not about 6 s later: `hooks.rs`),
 //! PostToolUse→`working --after-tool`
-//! (see "After a tool" below), Stop→turn-done, written in
+//! (see "After a tool" below), Stop→turn-done, StopFailure→turn-failed
+//! (see "A failed turn" below), written in
 //! Claude Code's EXEC form — bare helper path in `command`, words in
 //! `args` — so Claude Code spawns the signed helper directly and no `sh -c`
 //! runs per event; Codex stays shell-form + `async`, exec form being
@@ -246,6 +247,36 @@
 //! next tool or Stop ends the request); a question raised by a background subagent after the main
 //! thread's Stop carries the ENDED prompt id and is refused as stale, so no
 //! `needs-input` is shown for it at all (Claude Code 2.1.330).
+//!
+//! # A failed turn
+//! When an API error ends a Claude Code turn (a rate limit, an overload, a
+//! sign-in, billing or server error), Claude Code runs `StopFailure`
+//! INSTEAD of `Stop` (runtime proof 2.1.332, `hooks.rs`), so before Deck
+//! listened to it the card stayed `working` until the next prompt. Deck's
+//! entry runs `claude-code turn-failed`; the helper forwards a v2 line with
+//! the turn's `prompt_id` and `failure`, Claude Code's error kind as one
+//! word of the closed `FAILURE_KINDS` (anything else is `unknown`), and
+//! never the error text. `parse_event` accepts the word only from Claude
+//! Code, only with an interaction id and only with such a kind
+//! (`bad-failure` otherwise, and for a `failure` on any other word); it is
+//! then a `turn-done` of that interaction — not a fourth state — under the
+//! same admission (peer, pane, generation, terminal continuity) and the
+//! same tracker: it ends only the CURRENT interaction or an unpaired one,
+//! a late failure of an ended or another interaction is refused like a
+//! late Stop (`duplicate-interaction`, `interaction-mismatch`) and never
+//! touches the newer turn's `working`. The kind rides on the observation
+//! (`Observation::failure`, reset by every accepted word) to the poll
+//! (`agent_failure`), the attention line and the MCP worker view
+//! (`agent.failure`): presentation and attention only. Every consumer reads
+//! the `turn-done` as it reads a Stop's — no hold reads `turn-done` — and
+//! the failure grants nothing more: it proves no Claude interaction for the
+//! first-interaction gate (the turn's own `working` already did), it is
+//! never a final message (a line carrying a `reply` with a failure is
+//! refused whole in `ingest_line`, so no summary, worker reply, snapshot
+//! reply or phone reply), and nothing retries, resends, closes or moves on
+//! it. Codex (0.172.0: no such hook event), agy (1.5.19: none documented)
+//! and Pi (its observer already ends a run that failed with `turn-done`)
+//! report no failure kind.
 //!
 //! # A second, separate family on the same socket and the same edit engine
 //! Re-entry (`agent_reentry`) needs a native session id, which the status
@@ -366,6 +397,32 @@ pub(crate) const NEEDS_INPUT: &str = "needs-input";
 pub(crate) const TURN_DONE: &str = "turn-done";
 pub(crate) const STATES: &[&str] = &[WORKING, NEEDS_INPUT, TURN_DONE];
 
+/// The wire word of Claude Code's `StopFailure` hook (an API error ended
+/// the turn, INSTEAD of `Stop`; `hooks.rs`). It is not a fourth state: it
+/// is accepted as a `turn-done` of the same interaction, with the same
+/// admission, carrying a closed error kind (`Observation::failure`) — see
+/// "A failed turn" in the header.
+pub(crate) const TURN_FAILED: &str = "turn-failed";
+
+/// The error kinds a `turn-failed` line may carry: Claude Code 2.1.332's
+/// StopFailure matcher values, the status helper's `FAILURE_KINDS` the same
+/// list (`failure_kinds_mirror_the_helper` pins the two). Presentation only.
+pub(crate) const FAILURE_KINDS: &[&str] = &[
+    "rate_limit",
+    "overloaded",
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "verification_required",
+    "billing_error",
+    "invalid_request",
+    "model_not_found",
+    "server_error",
+    "max_output_tokens",
+    "cloud_credential_error",
+    "unknown",
+];
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct Event {
     source: String,
@@ -380,6 +437,10 @@ pub(crate) struct Event {
     /// Claude `working` only): it may end its own interaction's input
     /// request and nothing else (`admit_after_tool`).
     after_tool: bool,
+    /// A `turn-failed` line's error kind (one of `FAILURE_KINDS`): the
+    /// event is then a `turn-done` of its interaction that an API error
+    /// ended. `None` for every other word.
+    failure: Option<&'static str>,
 }
 
 /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase hex — the one shape an
@@ -483,6 +544,9 @@ struct Entry {
     /// (`agent_pi::transport`): the one observation that lease's loss
     /// withdraws. `None` for a word a hook reported.
     pi: Option<PiWriter>,
+    /// The current `turn-done` was a turn an API error ended (Claude Code's
+    /// `StopFailure`): its closed kind. Reset by every accepted word.
+    failure: Option<&'static str>,
 }
 
 impl Entry {
@@ -585,6 +649,10 @@ pub(crate) struct Observation {
     /// (`mark_viewed`). The ONE authoritative viewed truth: it lives with
     /// the live observation and dies with it — no history, no cap.
     pub(crate) viewed: bool,
+    /// This `turn-done` is a turn an API error ended (`TURN_FAILED`): the
+    /// error's closed kind. Presentation and attention only, never a hold,
+    /// a release or a send; `None` for every other observation.
+    pub(crate) failure: Option<&'static str>,
 }
 
 /// CLI drift (FR-SI-05): true exactly once per source, the first time a NEW
@@ -1130,10 +1198,34 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
     if crate::extensions::agent(source).is_some_and(|adapter| adapter.class == SignalClass::Pi) {
         return Err("pi-observer-required");
     }
-    let state = STATES
-        .iter()
-        .find(|s| Some(**s) == obj.get("state").and_then(|v| v.as_str()))
-        .ok_or("unknown-state")?;
+    let word = obj.get("state").and_then(|v| v.as_str());
+    // A failed turn (Claude Code's StopFailure) is a `turn-done` of its
+    // interaction with a closed kind: only from Claude Code, only bound to
+    // a source interaction id (so the tracker can refuse a late one), and
+    // only with one word of `FAILURE_KINDS`. `failure` on any other word
+    // is refused.
+    let failure = match (word == Some(TURN_FAILED), obj.get("failure")) {
+        (false, None) => None,
+        (true, Some(kind)) => {
+            let claude = crate::extensions::agent(source)
+                .is_some_and(|adapter| adapter.class == SignalClass::Claude);
+            let kind = kind
+                .as_str()
+                .and_then(|kind| FAILURE_KINDS.iter().find(|k| **k == kind))
+                .filter(|_| claude && interaction.is_some())
+                .ok_or("bad-failure")?;
+            Some(*kind)
+        }
+        _ => return Err("bad-failure"),
+    };
+    let state = if failure.is_some() {
+        &TURN_DONE
+    } else {
+        STATES
+            .iter()
+            .find(|s| Some(**s) == word)
+            .ok_or("unknown-state")?
+    };
     // agy has no question hook (`agent_agy`): a line claiming one is no
     // word of Deck's agy entry
     if *state == NEEDS_INPUT
@@ -1182,6 +1274,7 @@ pub(crate) fn parse_event(line: &str) -> Result<Event, &'static str> {
         pane: pane.to_string(),
         interaction,
         after_tool,
+        failure,
     })
 }
 
@@ -1265,6 +1358,7 @@ pub(crate) fn projected(target: &PaneRow) -> Option<Observation> {
                 state: entry.state,
                 episode: entry.episode,
                 viewed: entry.viewed,
+                failure: entry.failure,
             })
     })
 }
@@ -1558,6 +1652,7 @@ pub(crate) fn ingest_accepted(
                     since: 0,
                     codex,
                     pi: None,
+                    failure: None,
                 },
             );
         }
@@ -1568,6 +1663,7 @@ pub(crate) fn ingest_accepted(
         entry.state = event.state;
         entry.codex = codex;
         entry.pi = None;
+        entry.failure = event.failure;
         // only an accepted observation allocates or changes an episode
         let sameness = (
             event
@@ -1586,11 +1682,17 @@ pub(crate) fn ingest_accepted(
             state: entry.state,
             episode: entry.episode,
             viewed: entry.viewed,
+            failure: entry.failure,
         })
     })?;
     if codex {
         prove_trust(row, generation, CodexSignalTrust::Trusted);
-    } else if class == SignalClass::Claude && CLAUDE_INTERACTION_WORDS.contains(&event.state) {
+    } else if class == SignalClass::Claude
+        && CLAUDE_INTERACTION_WORDS.contains(&event.state)
+        // a failed turn proves no readiness of its own: the turn's start
+        // (`working`) already did, and an API error is no reason to type
+        && event.failure.is_none()
+    {
         prove_claude_interaction(row, generation);
     } else if class == SignalClass::Agy && AGY_INTERACTION_WORDS.contains(&event.state) {
         prove_agy_interaction(row, generation);
@@ -1599,9 +1701,12 @@ pub(crate) fn ingest_accepted(
         .get(&row.session_name)
         .is_some_and(|target| target.pane_id == row.pane_id);
     applog(&format!(
-        "[agent-status] {} {} s={} target={} v={} e={}",
+        "[agent-status] {} {}{} s={} target={} v={} e={}",
         event.source,
         event.state,
+        event
+            .failure
+            .map_or(String::new(), |kind| format!(" failed={kind}")),
         crate::applog::session_tag(&row.session_name),
         u8::from(targeted),
         if event.interaction.is_some() { 2 } else { 1 },
@@ -1763,6 +1868,7 @@ pub(crate) fn pi_signal(
             since: 0,
             codex: false,
             pi: None,
+            failure: None,
         };
         let entry = agents.entry(key.clone()).or_insert_with(&fresh);
         if entry.session_id != row.session_id
@@ -1773,6 +1879,7 @@ pub(crate) fn pi_signal(
         }
         entry.state = state;
         entry.codex = false;
+        entry.failure = None;
         entry.pi = Some(PiWriter {
             lease,
             instance: instance.clone(),
@@ -1788,6 +1895,7 @@ pub(crate) fn pi_signal(
             state: entry.state,
             episode: entry.episode,
             viewed: entry.viewed,
+            failure: entry.failure,
         }
     });
     let targeted = signal_targets(rows)
@@ -2521,6 +2629,12 @@ fn ingest_line(
     listing: impl FnOnce() -> Option<Vec<PaneRow>>,
 ) -> Result<(), &'static str> {
     let (line, reply) = crate::turn_summary::split(line);
+    // a failed turn's line never carries a final message: the helper never
+    // reads one for it, and a line that does is refused whole, before any
+    // admission, so no reply, summary or worker reply can come of it
+    if reply.is_some() && parse_event(&line).is_ok_and(|event| event.failure.is_some()) {
+        return Err("bad-failure");
+    }
     let accepted = ingest_accepted(&line, origin, listing)?;
     if let Some(reply) = reply {
         crate::turn_summary::offer(&accepted, reply);
@@ -4500,6 +4614,234 @@ mod tests {
         // every other line is left to the full admission
         assert!(after_tool_may_matter(&event_v2("working", "%3", B)));
         assert!(after_tool_may_matter("not json"));
+    }
+
+    // ---------- a failed turn (Claude Code's StopFailure) ----------
+
+    fn failed(pane: &str, id: &str, kind: &str) -> String {
+        event_v2(TURN_FAILED, pane, id).replace("}", &format!(",\"failure\":\"{kind}\"}}"))
+    }
+
+    #[test]
+    fn a_failed_turn_parses_only_as_a_claude_v2_turn_ending_with_a_closed_kind() {
+        let parsed = parse_event(&failed("%3", A, "rate_limit")).unwrap();
+        assert_eq!(parsed.state, TURN_DONE, "a turn ending, not a fourth state");
+        assert_eq!(parsed.failure, Some("rate_limit"));
+        assert_eq!(parsed.interaction.as_deref(), Some(A));
+        for kind in FAILURE_KINDS {
+            assert_eq!(
+                parse_event(&failed("%3", A, kind)).unwrap().failure,
+                Some(*kind)
+            );
+        }
+        // every ordinary word carries none
+        for word in STATES {
+            assert_eq!(parse_event(&event_v2(word, "%3", A)).unwrap().failure, None);
+        }
+        for line in [
+            // without a kind, with one outside the closed list or not a word
+            event_v2(TURN_FAILED, "%3", A),
+            failed("%3", A, "brand_new"),
+            failed("%3", A, "API Error: 529"),
+            event_v2(TURN_FAILED, "%3", A).replace("}", ",\"failure\":7}"),
+            // without an interaction id: nothing could fence a late one
+            event_line(TURN_FAILED, "%3").replace("}", ",\"failure\":\"overloaded\"}"),
+            // from a source that has no such hook
+            failed("%3", A, "overloaded").replace("claude-code", "codex"),
+            failed("%3", A, "overloaded").replace("claude-code", "agy"),
+            // a kind on any other word
+            event_v2("turn-done", "%3", A).replace("}", ",\"failure\":\"overloaded\"}"),
+            event_v2("working", "%3", A).replace("}", ",\"failure\":\"overloaded\"}"),
+        ] {
+            assert_eq!(parse_event(&line), Err("bad-failure"), "{line}");
+        }
+    }
+
+    /// The regression: an API error ended a Claude Code turn (StopFailure,
+    /// no Stop) and the card stayed `working` for good. The failed turn ends
+    /// its own interaction like a Stop, says why, and is fenced exactly
+    /// like one: a late failure of A never ends B.
+    #[test]
+    fn a_failed_turn_ends_its_own_interaction_and_never_a_newer_one() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+        let session = "deck-card-fail";
+        let rows = [row(session, "$1", "%3", 300, true, "claude")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        let send = |line: String| {
+            ingest(
+                &line,
+                &Origin {
+                    peer: Some(320),
+                    table: table.clone(),
+                },
+                || Some(rows.to_vec()),
+            )
+        };
+        let seen = || projections(&rows).get(session).copied();
+        let owner: crate::scheduler::QueueItem = serde_json::from_value(serde_json::json!({
+            "id": "o", "session": session, "card_id": "c", "dir": "", "cmd": "",
+            "text": "x", "mode": "chain", "added": 0
+        }))
+        .unwrap();
+        let holds = || {
+            crate::scheduler::agent_holds(
+                &owner,
+                crate::scheduler::observe(rows.to_vec()).get(session),
+            )
+        };
+
+        assert_eq!(send(event_v2("working", "%3", A)), Ok(()));
+        let working = seen().unwrap().episode;
+        assert_eq!(send(failed("%3", A, "overloaded")), Ok(()));
+        let ended = seen().unwrap();
+        assert_eq!(
+            (ended.state, ended.failure),
+            (TURN_DONE, Some("overloaded"))
+        );
+        assert_ne!(ended.episode, working, "a new attention episode");
+        assert_eq!(notified(session), Some(TURN_DONE));
+        // the same turn cannot end twice, by a Stop or another failure
+        assert_eq!(
+            send(event_v2("turn-done", "%3", A)),
+            Err("duplicate-interaction")
+        );
+        assert_eq!(
+            send(failed("%3", A, "rate_limit")),
+            Err("duplicate-interaction")
+        );
+        assert_eq!(seen().unwrap().failure, Some("overloaded"));
+
+        // the next turn clears it; a late failure of the ended turn A, or of
+        // an interaction that is not current, leaves B working
+        assert_eq!(send(event_v2("working", "%3", B)), Ok(()));
+        assert_eq!(seen().unwrap().failure, None);
+        assert_eq!(
+            send(failed("%3", A, "server_error")),
+            Err("duplicate-interaction")
+        );
+        const C: &str = "0199aaaa-bbbb-7ccc-8ddd-00000000000c";
+        assert_eq!(
+            send(failed("%3", C, "server_error")),
+            Err("interaction-mismatch")
+        );
+        let still = seen().unwrap();
+        assert_eq!((still.state, still.failure), (WORKING, None));
+        assert_eq!(notified(session), Some(WORKING));
+
+        // B's own failure ends B; the scheduler's agent hold reads it exactly
+        // as it reads B's Stop (the word decides nothing new)
+        assert_eq!(send(failed("%3", B, "rate_limit")), Ok(()));
+        let failed_hold = holds();
+        reset_for_tests();
+        assert_eq!(send(event_v2("working", "%3", B)), Ok(()));
+        assert_eq!(send(event_v2("turn-done", "%3", B)), Ok(()));
+        assert_eq!(holds(), failed_hold);
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
+    /// A failed turn proves no interaction of its own for the scheduler's
+    /// first-interaction gate: only the words that already did (the turn's
+    /// start) do.
+    #[test]
+    fn a_failed_turn_alone_proves_no_claude_interaction() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let session = "deck-card-fail-evidence";
+        let rows = [row(session, "$1", "%3", 300, true, "claude")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        let origin = Origin {
+            peer: Some(320),
+            table: table.clone(),
+        };
+        let evidence = || {
+            generation_evidence(&rows, |pane| foreground_generation(&table, pane), |_| None)
+                .get(session)
+                .is_some_and(|e| e.claude_interaction)
+        };
+        assert_eq!(
+            ingest(&failed("%3", A, "unknown"), &origin, || Some(rows.to_vec())),
+            Ok(())
+        );
+        assert_eq!(projection(&rows, session), Some(TURN_DONE));
+        assert!(!evidence(), "the failure alone proves nothing");
+        assert_eq!(
+            ingest(&event_v2("working", "%3", B), &origin, || Some(
+                rows.to_vec()
+            )),
+            Ok(())
+        );
+        assert!(evidence());
+        reset_for_tests();
+        crate::notify::retain(&std::collections::HashSet::new());
+    }
+
+    /// The failure's text never becomes a final message: a line that
+    /// carries one with a failure is refused whole, before admission.
+    #[test]
+    fn a_failed_turn_never_carries_a_final_message() {
+        let _guard = STORE_TEST_LOCK.lock_or_recover();
+        let _kept = crate::turn_summary::TEST_LOCK.lock_or_recover();
+        reset_for_tests();
+        let session = "deck-card-fail-reply";
+        let rows = [row(session, "$1", "%3", 300, true, "claude")];
+        let table = with_helper(world(&[pane(300, 7, 310, 2000)]), 320, 310);
+        let origin = Origin {
+            peer: Some(320),
+            table: table.clone(),
+        };
+        let with_reply = |line: String| {
+            format!(
+                "{},\"reply\":\"API Error: SENTINEL\"}}",
+                &line.replacen("\"v\":2", "\"v\":3", 1)[..line.len() - 1]
+            )
+        };
+        assert_eq!(
+            ingest_line(&event_v2("working", "%3", A), &origin, || Some(
+                rows.to_vec()
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            ingest_line(&with_reply(failed("%3", A, "overloaded")), &origin, || {
+                Some(rows.to_vec())
+            }),
+            Err("bad-failure")
+        );
+        assert_eq!(
+            projection(&rows, session),
+            Some(WORKING),
+            "nothing admitted"
+        );
+        // the helper's own line: admitted, and no message is kept for anyone
+        assert_eq!(
+            ingest_line(&failed("%3", A, "overloaded"), &origin, || Some(
+                rows.to_vec()
+            )),
+            Ok(())
+        );
+        let ended = projections(&rows)[session];
+        assert_eq!(ended.failure, Some("overloaded"));
+        assert_eq!(
+            crate::turn_summary::for_episode(session, ended.episode),
+            None
+        );
+        reset_for_tests();
+    }
+
+    /// The helper turns Claude Code's error kind into a word of ITS closed
+    /// list; this module accepts a word of THIS one. They are one list.
+    #[test]
+    fn failure_kinds_mirror_the_helper() {
+        let helper = include_str!("../status-helper/src/main.rs");
+        let start = helper
+            .find("const FAILURE_KINDS: [&str; ")
+            .expect("the helper's list");
+        let block = &helper[start..start + helper[start..].find("];").unwrap()];
+        let listed: Vec<&str> = block.split('"').skip(1).step_by(2).collect();
+        assert_eq!(listed, FAILURE_KINDS);
     }
 
     /// The side-effect-relevant regression: B asks for input, then a late

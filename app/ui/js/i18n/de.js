@@ -145,6 +145,7 @@ const dictionary = {
   "attention.stopped": "Gestoppt",
   "attention.doneRead": "Runde beendet · angesehen",
   "attention.doneUnread": "Runde beendet · ungelesen",
+  "attention.apiError": "API-Fehler: {kind}",
   "attention.noSignal": "Kein gültiger Agent-Status",
   "attention.noSignalHint": "Kein gültiger Agent-Status; Aktivität bedeutet keine Bereitschaft",
   "attention.quiet": "Ruhig · kein gültiger Agent-Status",

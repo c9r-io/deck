@@ -145,6 +145,7 @@ const dictionary = {
   "attention.stopped": "停止",
   "attention.doneRead": "ターン終了 · 表示済み",
   "attention.doneUnread": "ターン終了 · 未読",
+  "attention.apiError": "API エラー: {kind}",
   "attention.noSignal": "有効な Agent 状態なし",
   "attention.noSignalHint": "有効な Agent 状態なし。アクティビティは準備完了を意味しません",
   "attention.quiet": "静か · 有効な Agent 状態なし",

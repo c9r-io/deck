@@ -145,6 +145,7 @@ const dictionary = {
   "attention.stopped": "중지됨",
   "attention.doneRead": "턴 종료 · 확인함",
   "attention.doneUnread": "턴 종료 · 읽지 않음",
+  "attention.apiError": "API 오류: {kind}",
   "attention.noSignal": "유효한 Agent 상태 없음",
   "attention.noSignalHint": "유효한 Agent 상태가 없습니다. 활동은 준비 완료를 뜻하지 않습니다",
   "attention.quiet": "조용함 · 유효한 Agent 상태 없음",

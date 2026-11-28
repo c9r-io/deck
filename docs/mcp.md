@@ -412,7 +412,12 @@ show each card's state without content: whether its session is alive, the
 Agent observation's closed word (`working`, `turn-done`, `needs-input`,
 `unavailable`) and episode, whether you took it over, and the delivery
 states of its lines. `turn-done` is a turn boundary, not proof the work is
-finished. `deck_worker_reply` returns the final message Claude Code's Stop
+finished. A Claude Code turn that an API error ended (its `StopFailure`
+hook: a rate limit, an overload, a sign-in or billing problem, a server
+error) reads `turn-done` with `failure`, the error's kind (`rate_limit`,
+`overloaded`, `authentication_failed`, `server_error`, … or `unknown`);
+such a turn has no final message, and Deck retries nothing — what follows
+is the orchestrator's choice. `deck_worker_reply` returns the final message Claude Code's Stop
 hook forwarded for one turn ending (needs **Share replies**; it is kept in
 memory only). A worker can also report on purpose: tell it in its task to
 call `deck_worker_report` with its result. The worker names nobody — Deck

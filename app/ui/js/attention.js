@@ -119,7 +119,11 @@ export function attentionStatusText(card) {
   let text;
   if (!snapshot.alive) text = t('attention.stopped');
   else if (snapshot.agent === 'needs-input') text = t('attention.input');
-  else if (snapshot.agent === 'turn-done') text = t(snapshot.seen ? 'attention.doneRead' : 'attention.doneUnread');
+  else if (snapshot.agent === 'turn-done') {
+    text = t(snapshot.seen ? 'attention.doneRead' : 'attention.doneUnread');
+    /* the turn ended on an API error: say which kind, not the error text */
+    if (snapshot.failure) text = `${text} · ${t('attention.apiError', { kind: snapshot.failure.replaceAll('_', ' ') })}`;
+  }
   else if (snapshot.agent === 'working') text = t('attention.working');
   else if (piStatusKey(snapshot)) text = t(piStatusKey(snapshot));
   else if (agyCoverage(snapshot)) text = t('signal.agy.limited');

@@ -626,6 +626,9 @@ pub(super) struct Seen {
     /// When the foreground process began, epoch seconds (0: unknown): an
     /// instance older than this Deck process outlived a Deck restart.
     born: u64,
+    /// The observed `turn-done` was a turn an API error ended: its closed
+    /// kind (`agent_status::Observation::failure`). Presentation only.
+    failure: Option<&'static str>,
 }
 
 /// A stable 64-bit key of `parts` (the first 8 bytes of their SHA-256):
@@ -702,6 +705,7 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
                     instance: 0,
                     shell: false,
                     born: 0,
+                    failure: None,
                 },
             )
         })
@@ -732,6 +736,7 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
         if let Some(entry) = seen.get_mut(&session) {
             entry.state = Some(observation.state);
             entry.episode = observation.episode;
+            entry.failure = observation.failure;
         }
     }
     seen
@@ -782,6 +787,7 @@ pub(super) fn instance_seen_for_tests(
         instance,
         shell,
         born: 0,
+        failure: None,
     }
 }
 
@@ -802,6 +808,7 @@ pub(super) fn codex_seen_for_tests(codex: crate::agent_status::CodexSignalTrust)
         instance: TEST_INSTANCE,
         shell: false,
         born: 0,
+        failure: None,
     }
 }
 
@@ -1037,9 +1044,14 @@ fn view(
             Some(Seen {
                 state: Some(state),
                 episode,
+                failure,
                 ..
             }),
-        ) => json!({"state": state, "episode": episode}),
+        ) => match failure {
+            // a turn an API error ended: the error's closed kind
+            Some(kind) => json!({"state": state, "episode": episode, "failure": kind}),
+            None => json!({"state": state, "episode": episode}),
+        },
         (Some(_), Some(seen)) => json!({
             "state": "unavailable",
             "episode": 0,

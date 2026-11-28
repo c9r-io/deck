@@ -151,6 +151,7 @@ const dictionary = {
   "attention.stopped": "Stopped",
   "attention.doneRead": "Turn ended · viewed",
   "attention.doneUnread": "Turn ended · unread",
+  "attention.apiError": "API error: {kind}",
   "attention.noSignal": "No valid agent state",
   "attention.noSignalHint": "No valid agent state; activity is not readiness",
   "attention.quiet": "Quiet · no valid agent state",

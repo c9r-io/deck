@@ -270,6 +270,43 @@ fn after_a_tool_only_the_main_thread_with_an_id_reaches_deck() {
 }
 
 #[test]
+fn a_failed_turn_reaches_deck_with_its_kind_and_without_its_text() {
+    let home = Private::new();
+    let socket = home.0.join("status.sock");
+    let listener = home.listen(&socket);
+    let environment = [
+        ("TMUX", TMUX),
+        ("TMUX_PANE", "%7"),
+        ("DECK_STATUS_SOCK", socket.to_str().unwrap()),
+    ];
+    let args = ["claude-code", "turn-failed"];
+    let payload = format!(
+        r#"{{"session_id":"s","prompt_id":"{ID}","hook_event_name":"StopFailure","error":"overloaded","error_details":"SENTINEL","last_assistant_message":"API Error: SENTINEL"}}"#
+    );
+    let child = run(helper(&home, &args, &environment), &payload);
+    let mut stream = accept(&listener, Duration::from_secs(3)).expect("the helper connects");
+    let line = read_line(&mut stream);
+    drop(stream);
+    assert_silent_success(&finish(child, Duration::from_secs(3)));
+    assert_eq!(
+        line,
+        format!("{{\"v\":2,\"source\":\"claude-code\",\"state\":\"turn-failed\",\"socket\":\"deck-dev\",\"server_pid\":4242,\"pane\":\"%7\",\"interaction\":\"{ID}\",\"failure\":\"overloaded\"}}\n")
+    );
+    // a subagent's payload, or no usable id: the helper never connects
+    for payload in [
+        format!(r#"{{"prompt_id":"{ID}","agent_id":"a1","error":"overloaded"}}"#),
+        r#"{"error":"overloaded"}"#.to_string(),
+    ] {
+        let child = run(helper(&home, &args, &environment), &payload);
+        assert_silent_success(&finish(child, Duration::from_secs(3)));
+        assert!(
+            accept(&listener, Duration::from_millis(300)).is_none(),
+            "{payload}"
+        );
+    }
+}
+
+#[test]
 fn a_payload_without_a_usable_id_falls_back_to_the_first_wire_version() {
     let home = Private::new();
     let socket = home.0.join("status.sock");

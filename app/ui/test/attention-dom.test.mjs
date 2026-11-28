@@ -115,3 +115,24 @@ test('a turn summary follows its turn ending on the status line and in the title
   poll({ agent: 'turn-done', episode: 44, summary: 'x'.repeat(500) }, 5);
   assert.equal(ctx.attention.get(card).summary.length, 200, 'bounded on the page too');
 });
+
+test('a turn an API error ended says its kind after the turn ending, and goes with it', () => {
+  setLocale('en');
+  const card = { id: 'fail', session: 'fail-session', title: 'Failed' };
+  ctx.attention = createAttentionTracker();
+  const poll = (rest, at) => ctx.attention.record([card], [{ name: card.session, alive: true, idle_secs: 1, ...rest }], new Set(), at);
+  poll({ agent: 'turn-done', episode: 51, agent_failure: 'rate_limit' }, 1);
+  const snapshot = ctx.attention.get(card);
+  assert.deepEqual([snapshot.agent, snapshot.status, snapshot.failure], ['turn-done', 'done', 'rate_limit'],
+    'still a turn ending (the card colour is unchanged), with the kind beside it');
+  assert.equal(attentionStatusText(card), `${t('attention.doneUnread')} · ${t('attention.apiError', { kind: 'rate limit' })}`);
+  // the next turn drops it; a kind without an episode or of another shape is never taken
+  poll({ agent: 'working', episode: 52 }, 2);
+  assert.equal(ctx.attention.get(card).failure, null);
+  assert.equal(attentionStatusText(card), t('attention.working'));
+  poll({ agent_failure: 'rate_limit' }, 3);
+  assert.equal(ctx.attention.get(card).failure, null);
+  poll({ agent: 'turn-done', episode: 53, agent_failure: 'API Error: 529 <b>' }, 4);
+  assert.equal(ctx.attention.get(card).failure, null);
+  assert.equal(attentionStatusText(card), t('attention.doneUnread'));
+});

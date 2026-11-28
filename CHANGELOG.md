@@ -40,6 +40,16 @@
 - Codex usage: a rate-limit event that lacks one of its two windows is read
   instead of being reported as unreadable, and one without any window is no
   longer mistaken for a format change.
+- A Claude Code turn that an API error ended (a rate limit, an overload, a
+  sign-in, billing or server error) no longer leaves its card "working":
+  Deck now listens to Claude Code's `StopFailure` hook, which fires instead
+  of `Stop` then. The card reads as a turn ending with "API error: <kind>"
+  beside it, and the Needs attention list and notifications treat it like
+  any other turn ending. A worker card's `agent` in `deck_worker_list` /
+  `deck_worker_wait` gains `failure` (the error's kind). The error text is
+  never read or kept: no turn summary, no reply. Nothing is retried or
+  sent because of it. Existing installs get the new hook at the next
+  launch (boot migration). Codex, agy and Pi report no such kind.
 
 ## 0.8.46 — 2026-11-28 (Nightly)
 

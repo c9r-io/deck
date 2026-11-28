@@ -1212,6 +1212,13 @@ pub(crate) struct SessInfo {
     /// active pane of its current window, `agent_status::signal_targets`),
     /// if that pane's current foreground generation reported one
     agent: Option<&'static str>,
+    /// with `agent` = "turn-done": the turn was one an API error ended
+    /// (Claude Code's StopFailure, `agent_status::TURN_FAILED`), and this
+    /// is the error's closed kind (`agent_status::FAILURE_KINDS`). Gone with
+    /// the episode. Presentation and attention only: nothing reads it to
+    /// hold, release, send, close or retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_failure: Option<&'static str>,
     /// Diagnostic coverage of the SAME Signal target's foreground generation.
     /// None for other programs; unknown never claims a particular cause.
     codex_signal: Option<crate::agent_status::CodexSignalTrust>,
@@ -1729,6 +1736,7 @@ pub(crate) fn poll_observing_bells(
                 cwd: pane.and_then(|pane| usable_cwd(&pane.path).map(str::to_owned)),
                 scrolled: pane.map(|pane| pane.in_mode),
                 agent: pane.and(agents.get(&name)).map(|o| o.state),
+                agent_failure: pane.and(agents.get(&name)).and_then(|o| o.failure),
                 codex_signal: pane.and(evidence.get(&name)).and_then(|e| e.codex),
                 pi_signal: pane.and(evidence.get(&name)).and_then(|e| e.pi_signal),
                 agy: pane.and(evidence.get(&name)).is_some_and(|e| e.agy),
