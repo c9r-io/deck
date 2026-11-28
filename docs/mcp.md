@@ -165,7 +165,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_project_search` | Bounded literal source search with file/depth/result budgets. |
 | `deck_sessions_list` | List only sessions owned by this client, with active-job metadata and staleness. No readiness is inferred from quiet output. |
 | `deck_session_create` | Journal creation of a dedicated visible shell card; poll the returned operation until committed. |
-| `deck_operation_get` | Read Board/control delivery state, not program completion (use `deck_job_read` for exit and output EOF). |
+| `deck_operation_get` | Read Board/control delivery state, not program completion (use `deck_job_read` for exit and output EOF). For a worker start, line or cancel it adds `delivery`, read from Deck's queue by the operation id (never limited to the history `deck_worker_list` shows; `record: retired` once the ledger dropped the operation's own record): `state` `queued` (with `waiting`, `checkedAt`, `quietRemaining`, `gapUntil`, `previousOperationId`), `sending`, `delivered` (handed to the agent's input — not read, done or answered), `canceled`, `uncertain` (the user resolves it), `not-queued-yet`, `not-queued` or `unknown` (never read as canceled or delivered); `cancelable`; `mode` (`start`, `queued`, `interject`). The operation's own `committed` means the line was queued, never delivered. |
 | `deck_session_inspect` | Read generation, control, active job metadata, staleness, runner version, current execution-authorization status, and the independent session output-sharing gate. It never returns terminal screen content. |
 | `deck_session_control` | Request, renew, or release a holder-bound fenced lease. Another flow using the same client cannot replace an active holder. |
 | `deck_exec` | Start any program, including an interpreter or shell, by absolute executable path with an exact argument vector while matching local execution and control grants are valid. |
@@ -198,7 +198,8 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_card_notes` | The caller's own notes in the card the call comes from: `key`, `title`, `acted`, `state` (`open` or `handled`), `updatedAt`. Never the user's notes or another client's. |
 | `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence` (one request at a time) or `lane_epoch` (several at once; see "Several requests at once"). Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over, and for agy never while agy works (`agy-working`). |
 | `deck_worker_interject` | Send one line to a worker card the calling orchestrator card started, without waiting for the card to fall quiet (the same arguments as `deck_worker_send`; see "Interjecting" under Worker cards). `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `INTERJECT_UNSUPPORTED` for an agy worker, `INVALID_ARGUMENTS` for text with a control character other than newline and tab. Every other hold, the minute between two lines, the sequence, rate and unsent bound are `deck_worker_send`'s. Part of **Drive worker cards**. |
-| `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `request_id`, `send_sequence` or `lane_epoch`), bound by `close_mode`: `episode` (default, `after_episode`: `EPISODE_MOVED` once it moved on, its own turn ending included) or `instance` (`instance` and `last_line` from `deck_worker_list`: the agent's own turns do not refuse it; `INSTANCE_CHANGED`, `NEW_INPUT`, `LINES_PENDING`, `INSTANCE_UNKNOWN`, `OBSERVATION_UNKNOWN` do; an instance that ended leaves the card to close). Also `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `CLOSE_IN_PROGRESS` while another close of it is under way; each refusal says `stage: precheck`, `accepted: false` and what Deck `observed`. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above in lower case when the card changed before the close ran, with `result.refusal` (`stage: admission`, `code`, `observed`, `nextAction`). From acceptance until it ends, a line for the card is `WORKER_CLOSING`. Part of **Drive worker cards**; 30 a minute together with lines. |
+| `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `request_id`, `send_sequence` or `lane_epoch`), bound by `close_mode`: `episode` (default, `after_episode`: `EPISODE_MOVED` once it moved on, its own turn ending included), `instance` (`instance` and `last_line` from `deck_worker_list`: the agent's own turns do not refuse it; `INSTANCE_CHANGED` and `NEW_INPUT` do; an instance that ended leaves the card to close) or `gone` (`last_line` only, for a card whose `liveness` is `gone` — its session ended, e.g. across a Deck restart, and `instance` is null: no earlier token needed; `SESSION_PRESENT` the moment the session exists again, never a close of what runs there then). Every mode stands on the same shared checks, at the precheck and again at the admission: `OBSERVATION_UNKNOWN` while a program runs in front and Deck has no Agent observation of it (after a Deck restart with the agent still running — `after_episode: 0` does not pass it; wait for its next observed turn, or leave the card to you), `INSTANCE_CHANGED` when another program or session than the one decided on is in front, `INSTANCE_UNKNOWN`, `LINES_PENDING` while a line of the client's is queued, being sent, uncertain or accepted and not yet queued (cancel a queued one with `deck_worker_cancel`), `LINES_UNKNOWN`. Also `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `CLOSE_IN_PROGRESS` while another close of it is under way; each refusal says `stage: precheck`, `accepted: false` and what Deck `observed`. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above in lower case when the card changed before the close ran, with `result.refusal` (`stage: admission`, `code`, `observed`, `nextAction`). From acceptance until it ends, a line for the card is `WORKER_CLOSING`. There is no force close of an agent Deck cannot observe. Part of **Drive worker cards**; 30 a minute together with lines. |
+| `deck_worker_cancel` | Cancel ONE line of a worker card the client drives that still waits in its queue (`request_id` of the cancel itself, `card_id`, `operation_id` of the line from `deck_worker_send`/`deck_worker_interject` or `sends`). Decided in the queue's own transaction under the lock the send's firing intent takes: `result.outcome` `canceled` (it will never be sent) or `already-canceled` (`committed`), or `rejected` with `ALREADY_DELIVERED` (nothing taken back), `LINE_SENDING` (being typed now), `DELIVERY_UNCERTAIN` (you resolve it; never resent), `LINE_EDITED_BY_USER`, `LINE_NOT_FOUND`; `delivery` says where the line stands. `CANCEL_NOT_SAVED`: nothing changed. A lost answer is repeated with the same `request_id` (the queue answers again). `WORKER_TAKEN_OVER` while you hold the card. Cancels that line only, never the card or its other lines. Part of **Drive worker cards**. |
 
 All input schemas reject unknown fields. Side-effecting tools advertise
 `readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false` and
@@ -548,7 +549,19 @@ must be: its events are refused as `nested-client` and mark nothing.
 After Deck restarts (an update included) a worker reads `alive: true`,
 `agent: unavailable`, episode 0 until its agent's next turn: Deck keeps no
 Agent observation across a restart, and a re-entered agent reports nothing
-while it waits at its prompt. The orchestrator can still send it a line
+while it waits at its prompt. What the card is then is told apart by
+facts, never by a restored old state: `liveness` (`alive`; `gone` = a pane
+listing that succeeded has no such session; `unknown` = the listing failed,
+which proves nothing), `foreground.kind` (`program`, `shell` = the agent is
+not running, `unknown`), `foreground.beforeDeckStarted` (true: the same
+program outlived the restart — tmux and the agent kept running, Deck only
+lost its observation; compare `deckStartedAt`) and `foreground.reentry`
+(Deck re-entered the agent's native session this run: `started`,
+`confirmed`, `unconfirmed`, … — entering a session never means the task
+resumed or that the agent is ready). An ordinary shell restore brings back
+a new shell with the old cwd and output (`foreground.kind: shell`), never
+the agent or its context. `why: no-agent-running` (a shell in front) and
+`why: session-gone` say the agent is not there. The orchestrator can still send it a line
 after episode 0. With **Send a new worker card’s first line without waiting for readiness** on,
 that line is not held waiting for the agent to show interaction (the same
 risk you accepted for a worker's first line); with it off, it waits until
@@ -565,10 +578,15 @@ at Needs attention. Deck leaves the card alone while a pane shows it, while
 you hold it, while its agent asks you something, when it carries a
 Reminder or a kept scratchpad, and — depending on how the orchestrator
 bound its decision — when the card's turn moved on after it looked
-(`close_mode: episode`), or when another agent program, another session, a
-new line or undelivered lines appeared since (`close_mode: instance`, for
-"I am done with this agent", so the worker's own turn ending after its
-report no longer refuses the close). Once Deck accepted a close, the card
+(`close_mode: episode`), or when a new line appeared since (`close_mode:
+instance`, for "I am done with this agent", so the worker's own turn ending
+after its report no longer refuses the close). Whatever the mode, Deck also
+leaves it alone while another agent program or session than the one the
+orchestrator saw is in front, while an agent runs that Deck cannot observe
+(after a Deck restart, until its next turn), and while a line of the
+orchestrator's is still waiting, being sent or of uncertain delivery. A
+card whose session is gone (after a restart, say) is cleared with
+`close_mode: gone`, which never closes a session that came back. Once Deck accepted a close, the card
 takes no new line until that close ends; the moment Deck admits it (inside
 your Board's own close) is where the decision becomes final. The card's screen goes with it; its reports stay
 readable. In Needs attention a worker card's row says who drives it, and
@@ -591,7 +609,27 @@ worker cards per orchestrator card may be on the Board and four times as many pe
 `deck_worker_wait` follows up to the client's number, and a client sends as many lines and closes a
 minute (never fewer than 60). Above 16 the setting shows an estimate of the memory that many agents
 take against this Mac's. Lowering it closes nothing: further starts wait until fewer are open.
-4 unsent lines per card.
+At most 4 lines of a client per card may be in the queue at once — queued, being sent or of
+uncertain delivery (an uncertain one keeps its place until you resolve it); the bound is decided in
+the queue's own transaction, so lines sent at once never overshoot it.
+
+**Queued lines are tracked and canceled exactly.** A line is the queue's row: every line still
+waiting is listed in `sends` and counted in `activeLines` however many lines settled after it, and
+`deck_operation_get` answers one line's `delivery` by its id. A line never expires — its
+`after_episode` is checked once, when it is queued — and an interjected line is a separate line that
+replaces nothing. To redirect a worker whose line still waits: read the line
+(`deck_operation_get`), cancel it (`deck_worker_cancel`), and only once that answers `canceled`
+send the new line with a new `request_id`, then follow that line's `delivery`. A line already
+`delivered` or `uncertain` is never sent again by the orchestrator. Texts are never compared: two
+lines with the same text are two lines.
+
+**Report receipt.** Each card's `reports.receiptState` says where the receipt of its newest report
+stands: `none`, `unowned` (no orchestrator card owns it), `unknown` (Deck never tracked receipt —
+reports from before acknowledgments; not received), `pending` (tracked, not yet acknowledged) or
+`acknowledged` (its orchestrator acknowledged that report — received, never reviewed or handled).
+It is derived from `latest` and `acknowledged` every time; `awaitingAck` stays for older clients
+and is true only for a known pending report. Acknowledging one sequence says nothing of the reports
+before it; reading never acknowledges.
 
 Claude Code and Codex (`codex --no-daemon` only; its shared-daemon Signal
 cannot be trusted, so a daemon Codex's lines would hold) can be workers; a

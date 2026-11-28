@@ -86,7 +86,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
@@ -738,7 +738,7 @@ pub(crate) fn queue_add(
     args: QueueAddArgs,
 ) -> Result<(), DeckError> {
     let wake = args.wake;
-    queue_add_core(state, app, args, None, false)?;
+    queue_add_core(state, app, args, None, false, None)?;
     if wake {
         wake_scheduler();
     }
@@ -751,6 +751,7 @@ fn queue_add_core(
     mut args: QueueAddArgs,
     operation_fingerprint_override: Option<String>,
     force_ambiguous: bool,
+    bound: Option<(&str, ActiveBound<'_>)>,
 ) -> Result<(), DeckError> {
     if !args.channel_path {
         admit_first_send(&mut args);
@@ -763,6 +764,17 @@ fn queue_add_core(
     // never let the scheduler act on an item the disk doesn't know about
     let creation = context::creation_context(&args.session, &args.cmd);
     with_queue(&state.q, &save_queue, |q| {
+        // a worker line's bound, in the transaction that adds it (a replay
+        // of a line already queued is not a new line)
+        if let Some((client, bound)) = &bound {
+            check_bound(
+                q,
+                &args.card_id,
+                args.operation_id.as_deref(),
+                client,
+                bound,
+            )?;
+        }
         add_item_bound(
             q,
             args,
@@ -808,7 +820,14 @@ pub(crate) fn channel_queue_add(
             channel_first_send::admit(&args, crate::datadir::now_epoch())?;
         let recovery_before = state.q.lock_or_recover().channel_recovery_before;
         let rollback_uncertain = channel_first_send::rollback_uncertain(&args, recovery_before)?;
-        queue_add_core(state, app, args, request_fingerprint, rollback_uncertain)
+        queue_add_core(
+            state,
+            app,
+            args,
+            request_fingerprint,
+            rollback_uncertain,
+            None,
+        )
     })();
     if let Err(error) = &result {
         applog(&format!("[queue] external add failed ({})", error.code()));
@@ -865,6 +884,7 @@ pub(crate) fn worker_queue_add(
     send: WorkerSend<'_>,
     head: bool,
     first_send: bool,
+    bound: Option<ActiveBound<'_>>,
 ) -> Result<(), DeckError> {
     if head && send.interject.is_some() {
         return Err(DeckError::new(
@@ -933,7 +953,8 @@ pub(crate) fn worker_queue_add(
             client: send.client.into(),
         }),
     })];
-    let result = queue_add_core(state, app, args, None, false);
+    let client = send.client;
+    let result = queue_add_core(state, app, args, None, false, bound.map(|b| (client, b)));
     match &result {
         Ok(()) => wake_scheduler(),
         Err(error) => {
@@ -957,56 +978,412 @@ pub(super) fn worker_override_rule(automation: &str) -> String {
     }
 }
 
-/// One of a worker card's lines as its orchestrator reads it: its
-/// operation id, the queue's operation state, and — while it is still
-/// queued and its row is there — the plan stage it waits at.
-pub(crate) type WorkerLine = (String, &'static str, Option<&'static str>);
+/// Whether queue row `i` is one of `client`'s worker lines on `card`: its
+/// content authority is still that client's delegation, or its operation is
+/// one `known` (the worker's start, its accepted lines, its ledger records).
+/// The queue's own row is the authority, never a bounded history: a line
+/// stays its client's while it waits, however many lines came after it.
+fn worker_owns(i: &QueueItem, card: &str, client: &str, known: &[String]) -> bool {
+    i.card_id == card
+        && i.operation_id.is_some()
+        && (i
+            .authority
+            .as_ref()
+            .and_then(|a| a.delegation.as_ref())
+            .is_some_and(|d| d.client == client)
+            || i.operation_id.as_ref().is_some_and(|id| known.contains(id)))
+}
 
-/// What a worker card's orchestrator may read about its own lines: for
-/// each operation id, the queue's operation state (`queued`, `delivered`,
-/// `canceled`, `uncertain`), and how many of its rows on the card are still
-/// unsent. With an observation (`activity`), a queued line also says the
-/// stage its row waits at (`review::plan_item`, the ⏱ panel's own words:
-/// `human`, `agent`, `gap`, `quiet`, `previous`, `pi-handover`, `context`
-/// when nothing but the next pass holds it, …). Ids and closed words only,
-/// never text.
-pub(crate) fn worker_rows(
+/// The closed word for where one worker line stands, from the queue's
+/// operation state and its row: `queued` (pending or failed, not sent),
+/// `sending` (its firing intent is on disk: the paste may be in flight),
+/// `uncertain` (Deck cannot tell whether it went: the user decides),
+/// `delivered`, `canceled`, or `unknown` (a queued operation whose row is
+/// gone: nothing is guessed).
+fn line_state(op: &QueueOperation, row: Option<&QueueItem>) -> &'static str {
+    match (op.state, row.map(|i| i.state)) {
+        (OperationState::Delivered, _) => "delivered",
+        (OperationState::Canceled, _) => "canceled",
+        (OperationState::Uncertain, _) => "uncertain",
+        (OperationState::Queued, Some(ItemState::Firing)) => "sending",
+        (OperationState::Queued, Some(ItemState::Ambiguous)) => "uncertain",
+        (OperationState::Queued, Some(_)) => "queued",
+        (OperationState::Queued, None) => "unknown",
+    }
+}
+
+/// Where a queued worker line waits, from the ⏱ panel's own plan
+/// (`review::plan_item`, which reads the scheduler's own holds:
+/// `hold_reason`, the session gap, the list order, the retry backoff):
+/// the stage, when it was computed, the quiet time and session gap left,
+/// and the operation of the row ahead of it when that row is one of the
+/// same client's lines (`previous`; another row's identity is never
+/// named). A snapshot of one pane listing, never a promise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LinePlan {
+    pub(crate) stage: &'static str,
+    pub(crate) checked_at: u64,
+    pub(crate) quiet_remaining: Option<u64>,
+    pub(crate) gap_until: Option<u64>,
+    pub(crate) previous: Option<String>,
+}
+
+/// One of a worker card's lines as its orchestrator reads it: ids and
+/// closed words only, never text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkerLine {
+    pub(crate) id: String,
+    /// `line_state`
+    pub(crate) state: &'static str,
+    /// `queued` only, with an observation
+    pub(crate) plan: Option<LinePlan>,
+    /// The line could be canceled now (`worker_cancel`): queued, its row
+    /// pending or failed, its authority still the client's delegation (the
+    /// user did not edit it). A snapshot: the cancel decides again.
+    pub(crate) cancelable: bool,
+}
+
+/// A worker card's lines from one client: how many are still to be sent
+/// (`queued`: pending or failed), being sent (`sending`) or of uncertain
+/// delivery (`uncertain`), counted over the queue's own rows; and the lines
+/// to show — every line that still needs handling, then the newest
+/// settled ones of `recent` (the bounded history), oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WorkerLines {
+    pub(crate) queued: usize,
+    pub(crate) sending: usize,
+    pub(crate) uncertain: usize,
+    pub(crate) lines: Vec<WorkerLine>,
+}
+
+impl WorkerLines {
+    /// Every line still in the queue: what a close refuses over and what
+    /// the per-card bound counts (`MAX_ACTIVE` in `mcp/workers.rs`).
+    pub(crate) fn active(&self) -> usize {
+        self.queued + self.sending + self.uncertain
+    }
+}
+
+/// The plan of row `i` as a worker line's `LinePlan`.
+fn line_plan(
+    q: &QueueState,
+    i: &QueueItem,
+    (now, minutes, activity): (u64, u32, &Observations),
+    card: &str,
+    client: &str,
+    known: &[String],
+) -> LinePlan {
+    let plan = plan_item(q, i, now, minutes, Some(activity));
+    let previous = (plan.stage == "previous")
+        .then(|| {
+            q.items
+                .iter()
+                .filter(|x| {
+                    x.session == i.session
+                        && x.group == i.group
+                        && x.id != i.id
+                        && x.mode != "every"
+                        && x.state != ItemState::ReviewApproved
+                        && (x.seq, x.added) < (i.seq, i.added)
+                })
+                .max_by_key(|x| (x.seq, x.added))
+                .filter(|x| worker_owns(x, card, client, known))
+                .and_then(|x| x.operation_id.clone())
+        })
+        .flatten();
+    LinePlan {
+        stage: plan.stage,
+        checked_at: plan.checked_at,
+        quiet_remaining: plan.quiet_remaining,
+        gap_until: plan.gap_until,
+        previous,
+    }
+}
+
+fn worker_line(
+    q: &QueueState,
+    op: &QueueOperation,
+    when: Option<(u64, u32, &Observations)>,
+    card: &str,
+    client: &str,
+    known: &[String],
+) -> WorkerLine {
+    let row = q.items.iter().find(|i| i.id == op.item);
+    let state = line_state(op, row);
+    let plan = match (state, row, when) {
+        ("queued", Some(i), Some(when)) => Some(line_plan(q, i, when, card, client, known)),
+        _ => None,
+    };
+    let cancelable = state == "queued"
+        && row.is_some_and(|i| {
+            matches!(i.state, ItemState::Pending | ItemState::Failed)
+                && i.authority
+                    .as_ref()
+                    .and_then(|a| a.delegation.as_ref())
+                    .is_some_and(|d| d.client == client)
+        });
+    WorkerLine {
+        id: op.id.clone(),
+        state,
+        plan,
+        cancelable,
+    }
+}
+
+/// What a worker card's orchestrator may read about its own lines
+/// (`WorkerLines`). `known` are the worker's operations Deck still records
+/// (its start, its accepted lines, its ledger records); `recent` the
+/// bounded history to show; the queue's own rows add every line still
+/// waiting, so a line never drops out of the count or the view because
+/// newer ones were sent. With an observation (`activity`), a queued line
+/// also says where it waits (`LinePlan`).
+pub(crate) fn worker_lines(
     queue: &Mutex<QueueState>,
     card: &str,
     client: &str,
-    operations: &[String],
+    known: &[String],
+    recent: &[String],
     activity: Option<&Observations>,
-) -> (usize, Vec<WorkerLine>) {
+) -> WorkerLines {
     let q = queue.lock_or_recover();
-    let unsent = q
+    let mut out = WorkerLines::default();
+    let mut active: Vec<&str> = Vec::new();
+    for i in q
         .items
         .iter()
-        .filter(|i| {
-            i.card_id == card
-                && matches!(i.state, ItemState::Pending | ItemState::Failed)
-                && i.operation_id
-                    .as_ref()
-                    .is_some_and(|id| operations.contains(id))
-                && i.authority
-                    .as_ref()
-                    .is_none_or(|a| a.delegation.as_ref().is_some_and(|d| d.client == client))
-        })
-        .count();
-    let (now, minutes) = (now_epoch(), local_minutes());
-    let states = operations
+        .filter(|i| worker_owns(i, card, client, known))
+    {
+        match i.state {
+            ItemState::Pending | ItemState::Failed => out.queued += 1,
+            ItemState::Firing => out.sending += 1,
+            ItemState::Ambiguous => out.uncertain += 1,
+            // a worker line is never a checkpoint; counted as waiting
+            ItemState::Review | ItemState::ReviewApproved => out.queued += 1,
+        }
+        if let Some(id) = i.operation_id.as_deref() {
+            active.push(id);
+        }
+    }
+    let when = activity.map(|a| (now_epoch(), local_minutes(), a));
+    let mut seen: HashSet<&str> = HashSet::new();
+    // the history first (its order is the client's), then any active line
+    // it no longer reaches
+    let ids = recent
         .iter()
-        .filter_map(|id| {
-            let op = q.operations.iter().find(|op| &op.id == id)?;
-            let waiting = activity
-                .filter(|_| op.state == OperationState::Queued)
-                .and_then(|activity| {
-                    let row = q.items.iter().find(|i| i.id == op.item)?;
-                    Some(plan_stage(&q, row, now, minutes, activity))
-                });
-            Some((id.clone(), op.state.as_str(), waiting))
-        })
-        .collect();
-    (unsent, states)
+        .map(String::as_str)
+        .chain(active.iter().copied());
+    for id in ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(op) = q
+            .operations
+            .iter()
+            .find(|op| op.id == id && op.card_id == card)
+        else {
+            continue;
+        };
+        out.lines
+            .push(worker_line(&q, op, when, card, client, known));
+    }
+    out
+}
+
+/// One worker line by its operation id, wherever it is in the queue's
+/// operation ledger (`MAX_QUEUE_OPERATIONS`, far past any view's history):
+/// `None` when the queue holds no operation of that id on `card` (never
+/// queued, or retired: unknown, never "canceled" or "delivered").
+pub(crate) fn worker_line_of(
+    queue: &Mutex<QueueState>,
+    card: &str,
+    client: &str,
+    known: &[String],
+    id: &str,
+    activity: Option<&Observations>,
+) -> Option<WorkerLine> {
+    let q = queue.lock_or_recover();
+    let op = q
+        .operations
+        .iter()
+        .find(|op| op.id == id && op.card_id == card)?;
+    let when = activity.map(|a| (now_epoch(), local_minutes(), a));
+    Some(worker_line(&q, op, when, card, client, known))
+}
+
+/// The card a queue operation is about, when the queue still holds it.
+pub(crate) fn operation_card(queue: &Mutex<QueueState>, id: &str) -> Option<String> {
+    let q = queue.lock_or_recover();
+    q.operations
+        .iter()
+        .find(|op| op.id == id)
+        .map(|op| op.card_id.clone())
+}
+
+/// What canceling one worker line came to (`worker_cancel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CancelOutcome {
+    /// This call canceled it: its row is gone and its operation reads
+    /// `canceled`, both on disk before this returned.
+    Canceled,
+    /// It was canceled before (by an earlier request, the user, or the
+    /// card's close).
+    AlreadyCanceled,
+    /// It was sent: nothing is taken back.
+    Delivered,
+    /// Its firing intent is on disk: the paste may be in flight.
+    Sending,
+    /// Deck cannot tell whether it went; the user decides (⏱ panel).
+    Uncertain,
+    /// The user edited it (its authority is no longer the client's): the
+    /// row is theirs now.
+    UserEdited,
+    /// The queue holds no such line on that card (never queued, or
+    /// retired): unknown.
+    NotFound,
+}
+
+impl CancelOutcome {
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            CancelOutcome::Canceled => "canceled",
+            CancelOutcome::AlreadyCanceled => "already-canceled",
+            CancelOutcome::Delivered => "already-delivered",
+            CancelOutcome::Sending => "sending",
+            CancelOutcome::Uncertain => "uncertain",
+            CancelOutcome::UserEdited => "user-edited",
+            CancelOutcome::NotFound => "not-found",
+        }
+    }
+}
+
+/// The decision of one cancel over the queue as it is (pure core): what it
+/// would come to, and the row to remove when it cancels.
+fn cancel_decision(
+    q: &QueueState,
+    card: &str,
+    client: &str,
+    id: &str,
+) -> (CancelOutcome, Option<String>) {
+    let Some(op) = q
+        .operations
+        .iter()
+        .find(|op| op.id == id && op.card_id == card)
+    else {
+        return (CancelOutcome::NotFound, None);
+    };
+    let row = q.items.iter().find(|i| i.id == op.item);
+    match line_state(op, row) {
+        "delivered" => (CancelOutcome::Delivered, None),
+        "canceled" => (CancelOutcome::AlreadyCanceled, None),
+        "uncertain" => (CancelOutcome::Uncertain, None),
+        "sending" => (CancelOutcome::Sending, None),
+        "queued" => match row {
+            Some(i)
+                if matches!(i.state, ItemState::Pending | ItemState::Failed)
+                    && i.authority
+                        .as_ref()
+                        .and_then(|a| a.delegation.as_ref())
+                        .is_some_and(|d| d.client == client) =>
+            {
+                (CancelOutcome::Canceled, Some(i.id.clone()))
+            }
+            Some(i) if matches!(i.state, ItemState::Pending | ItemState::Failed) => {
+                (CancelOutcome::UserEdited, None)
+            }
+            // a checkpoint state a worker line never takes: refused
+            _ => (CancelOutcome::Sending, None),
+        },
+        _ => (CancelOutcome::NotFound, None),
+    }
+}
+
+/// Cancel one of `client`'s worker lines on `card` by its operation id, in
+/// ONE queue transaction (`with_queue_opt`): decided under the queue lock
+/// the firing intent also takes, so a line is either canceled before its
+/// firing intent (and never starts) or found sending (and left alone). The
+/// row is removed and its operation marked `canceled` on disk before this
+/// returns; a failed save changes nothing and is an error. Every other
+/// outcome changes nothing. Idempotent: a repeat answers
+/// `AlreadyCanceled`.
+pub(crate) fn worker_cancel(
+    state: &Queues,
+    app: Option<&AppHandle>,
+    card: &str,
+    client: &str,
+    id: &str,
+) -> Result<CancelOutcome, DeckError> {
+    worker_cancel_with(&state.q, &save_queue, card, client, id).inspect(|outcome| {
+        if *outcome == CancelOutcome::Canceled {
+            applog("[queue] worker line canceled by its client");
+            if let Some(app) = app {
+                let _ = app.emit("queue-changed", ());
+            }
+        }
+    })
+}
+
+/// `worker_cancel` over any persister (tests inject a failing one).
+pub(crate) fn worker_cancel_with(
+    queue: &Mutex<QueueState>,
+    persist: &dyn Fn(&QueueState) -> Result<(), DeckError>,
+    card: &str,
+    client: &str,
+    id: &str,
+) -> Result<CancelOutcome, DeckError> {
+    let mut decided = CancelOutcome::NotFound;
+    let changed = with_queue_opt(queue, persist, |q| {
+        let (outcome, row) = cancel_decision(q, card, client, id);
+        decided = outcome;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        remove_item(q, &row)?;
+        Ok(Some(()))
+    })?;
+    Ok(if changed.is_some() {
+        CancelOutcome::Canceled
+    } else {
+        decided
+    })
+}
+
+/// The bound a worker line is admitted under (`worker_queue_add`): at most
+/// `max` of `client`'s lines on `card` still in the queue (queued, sending
+/// or uncertain), checked inside the queue transaction that adds the row,
+/// so two lines accepted at once can never both pass a bound one of them
+/// fills.
+pub(crate) struct ActiveBound<'a> {
+    pub(crate) known: &'a [String],
+    pub(crate) max: usize,
+}
+
+/// The refusal of a line past its `ActiveBound`.
+pub(crate) const ACTIVE_BOUND_MESSAGE: &str = "worker card holds its most unsettled lines";
+
+/// The bound's check, inside the queue transaction that would add line
+/// `operation` (pure core): a replay of a line already queued is not a new
+/// line; otherwise at most `bound.max` of the client's lines on the card
+/// may be in the queue (`RequestConflict` past it).
+pub(crate) fn check_bound(
+    q: &QueueState,
+    card: &str,
+    operation: Option<&str>,
+    client: &str,
+    bound: &ActiveBound<'_>,
+) -> Result<(), DeckError> {
+    let replay = operation.is_some_and(|id| q.operations.iter().any(|op| op.id == id));
+    let active = q
+        .items
+        .iter()
+        .filter(|i| worker_owns(i, card, client, bound.known))
+        .count();
+    if !replay && active >= bound.max {
+        return Err(DeckError::new(
+            ErrorKind::RequestConflict,
+            ACTIVE_BOUND_MESSAGE,
+        ));
+    }
+    Ok(())
 }
 
 /// How many rows each card still has to send (pending or failed), by card

@@ -1094,6 +1094,23 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "worker-recovery": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "recovery-armed": {},
+        "recovery-card": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
+    "worker-recovery-relaunch": {
+      "terminal": "done",
+      "checks": {
+        "recovery-restored": {},
+        "recovery-cleared": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "worktree-switch": {
       "terminal": "done",
       "checks": {

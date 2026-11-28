@@ -465,10 +465,10 @@ pub(crate) fn queue_review_mode(
 #[derive(Serialize)]
 pub(crate) struct QueuePlan {
     item: String,
-    stage: &'static str,
-    checked_at: u64,
-    quiet_remaining: Option<u64>,
-    gap_until: Option<u64>,
+    pub(super) stage: &'static str,
+    pub(super) checked_at: u64,
+    pub(super) quiet_remaining: Option<u64>,
+    pub(super) gap_until: Option<u64>,
     /// the row carries content authority (`authority.rs`): its holds are
     /// readiness, not a missing approval
     authorized: bool,
@@ -563,8 +563,8 @@ pub(crate) fn plan_item(
     }
 }
 
-/// The stage `plan_item` gives row `i` under one observation: what an MCP
-/// client reads for its own worker lines (`ops::worker_rows`).
+/// The stage `plan_item` gives row `i` under one observation (tests).
+#[cfg(test)]
 pub(crate) fn plan_stage(
     q: &QueueState,
     i: &QueueItem,

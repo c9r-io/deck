@@ -4,6 +4,7 @@
 use super::*;
 use crate::context::ProbeResult;
 use crate::error::DeckError;
+use crate::sync::LockRecover;
 
 fn qi(id: &str, mode: &str) -> QueueItem {
     QueueItem {
@@ -11666,4 +11667,266 @@ fn an_agy_line_waits_while_agy_works_and_after_a_lost_word() {
     AGY_WORKING_FOR_TESTS.with(|cell| cell.set(None));
     PANE_ASKS_FOR_TESTS.with(|cell| cell.set(None));
     first_send::DELEGATIONS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+}
+
+/* ---------- a worker card's lines: active set, exact cancel, bound ---------- */
+
+/// A worker line row `id` with queue operation `op` on card `card-s`.
+fn worker_op_row(q: &mut QueueState, id: &str, op: &str, seq: u32, state: OperationState) {
+    let mut row = worker_line(id, seq, NOW - 600 + u64::from(seq), None);
+    row.operation_id = Some(op.into());
+    if state == OperationState::Queued {
+        q.items.push(row);
+    }
+    q.operations.push(QueueOperation {
+        id: op.into(),
+        item: id.into(),
+        session: "s".into(),
+        card_id: "card-s".into(),
+        fingerprint: "f".into(),
+        state,
+    });
+}
+
+/// Feedback 2026-11-28: a line waiting for its quiet time fell out of the
+/// orchestrator's view and its unsent count once more than eight later
+/// lines settled, because both read the newest eight operations of the
+/// ledger. The queue's own row now decides: line A stays listed, counted,
+/// queryable by id and cancelable however long the settled history grows.
+#[test]
+fn a_waiting_line_stays_visible_and_counted_past_the_history() {
+    let mut q = qs(vec![]);
+    worker_op_row(&mut q, "a", "op_a", 1, OperationState::Queued);
+    let mut recent = Vec::new();
+    for n in 0..10 {
+        let op = format!("op_i{n}");
+        worker_op_row(
+            &mut q,
+            &format!("i{n}"),
+            &op,
+            2 + n,
+            OperationState::Delivered,
+        );
+        recent.push(op);
+    }
+    // the view's history: the newest eight, which no longer reach A
+    let recent: Vec<String> = recent[2..].to_vec();
+    let queue = Mutex::new(q);
+    let busy = seen_agent(NOW, crate::agent_status::WORKING);
+    let lines = worker_lines(&queue, "card-s", "client_a", &[], &recent, Some(&busy));
+    assert_eq!((lines.queued, lines.sending, lines.uncertain), (1, 0, 0));
+    assert_eq!(lines.active(), 1);
+    let a = lines
+        .lines
+        .iter()
+        .find(|l| l.id == "op_a")
+        .expect("A listed");
+    assert_eq!(a.state, "queued");
+    assert!(a.cancelable);
+    let plan = a.plan.as_ref().expect("a queued line says where it waits");
+    assert!(plan.checked_at > 0);
+    // the eight settled ones are still the history, A beside them
+    assert_eq!(lines.lines.len(), 9);
+    // the exact query answers A by id, whatever the history
+    let one = worker_line_of(&queue, "card-s", "client_a", &[], "op_a", None).unwrap();
+    assert_eq!(one.state, "queued");
+    // another client's view of the same card counts none of it
+    let other = worker_lines(&queue, "card-s", "client_b", &[], &[], None);
+    assert_eq!(other.active(), 0);
+}
+
+/// Sending and uncertain lines are told apart from queued ones and count
+/// toward the bound; none of them is "certainly unsent".
+#[test]
+fn sending_and_uncertain_lines_are_counted_apart() {
+    let mut q = qs(vec![]);
+    worker_op_row(&mut q, "a", "op_a", 1, OperationState::Queued);
+    worker_op_row(&mut q, "b", "op_b", 2, OperationState::Queued);
+    worker_op_row(&mut q, "c", "op_c", 3, OperationState::Queued);
+    q.items[1].state = ItemState::Firing;
+    q.items[2].state = ItemState::Ambiguous;
+    let queue = Mutex::new(q);
+    let lines = worker_lines(&queue, "card-s", "client_a", &[], &[], None);
+    assert_eq!((lines.queued, lines.sending, lines.uncertain), (1, 1, 1));
+    let state = |id: &str| lines.lines.iter().find(|l| l.id == id).unwrap().state;
+    assert_eq!(
+        (state("op_a"), state("op_b"), state("op_c")),
+        ("queued", "sending", "uncertain")
+    );
+    assert!(
+        !lines
+            .lines
+            .iter()
+            .find(|l| l.id == "op_b")
+            .unwrap()
+            .cancelable
+    );
+}
+
+/// The cancel's outcomes, one per state, and that a canceled line never
+/// becomes a candidate again.
+#[test]
+fn a_worker_line_is_canceled_exactly_and_only_while_it_waits() {
+    let mut q = qs(vec![]);
+    worker_op_row(&mut q, "a", "op_a", 1, OperationState::Queued);
+    worker_op_row(&mut q, "b", "op_b", 2, OperationState::Queued);
+    worker_op_row(&mut q, "c", "op_c", 3, OperationState::Queued);
+    worker_op_row(&mut q, "d", "op_d", 4, OperationState::Queued);
+    worker_op_row(&mut q, "e", "op_e", 5, OperationState::Delivered);
+    q.items[1].state = ItemState::Firing;
+    q.items[2].state = ItemState::Ambiguous;
+    // the user edited d: its authority went with the edit
+    q.items[3].authority = None;
+    let queue = Mutex::new(q);
+    let ok = |_: &QueueState| Ok(());
+    let cancel = |id: &str| worker_cancel_with(&queue, &ok, "card-s", "client_a", id).unwrap();
+    assert_eq!(cancel("op_a"), CancelOutcome::Canceled);
+    {
+        let q = queue.lock_or_recover();
+        assert!(!q.items.iter().any(|i| i.id == "a"), "the row is gone");
+        let op = q.operations.iter().find(|o| o.id == "op_a").unwrap();
+        assert_eq!(op.state, OperationState::Canceled);
+        // nothing of it is ever selected again
+        let quiet = Observations::new();
+        assert!(select_due(&q, NOW + 10_000, 720, &quiet)
+            .iter()
+            .all(|i| i.id != "a"));
+    }
+    assert_eq!(cancel("op_a"), CancelOutcome::AlreadyCanceled, "idempotent");
+    assert_eq!(cancel("op_b"), CancelOutcome::Sending);
+    assert_eq!(cancel("op_c"), CancelOutcome::Uncertain);
+    assert_eq!(cancel("op_d"), CancelOutcome::UserEdited);
+    assert_eq!(cancel("op_e"), CancelOutcome::Delivered);
+    assert_eq!(cancel("op_zz"), CancelOutcome::NotFound);
+    // another client never cancels this client's line
+    let mut q = qs(vec![]);
+    worker_op_row(&mut q, "a", "op_a", 1, OperationState::Queued);
+    let queue = Mutex::new(q);
+    assert_eq!(
+        worker_cancel_with(&queue, &ok, "card-s", "client_b", "op_a").unwrap(),
+        CancelOutcome::UserEdited
+    );
+    assert!(queue.lock_or_recover().items.iter().any(|i| i.id == "a"));
+    // nor on another card
+    assert_eq!(
+        worker_cancel_with(&queue, &ok, "card-x", "client_a", "op_a").unwrap(),
+        CancelOutcome::NotFound
+    );
+    // the uncertain line stayed uncertain, never turned canceled
+    let q = queue.lock_or_recover();
+    assert!(q
+        .operations
+        .iter()
+        .all(|o| o.state != OperationState::Canceled));
+}
+
+/// A cancel whose save fails changes nothing and is an error: the line is
+/// still queued, in memory and as the next save would write it.
+#[test]
+fn a_cancel_that_cannot_be_saved_leaves_the_line_queued() {
+    let mut q = qs(vec![]);
+    worker_op_row(&mut q, "a", "op_a", 1, OperationState::Queued);
+    let queue = Mutex::new(q);
+    let failing = |_: &QueueState| Err(DeckError::new(crate::error::ErrorKind::DiskFull, "full"));
+    assert!(worker_cancel_with(&queue, &failing, "card-s", "client_a", "op_a").is_err());
+    let q = queue.lock_or_recover();
+    assert!(q.items.iter().any(|i| i.id == "a"));
+    assert_eq!(q.operations[0].state, OperationState::Queued);
+}
+
+/// The cancel and the firing intent take the same queue lock: whichever
+/// comes first decides. Run both orders over a barrier many times: a line
+/// is either canceled and never marked firing, or firing and refused as
+/// sending — never canceled and then sent.
+#[test]
+fn a_cancel_and_the_firing_intent_never_both_win() {
+    for round in 0..50 {
+        let mut q = qs(vec![]);
+        worker_op_row(&mut q, "a", "op_a", 1, OperationState::Queued);
+        let queue = std::sync::Arc::new(Mutex::new(q));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let fire = {
+            let (queue, barrier) = (queue.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                // the firing intent's own transaction shape (`delivery.rs`):
+                // find the row under the lock, else send nothing
+                with_queue_opt(&queue, &|_| Ok(()), |q| {
+                    let Some(it) = q.items.iter_mut().find(|i| i.id == "a") else {
+                        return Ok(None);
+                    };
+                    it.state = ItemState::Firing;
+                    Ok(Some(()))
+                })
+                .unwrap()
+                .is_some()
+            })
+        };
+        barrier.wait();
+        let outcome =
+            worker_cancel_with(&queue, &|_| Ok(()), "card-s", "client_a", "op_a").unwrap();
+        let fired = fire.join().unwrap();
+        match outcome {
+            CancelOutcome::Canceled => assert!(!fired, "round {round}: canceled, then fired"),
+            CancelOutcome::Sending => assert!(fired, "round {round}"),
+            other => panic!("round {round}: {other:?}"),
+        }
+    }
+}
+
+/// The per-card bound is decided inside the transaction that adds the
+/// line: two lines admitted at once over a barrier never both pass a
+/// bound one of them fills, and a replay of a queued line is not counted
+/// as a new one.
+#[test]
+fn the_worker_line_bound_holds_under_concurrent_admission() {
+    for _ in 0..30 {
+        let mut q = qs(vec![]);
+        worker_op_row(&mut q, "a", "op_a", 1, OperationState::Queued);
+        worker_op_row(&mut q, "b", "op_b", 2, OperationState::Queued);
+        worker_op_row(&mut q, "c", "op_c", 3, OperationState::Queued);
+        let queue = std::sync::Arc::new(Mutex::new(q));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let add = |n: u32| {
+            let (queue, barrier) = (queue.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                with_queue(&queue, &|_| Ok(()), |q| {
+                    let op = format!("op_new{n}");
+                    check_bound(
+                        q,
+                        "card-s",
+                        Some(&op),
+                        "client_a",
+                        &ActiveBound { known: &[], max: 4 },
+                    )?;
+                    worker_op_row(q, &format!("new{n}"), &op, 10 + n, OperationState::Queued);
+                    Ok(())
+                })
+                .is_ok()
+            })
+        };
+        let (one, two) = (add(1), add(2));
+        let admitted = [one.join().unwrap(), two.join().unwrap()];
+        assert_eq!(admitted.iter().filter(|ok| **ok).count(), 1, "{admitted:?}");
+        let q = queue.lock_or_recover();
+        assert_eq!(q.items.len(), 4);
+        // a replay of a queued line is no new line
+        assert!(check_bound(
+            &q,
+            "card-s",
+            Some("op_a"),
+            "client_a",
+            &ActiveBound { known: &[], max: 4 }
+        )
+        .is_ok());
+        assert!(check_bound(
+            &q,
+            "card-s",
+            Some("op_x"),
+            "client_a",
+            &ActiveBound { known: &[], max: 4 }
+        )
+        .is_err());
+    }
 }

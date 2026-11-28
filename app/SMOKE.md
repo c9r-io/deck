@@ -556,6 +556,37 @@ longer) and `close-closed`, closes "Orch C" and reports `done` b=6. Judge
 with `scripts/smoke-verdict <data> worker-close` and the client's PASS
 line.
 
+## Queued lines, a Deck restart and a gone session (WKWebView modes `worker-recovery`, `worker-recovery-relaunch`)
+
+Close and queue reliability of 2026-11-28, end to end in the real window with
+a real Claude Code worker (runner:
+`docs/evidence/worker-recovery-20261128/run_e2e.py --mode worker-recovery`).
+Fixture: Deck's Claude Code hooks to this carrier and `work/phase1.py`, a
+~9.5 minute foreground program (the only command allowed). Phase 1: the page
+turns MCP on, authorizes one client with one Claude worker type, replies and
+the first-send choice, opens ONE plain-shell card "Orch R"
+(`recovery-armed`), sees the worker card (`recovery-card`) and reports
+`done` b=3 at once. The runner types `scripts/mcp-recovery-e2e.py --phase 1`
+into "Orch R": the worker runs the program; line A is queued and waits for
+quiet time; nine lines are interjected, each followed until it is
+`delivered`, and after each A is still listed, counted (`activeLines`) and
+`queued` by its own `deck_operation_get` delivery; A is canceled
+(`deck_worker_cancel`, its replay the same answer, the same request id for
+another line `REQUEST_ID_CONFLICT`); B is interjected with a new request id
+and delivered once; after the worker's turn A is still `canceled`. Once the
+client's evidence is complete the runner stops the carrier (the tmux server
+and the agents go on) and relaunches it on the same data in
+`worker-recovery-relaunch`: the page sees both cards alive
+(`recovery-restored`), the runner types `--phase 2`: the worker reads alive,
+`unavailable` / `no-turn-seen`, `foreground.beforeDeckStarted: true`; a close
+by episode 0 and by its instance are `OBSERVATION_UNKNOWN`, by `gone`
+`SESSION_PRESENT`, none suggesting a weaker mode; the client ends the
+worker's tmux session, sees `liveness: gone` with `instance: null`, and
+`close_mode: gone` with its `lastLine` commits; the page sees the card leave
+(`recovery-cleared`) and reports `done` b=4. Judge each phase with
+`scripts/smoke-verdict` (the runner splits app.log at the relaunch) and the
+client's PASS lines.
+
 ## Interjected worker lines (WKWebView mode `worker-interject`)
 
 `deck_worker_interject` end to end in the real window (approved

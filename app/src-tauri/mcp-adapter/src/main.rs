@@ -56,7 +56,7 @@ const LONG_WAIT_MAX_MS: u64 = 25 * 60_000;
 /// A Codex client's waits end before Codex's default 60 s per-tool timeout
 /// (`tool_timeout_sec`); the answer says so (`wait.cappedBy`).
 const CODEX_WAIT_CAP_MS: u64 = 50_000;
-const MUTATING: [&str; 19] = [
+const MUTATING: [&str; 20] = [
     "deck_automation_trigger",
     "deck_card_update",
     "deck_card_note",
@@ -68,6 +68,7 @@ const MUTATING: [&str; 19] = [
     "deck_worker_reports_ack",
     "deck_worker_send",
     "deck_worker_interject",
+    "deck_worker_cancel",
     "deck_worker_start",
     "deck_worker_close",
     "deck_session_create",
@@ -81,7 +82,7 @@ const MUTATING: [&str; 19] = [
 /// workflow for drafting configuration.
 const INSTRUCTIONS: &str = "Use Deck MCP only for authorized development work. Call deck_capabilities first: it says which of the local user's separate permissions this client holds. Retain operation, session, job, generation, cursor, control epoch, control sequence and create sequence values; never blindly retry ambiguous work.
 Worker cards (when the user lets this client drive them): deck_worker_start opens a card of a worker type the user lists (choose by its description; when it lists models, pick the one that suits the task), deck_worker_wait/list follow it, deck_worker_send queues your next line (it goes once the card is quiet), deck_worker_interject sends a line to a card you started from your own Deck card without waiting for it to be quiet (Claude Code, Codex and Pi; the agent takes it its own way: Claude Code after its running tool calls, Codex into its running turn, Pi as a steering message), deck_worker_reply reads a Claude turn's final message, deck_worker_close closes a card you started once you are done with it. The user may take a card over; never fight it.
-Reports: when you give a worker its task, tell it in that first line to call deck_worker_report with its result when done, with fields (status, branch, the full commit, report_path, task_ref) when they apply. Then, instead of sleeping and polling, call deck_worker_wait with until: report, each card's newest reports.latest you saw and a long wait_ms (up to 25 minutes): it returns as soon as a card reports (include_reports brings the texts), or is taken over, exits or leaves the Board; reason says which. Nothing is consumed: wait again with the same numbers after a timeout or a cancel. A report and its fields are the worker's own word; you decide what follows (review, merge, close, next task). Once you hold a report's text, acknowledge its sequence (deck_worker_reports_ack) so the user's card stops saying a report waits for you; a card listed as omitted in an inline answer was not given to you yet: read it with deck_worker_reports first. To close a worker you are done with while it may still be ending its turn, use deck_worker_close close_mode: instance with its instance and lastLine. If YOU were started as a worker and your task says to report, call deck_worker_report once you have the result; you need not know who asked.
+Reports: when you give a worker its task, tell it in that first line to call deck_worker_report with its result when done, with fields (status, branch, the full commit, report_path, task_ref) when they apply. Then, instead of sleeping and polling, call deck_worker_wait with until: report, each card's newest reports.latest you saw and a long wait_ms (up to 25 minutes): it returns as soon as a card reports (include_reports brings the texts), or is taken over, exits or leaves the Board; reason says which. Nothing is consumed: wait again with the same numbers after a timeout or a cancel. A report and its fields are the worker's own word; you decide what follows (review, merge, close, next task). Once you hold a report's text, acknowledge its sequence (deck_worker_reports_ack) so the user's card stops saying a report waits for you; a card listed as omitted in an inline answer was not given to you yet: read it with deck_worker_reports first. To close a worker you are done with while it may still be ending its turn, use deck_worker_close close_mode: instance with its instance and lastLine; a card whose liveness reads gone (its session ended, instance null after a Deck restart) closes with close_mode: gone and its lastLine. No mode closes a program Deck cannot observe (OBSERVATION_UNKNOWN): after_episode: 0 is not a way around it. A queued line never expires and an interject never replaces it: to redirect a worker, read the old line (deck_operation_get delivery), cancel it (deck_worker_cancel) and only once it answers canceled send the new one with a new request_id; a line already delivered or uncertain is never sent again by you. reports.receiptState unknown means Deck never tracked receipt, not that you received it. If YOU were started as a worker and your task says to report, call deck_worker_report once you have the result; you need not know who asked.
 Several requests at once (starts, lines, closes of your lane): bind each with lane_epoch (laneEpoch from deck_worker_list or deck_worker_wait) instead of send_sequence; each is then decided on its own and one refusal refuses nothing else. With send_sequence, send one request at a time and wait for its answer. Never resend a refused or lost request with a new request_id: repeat it unchanged (same request_id) or read the state first.
 Drafting configuration (mayDraftConfig), when the user asks you to set up an automation or template:
 1. deck_config_describe: read the fields, examples, and the project's columns, templates, Agent rules and clock rules; reuse what exists.
@@ -233,12 +234,12 @@ fn report_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 }
 
 /// `deck_worker_close` `close_mode` (`mcp/workers.rs` `CloseMode`).
-const CLOSE_MODES: [&str; 2] = ["episode", "instance"];
+const CLOSE_MODES: [&str; 3] = ["episode", "instance", "gone"];
 
 fn close_mode_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     enum_schema(
         &CLOSE_MODES,
-        "episode (default): refused once the card's episode moved past after_episode, its turn ending included. instance: you are done with this agent instance; its own turns do not refuse the close, another instance, a line accepted after last_line, unsent lines or an unobservable agent do. Give instance and last_line from deck_worker_list/deck_worker_wait.",
+        "episode (default): refused once the card's episode moved past after_episode, its turn ending included. instance: you are done with this agent instance; its own turns do not refuse the close, another instance or a line accepted after last_line do; give instance and last_line from deck_worker_list/deck_worker_wait. gone: the card's session is gone (liveness: gone, instance: null): clears it without any earlier token; give last_line; refused the moment the session exists again. Every mode is refused while a program runs in front without an Agent observation (OBSERVATION_UNKNOWN; after_episode: 0 does not pass it), while a line of yours is still queued, being sent or uncertain (LINES_PENDING), while the agent asks the user (WORKER_NEEDS_YOU) or the user holds the card.",
     )
 }
 
@@ -686,7 +687,7 @@ struct WorkerCloseInput {
     /// moved on since, its turn ending included.
     #[serde(default)]
     after_episode: Option<u64>,
-    /// episode (default) or instance.
+    /// episode (default), instance or gone.
     #[serde(default)]
     #[schemars(schema_with = "close_mode_schema")]
     close_mode: Option<String>,
@@ -694,10 +695,23 @@ struct WorkerCloseInput {
     /// deck_worker_wait (the agent program you are done with).
     #[serde(default)]
     instance: Option<String>,
-    /// close_mode instance: the card's `lastLine` you saw (leave it out
-    /// when it was null).
+    /// close_mode instance or gone: the card's `lastLine` you saw (leave it
+    /// out when it was null).
     #[serde(default)]
     last_line: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkerCancelInput {
+    /// Stable idempotency key for THIS cancel (not the line's): persist it
+    /// before the first attempt and reuse it on every retry of this cancel.
+    request_id: String,
+    /// The worker card the line is queued on (deck_worker_list cardId).
+    card_id: String,
+    /// The line to cancel: the operationId its deck_worker_send or
+    /// deck_worker_interject returned (deck_worker_list sends[].operationId).
+    operation_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -930,7 +944,7 @@ impl DeckServer {
             ),
             tool::<OperationInput>(
                 "deck_operation_get",
-                "Read a Deck control operation. Operation commitment is distinct from shell job completion.",
+                "Read a Deck control operation. Operation commitment is distinct from shell job completion. For a worker start, line (deck_worker_send / deck_worker_interject) or cancel it also returns delivery, read from Deck's queue itself (never limited to the recent history deck_worker_list shows, and still answered as record: retired after the operation's own record was dropped): delivery.state = queued (still waiting; waiting says where, with checkedAt, quietRemaining seconds, gapUntil, previousOperationId when one of your earlier lines is ahead), sending (being typed now: cannot be canceled), delivered (handed to the agent's input — not read, done or answered), canceled, uncertain (it may have reached the agent: the user resolves it; never send the same task again on your own), not-queued-yet, not-queued (refused) or unknown (Deck cannot tell: never read it as canceled or delivered); cancelable; mode (start, queued, interject). The operation's own state committed means the request was carried out (a line queued), never that it was delivered.",
                 ro.clone(),
             ),
             tool::<SessionInput>(
@@ -980,7 +994,7 @@ impl DeckServer {
             ),
             tool::<Empty>(
                 "deck_worker_list",
-                "List this client's worker cards: the cards its automation triggers created that the local user lets it drive. Each has cardId, title, alive, agent {state: working | turn-done | needs-input | unavailable, episode, why} (unavailable with alive true says why: no-turn-seen = no turn seen since Deck restarted or resumed the agent, you may still send after episode 0; codex-unproven = this Codex has not reported its own status yet, your lines wait for it; codex-unattributed = Deck cannot attribute this Codex process's status and will not until it exits, your lines into it stay held: do not wait, start another card or tell the user), takenOver (the user typed into it; your lines wait until they hand it back), unsent and the states of your recent lines, reports {count, latest, firstKept, at, acknowledged, awaitingAck}, and instance and lastLine (what deck_worker_close close_mode: instance names: the agent program in front of the card, null when Deck cannot tell, and the newest line accepted for it). Content-free. Also mayReadReplies and nextSendSequence.",
+                "List this client's worker cards: the cards its automation triggers created that the local user lets it drive. Each has cardId, title, alive, agent {state: working | turn-done | needs-input | unavailable, episode, why} (unavailable with alive true says why: no-turn-seen = no turn seen since Deck restarted or resumed the agent, you may still send after episode 0; codex-unproven = this Codex has not reported its own status yet, your lines wait for it; codex-unattributed = Deck cannot attribute this Codex process's status and will not until it exits, your lines into it stay held: do not wait, start another card or tell the user; no-agent-running = the pane's own shell is in front; session-gone = its session no longer exists — never read unavailable as stopped or as idle), takenOver (the user typed into it; your lines wait until they hand it back), liveness (alive; gone = a listing that succeeded has no such session; unknown = Deck could not read tmux, which proves nothing), foreground {kind: program | shell | unknown, startedAt, beforeDeckStarted (true: the same program outlived a Deck restart — Deck lost its observation, not the program), reentry {outcome: started | confirmed | unconfirmed | …, at} when Deck re-entered its session in this run: entered, never resumed or ready}, unsent (lines still to be sent), activeLines {queued, sending, uncertain} (every line of yours still in the queue: what the 4-per-card bound and a close count), sends (every line still in the queue, then the newest settled ones: operationId, state queued | sending | delivered | canceled | uncertain | unknown, mode start | queued | interject, cancelable, and while queued waiting (the scheduler's own hold: quiet, gap, previous, human, agent, first-send, codex-signal, agy-working, pi-handover, context = only the next pass …) with checkedAt, quietRemaining, gapUntil, previousOperationId), reports {count, latest, firstKept, at, acknowledged, awaitingAck, receiptState: none | unowned | unknown (receipt never tracked: NOT received) | pending | acknowledged (received — not reviewed or acted on)}, and instance and lastLine (what deck_worker_close close_mode: instance names: the agent program in front of the card, null when Deck cannot tell, and the newest line accepted for it). Content-free. Also deckStartedAt, mayReadReplies and nextSendSequence. quota lists only the accounts of the cards listed here.",
                 ro.clone(),
             ),
             tool::<WorkerWaitInput>(
@@ -1085,17 +1099,22 @@ impl DeckServer {
             ),
             tool::<WorkerSendInput>(
                 "deck_worker_send",
-                "Queue one line for one of your worker cards, written after the episode you name (refused with EPISODE_MOVED if the card moved on). Deck types it into the card's agent only when its own readiness checks allow: never while the agent asks the user something (needs-input) or while the user has taken the card over. Returns an operation; its delivery shows in deck_worker_list sends. You can never answer the agent's permission prompts.",
+                "Queue one line for one of your worker cards, written after the episode you name (refused with EPISODE_MOVED if the card moved on). Deck types it into the card's agent only when its own readiness checks allow: never while the agent asks the user something (needs-input) or while the user has taken the card over. Returns an operation; its delivery shows in deck_worker_list sends and, for that one line wherever it is, deck_operation_get delivery. A line never expires: after_episode is checked once, when it is queued; a later episode, report or interject does not withdraw it. To replace a line that still waits: read its delivery, cancel it (deck_worker_cancel) and only once that answers canceled send the new line with a NEW request_id. At most 4 of your lines per card may be queued, being sent or uncertain at once (CAPACITY_EXCEEDED). You can never answer the agent's permission prompts.",
                 mutating.clone(),
             ),
             tool::<WorkerSendInput>(
                 "deck_worker_interject",
-                "Send one line to a worker card you started from the Deck card you run in, WITHOUT waiting for the card to be quiet: use it to change a worker's goal or next step while it is still working. Only your own worker cards (deck_worker_list mayInterject): WORKER_NOT_FOUND for any other card and for every card when you run outside a Deck card; INTERJECT_UNSUPPORTED for an agent that cannot take one safely (agy). Plain text only. Name the episode you decided on (EPISODE_MOVED if the card moved on). Everything else is as for deck_worker_send: the same nextSendSequence, rate and 4 unsent lines per card, and Deck still holds the line while the agent asks the user something (needs-input) or the user has taken the card over, and keeps 60 seconds between two lines it sends to one card. It does not interrupt anything: the agent reads it its own way (Claude Code once its running tool calls finish, Codex in its running turn, Pi as a steering message after its current tool calls). Returns an operation; deck_worker_list sends says per line its state (queued, delivered = Deck submitted it to the agent's input, not that the agent read or acted on it; canceled; uncertain = it may have reached the agent, never sent again), its mode and, while queued, the stage it waits at (waiting).",
+                "Send one line to a worker card you started from the Deck card you run in, WITHOUT waiting for the card to be quiet: use it to change a worker's goal or next step while it is still working. Only your own worker cards (deck_worker_list mayInterject): WORKER_NOT_FOUND for any other card and for every card when you run outside a Deck card; INTERJECT_UNSUPPORTED for an agent that cannot take one safely (agy). Plain text only. Name the episode you decided on (EPISODE_MOVED if the card moved on). It is a separate line: it never cancels or replaces a line you queued before (cancel that one first with deck_worker_cancel if it must not go). Everything else is as for deck_worker_send: the same nextSendSequence, rate and 4 unsettled lines per card, and Deck still holds the line while the agent asks the user something (needs-input) or the user has taken the card over, and keeps 60 seconds between two lines it sends to one card. It does not interrupt anything: the agent reads it its own way (Claude Code once its running tool calls finish, Codex in its running turn, Pi as a steering message after its current tool calls). Returns an operation; deck_worker_list sends says per line its state (queued, delivered = Deck submitted it to the agent's input, not that the agent read or acted on it; canceled; uncertain = it may have reached the agent, never sent again), its mode and, while queued, the stage it waits at (waiting).",
+                mutating.clone(),
+            ),
+            tool::<WorkerCancelInput>(
+                "deck_worker_cancel",
+                "Cancel ONE of your lines that still waits in a worker card's queue, named by its operation_id (from deck_worker_send / deck_worker_interject or deck_worker_list sends). It cancels that line only — never the card, its start or other lines — and never sends anything. Answer: an operation whose result.outcome is canceled (this request canceled it: it will never be sent) or already-canceled (state committed), or, state rejected with code: ALREADY_DELIVERED (it was sent; nothing is taken back — do not send the task again), LINE_SENDING (being typed right now; follow it with deck_operation_get), DELIVERY_UNCERTAIN (it may have reached the agent; the user resolves it — never resend on your own), LINE_EDITED_BY_USER (the user edited it: theirs), LINE_NOT_FOUND. delivery says where the line stands after the answer. CANCEL_NOT_SAVED: nothing changed; repeat the SAME request_id. A lost answer: repeat the SAME request_id (the queue answers again, already-canceled once it took effect). Refused with WORKER_TAKEN_OVER while the user holds the card. To redirect a worker: deck_operation_get the old line → deck_worker_cancel it → once canceled, deck_worker_interject (or send) with a NEW request_id → deck_operation_get the new line's delivery.",
                 mutating.clone(),
             ),
             tool::<WorkerCloseInput>(
                 "deck_worker_close",
-                "Close one worker card you started from the Deck card you run in, once you are done with it (read its reply or report first: its screen goes with it, its reports stay readable). Two ways to bind it to what you decided on. close_mode episode (default): after_episode = the deck_worker_list agent.episode you saw; EPISODE_MOVED once the card moved on, its own turn ending included (a worker that reports and then ends its turn moves on). close_mode instance: you are done with this agent instance — give the card's instance and lastLine (leave last_line out when null); the agent's own turns do not refuse it, but INSTANCE_CHANGED (another program or session is in front), NEW_INPUT (a line was accepted after lastLine), LINES_PENDING (lines not yet delivered), INSTANCE_UNKNOWN / OBSERVATION_UNKNOWN (Deck cannot prove which instance runs or that it is not asking the user) do; an instance that ended leaves the card to close. Only cards you started can be closed: WORKER_NOT_FOUND for any other card, and for every card when you run outside a Deck card. Refused with WORKER_TAKEN_OVER while the user has taken it over, WORKER_NEEDS_YOU while its agent asks the user something (leave it to them), CLOSE_IN_PROGRESS while another close of the card is under way. Every refusal says stage (precheck = nothing accepted) and what Deck observed. Returns an operation to poll (deck_operation_get): accepted is not closed; committed when the card is gone, or rejected with a code and result.refusal {stage: admission, code, observed, nextAction}: card-shown = the user is looking at it, reminder-protected = it carries a reminder, card-kept = it holds a kept scratchpad (each the user's to close), worker-taken-over, worker-needs-you, episode-moved, instance-changed, new-input, lines-pending. From acceptance until it ends the card takes no line (WORKER_CLOSING). A lost answer: repeat the same request unchanged (same request_id) and read the operation; a different mode, episode or instance is a new decision with a new request_id. Shares nextSendSequence with starts and lines; at most 30 a minute together.",
+                "Close one worker card you started from the Deck card you run in, once you are done with it (read its reply or report first: its screen goes with it, its reports stay readable). Two ways to bind it to what you decided on. close_mode episode (default): after_episode = the deck_worker_list agent.episode you saw; EPISODE_MOVED once the card moved on, its own turn ending included (a worker that reports and then ends its turn moves on). close_mode instance: you are done with this agent instance — give the card's instance and lastLine (leave last_line out when null); the agent's own turns do not refuse it, but INSTANCE_CHANGED (another program or session is in front) and NEW_INPUT (a line was accepted after lastLine) do; an instance that ended (its pane back at its shell, or its session gone) leaves the card to close. close_mode gone: for a card whose liveness reads gone (its session no longer exists; instance is null after a Deck restart): give lastLine only; SESSION_PRESENT the moment the session exists again, and it never closes what runs there then. Every mode is also refused by: OBSERVATION_UNKNOWN (a program runs in front and Deck has no Agent observation of it, e.g. after a Deck restart — after_episode: 0 does NOT pass it; wait for its next observed turn or leave the card to the user), INSTANCE_UNKNOWN, LINES_PENDING (a line of yours is queued, being sent, uncertain or not yet queued: cancel the queued ones with deck_worker_cancel or wait), LINES_UNKNOWN, SESSION_PRESENT. Only cards you started can be closed: WORKER_NOT_FOUND for any other card, and for every card when you run outside a Deck card. Refused with WORKER_TAKEN_OVER while the user has taken it over, WORKER_NEEDS_YOU while its agent asks the user something (leave it to them), CLOSE_IN_PROGRESS while another close of the card is under way. Every refusal says stage (precheck = nothing accepted) and what Deck observed. Returns an operation to poll (deck_operation_get): accepted is not closed; committed when the card is gone, or rejected with a code and result.refusal {stage: admission, code, observed, nextAction}: card-shown = the user is looking at it, reminder-protected = it carries a reminder, card-kept = it holds a kept scratchpad (each the user's to close), worker-taken-over, worker-needs-you, episode-moved, instance-changed, new-input, lines-pending, observation-unknown, session-present. From acceptance until it ends the card takes no line (WORKER_CLOSING). A lost answer: repeat the same request unchanged (same request_id) and read the operation; a different mode, episode or instance is a new decision with a new request_id. Shares nextSendSequence with starts and lines; at most 30 a minute together.",
                 mutating,
             ),
         ];
@@ -1507,6 +1526,10 @@ impl DeckServer {
                     return invalid_arguments(issue);
                 }
                 self.invoke::<WorkerSendInput>("deck_worker_interject", arguments)
+                    .await
+            }
+            "deck_worker_cancel" => {
+                self.invoke::<WorkerCancelInput>("deck_worker_cancel", arguments)
                     .await
             }
             "deck_worker_close" => {

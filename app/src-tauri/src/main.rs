@@ -240,6 +240,11 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("agy-trust", "m.verifyAgyTrust()"),
     ("worker-interject", "m.verifyWorkerInterject()"),
     ("worker-close", "m.verifyWorkerClose()"),
+    ("worker-recovery", "m.verifyWorkerRecovery()"),
+    (
+        "worker-recovery-relaunch",
+        "m.verifyWorkerRecoveryRelaunch()",
+    ),
     ("worktree-switch", "m.verifyWorktreeSwitch()"),
     (
         "worktree-switch-relaunch",

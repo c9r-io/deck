@@ -280,8 +280,30 @@
 //! revoked approval and waits for send-now. The scheduler's side, the one
 //! waiver and what it needs, is `scheduler/select.rs` "Interjected lines".
 //! `deck_worker_list` and `deck_worker_wait` say per line its `mode` and,
-//! while queued, the plan stage it waits at (`waiting`), and per card
-//! `mayInterject`; `deck_capabilities` says `mayInterjectWorkers`.
+//! while queued, the plan stage it waits at (`waiting`, with `checkedAt`,
+//! `quietRemaining`, `gapUntil` and the caller's own line ahead,
+//! `previousOperationId`: the ⏱ panel's plan over the scheduler's own
+//! holds), and per card `mayInterject`; `deck_capabilities` says
+//! `mayInterjectWorkers`. A line is the queue's row, not a history entry
+//! (approved 2026-11-28, `scheduler::worker_lines`): every line still in
+//! the queue is listed and counted (`activeLines`: queued, sending,
+//! uncertain) however many settled after it, and the 4-per-card bound
+//! counts all three inside the queue transaction that adds a line
+//! (`scheduler::ActiveBound`). `deck_operation_get` answers one line's
+//! `delivery` from the queue by its id (also once the ledger retired the
+//! record: `record: retired`; a line the queue no longer holds is
+//! `unknown`, never guessed). `deck_worker_cancel` (part of the worker
+//! choice, approved 2026-11-28) cancels ONE queued line of a card the
+//! caller drives, by its operation id, in the queue's own transaction
+//! under the lock the firing intent takes (`scheduler::worker_cancel`): a
+//! line is canceled before it fires and never starts, or it is found
+//! sending, delivered or uncertain and left exactly as it is; a line the
+//! user edited or a card the user holds is theirs. It has its own request
+//! id (`worker-cancel` operation); a lost answer is asked again and the
+//! queue answers `already-canceled`. A send and an interject stay two
+//! separate lines: nothing cancels, promotes or dedupes one for another,
+//! and a queued line never expires (`after_episode` is checked once, when
+//! it is queued).
 //! `deck_worker_close` (part of the worker choice) closes ONE worker card
 //! for the orchestrator card that started it, proven from the kernel
 //! (`origin.rs`; a caller from no card closes nothing, an unowned card is
@@ -290,9 +312,21 @@
 //! original) or, approved 2026-11-28, the agent instance and the newest
 //! line (`close_mode: instance`: the program in front of the card's pane
 //! by tmux server, session, pane and foreground generation, which the
-//! instance's own turns keep and an exit, re-entry or new session change;
-//! `workers::instance_verdict`) — refused while the user holds the card or
-//! its Agent asks the user, and journaled as a `worker-close` Board intent
+//! instance's own turns keep and an exit, re-entry or new session change)
+//! or, approved 2026-11-28, a session a pane listing that succeeded proved
+//! gone and the newest line (`close_mode: gone`: no token from before is
+//! needed, so a card whose session ended across a Deck restart can be
+//! cleared; refused the moment that session exists again, never turned
+//! into a close of what runs there). Every mode stands on ONE shared check
+//! (`workers::shared_verdict`, at the precheck and again at the admission):
+//! the program in front is the one decided on (an episode close binds what
+//! it saw, `seenInstance`; the same pane's own shell back in front means
+//! the program ended), a running program's Agent observation is known
+//! (`OBSERVATION_UNKNOWN` in every mode: `after_episode: 0` is no way past
+//! it, and no force close exists), no line of the card is still queued,
+//! being sent, uncertain or accepted and not yet queued (`LINES_PENDING`;
+//! an unreadable queue `LINES_UNKNOWN`), and its Agent is not asking the
+//! user — refused while the user holds the card, and journaled as a `worker-close` Board intent
 //! the webview closes through `provider.close` as a remote close (never
 //! while a pane shows it, with a Reminder or a kept scratchpad). From
 //! acceptance until it ends the card takes no line (`WORKER_CLOSING`) and
@@ -310,7 +344,8 @@
 //! per client, counting starts and handovers accepted that have no card yet
 //! (a further start is `CAPACITY_EXCEEDED`, naming the number), one wait
 //! following up to the client's number, as many lines a minute (never fewer
-//! than 60), 4 unsent lines per card; what is kept across cards (reports,
+//! than 60), 4 lines per card still in the queue (queued, sending or
+//! uncertain); what is kept across cards (reports,
 //! replies) is sized for the highest choice (`workers::MAX_WORKER_CAPACITY`),
 //! so lowering it drops nothing. A ledger holding any of this is
 //! written at `STATE_VERSION_WORKERS` (sticky); one holding a type's model

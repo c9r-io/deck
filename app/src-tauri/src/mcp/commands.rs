@@ -1284,7 +1284,7 @@ pub(super) fn close_admit(
             .iter()
             .any(|o| o.operation_id == operation_id && o.kind == WORKER_CLOSE_KIND)
     })?;
-    let (targets, seen, unsent) = if worker_close {
+    let (targets, seen, lines) = if worker_close {
         let worker = runtime.read(|doc| {
             doc.operations
                 .iter()
@@ -1294,7 +1294,9 @@ pub(super) fn close_admit(
         (
             crate::documents::card_targets(false),
             super::workers::observe_sessions(),
-            worker.and_then(|w| super::workers::unsent_lines(runtime, &w)),
+            worker
+                .and_then(|w| super::workers::close_lines(runtime, &w))
+                .map(|(lines, _)| lines),
         )
     } else {
         (None, None, None)
@@ -1329,7 +1331,7 @@ pub(super) fn close_admit(
                 &operation,
                 targets.as_ref(),
                 seen.as_ref(),
-                unsent,
+                lines.as_ref(),
             );
             let saved = &mut doc.operations[index];
             saved.updated_at = now_ms();

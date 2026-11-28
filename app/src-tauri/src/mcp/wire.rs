@@ -175,7 +175,7 @@ pub(super) struct WorkerCloseArgs {
     /// decided on. Serialized as before, so an old request's identity holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) after_episode: Option<u64>,
-    /// `episode` (default) or `instance` (`workers::CloseMode`).
+    /// `episode` (default), `instance` or `gone` (`workers::CloseMode`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) close_mode: Option<String>,
     /// `close_mode: instance`: the card's `instance` the close was decided
@@ -186,6 +186,16 @@ pub(super) struct WorkerCloseArgs {
     /// on (absent: no line since the start).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) last_line: Option<String>,
+}
+
+/// `deck_worker_cancel`: cancel one line still waiting in a worker card's
+/// queue, named by the operation its send or interject returned.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerCancelArgs {
+    pub(super) request_id: String,
+    pub(super) card_id: String,
+    pub(super) operation_id: String,
 }
 
 /// `deck_worker_send`: one line for one worker card, written after the

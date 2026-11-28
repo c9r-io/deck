@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- Closing a worker card: `after_episode: 0` no longer closes a card whose
+  agent is still running but which Deck cannot observe (after a Deck
+  restart); every close mode stands on the same checks — the program in
+  front, a known Agent observation, no line still waiting — and the refusal
+  no longer suggests switching to a weaker mode. A card whose session is
+  gone (instance null after a restart) is cleared with the new
+  `close_mode: "gone"`, without any token from before, and never closes a
+  session that came back.
+- A worker line that waits (for quiet time, say) no longer drops out of
+  `deck_worker_list` and its unsent count once more than eight later lines
+  settled: every line still in the queue is listed and counted
+  (`activeLines`: queued, sending, uncertain), and the 4-per-card bound is
+  decided in the queue's own transaction.
+- `deck_operation_get` now says where a worker line is (`delivery`: queued
+  with where it waits and when that was checked, sending, delivered,
+  canceled, uncertain or unknown), read from the queue by its id.
+- `deck_worker_cancel` cancels one queued worker line exactly, with its own
+  request id; a line already sent, being sent or of uncertain delivery is
+  left as it is.
+- Worker views say what a listing proved (`liveness`), what runs in front
+  of the card and whether it outlived a Deck restart (`foreground`), and
+  any Agent re-entry Deck made into it this run.
+- A worker's reports say `receiptState` (`unknown` for reports whose
+  receipt Deck never tracked — not "received"); the card label shows
+  "receipt unknown" or "received" accordingly.
+
 ## 0.8.46 — 2026-11-28 (Nightly)
 
 - Restarting the shell service now re-enters a Claude Code card that was

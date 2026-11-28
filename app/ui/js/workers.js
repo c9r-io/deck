@@ -103,13 +103,22 @@ export function workerLabel(worker, cards, now = new Date()) {
   /* while its orchestrator has not acknowledged the newest one
      (`reportPending`, mcp/reports.rs `awaiting_ack`) it says so instead */
   const pending = worker.reportPending === true && Boolean(worker.reportedAt) && !takenOver;
+  /* the receipt of the newest report (`receiptState`, mcp/reports.rs
+     `receipt_state`): an untracked receipt (`unknown`, reports from before
+     acknowledgments) is never shown as received, and `acknowledged` says
+     received, never reviewed or handled */
+  const receipt = takenOver ? '' : worker.receiptState;
+  const [stateKey, stateTitle] = pending ? ['workers.reportPending', 'workers.reportPendingTitle']
+    : receipt === 'unknown' ? ['workers.reportUnknown', 'workers.reportUnknownTitle']
+    : receipt === 'acknowledged' ? ['workers.reportReceived', 'workers.reportReceivedTitle']
+    : ['workers.reported', 'workers.reportedTitle'];
   const time = worker.reportedAt ? fmtClock(Math.floor(worker.reportedAt / 1000), now) : '';
-  const reported = !worker.reportedAt ? '' : t(pending ? 'workers.reportPending' : 'workers.reported', { time });
+  const reported = !worker.reportedAt ? '' : t(stateKey, { time });
   const titleText = t(title, { name, client: worker.clientName });
   return {
     takenOver, orphaned, pending,
     text: reported ? `${t(key, { name })} · ${reported}` : t(key, { name }),
-    title: reported ? `${titleText} ${t(pending ? 'workers.reportPendingTitle' : 'workers.reportedTitle')}` : titleText,
+    title: reported ? `${titleText} ${t(stateTitle)}` : titleText,
   };
 }
 

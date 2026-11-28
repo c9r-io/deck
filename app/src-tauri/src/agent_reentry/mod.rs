@@ -2269,6 +2269,7 @@ impl Plan {
         entry.view.reason = reason;
         entry.view.settled = true;
         entry.awaiting = false;
+        note_outcome(&entry.view.session, outcome);
         Self::log_entry(entry);
     }
 
@@ -2280,14 +2281,7 @@ impl Plan {
             "[{}] entry {} outcome={} reason={} route={}",
             entry.tag,
             session_tag(&entry.view.session),
-            match outcome {
-                Outcome::NotAttempted => "not-attempted",
-                Outcome::RefusedBeforeLaunch => "refused-before-launch",
-                Outcome::Confirmed => "confirmed",
-                Outcome::Started => "started",
-                Outcome::Unconfirmed => "unconfirmed",
-                Outcome::KnownNoLaunchFailure => "known-no-launch-failure",
-            },
+            outcome_word(outcome),
             entry.view.reason.map_or("none", Reason::code),
             entry.view.route.map_or("none", Route::code)
         ));
@@ -2834,3 +2828,50 @@ pub(crate) fn reset_for_tests() {
 /// mailbox run one at a time.
 #[cfg(test)]
 pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// The closed word of an entry outcome (app.log, the MCP views).
+fn outcome_word(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::NotAttempted => "not-attempted",
+        Outcome::RefusedBeforeLaunch => "refused-before-launch",
+        Outcome::Confirmed => "confirmed",
+        Outcome::Started => "started",
+        Outcome::Unconfirmed => "unconfirmed",
+        Outcome::KnownNoLaunchFailure => "known-no-launch-failure",
+    }
+}
+
+/// The newest settled re-entry outcome of each session in this Deck run:
+/// session name → (outcome word, epoch seconds). Memory only, bounded;
+/// presentation for an MCP client's worker views (`mcp/workers.rs`
+/// `foreground`): never readiness, authority or task progress.
+fn outcomes() -> &'static Mutex<std::collections::HashMap<String, (&'static str, u64)>> {
+    static OUTCOMES: std::sync::OnceLock<
+        Mutex<std::collections::HashMap<String, (&'static str, u64)>>,
+    > = std::sync::OnceLock::new();
+    OUTCOMES.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+const OUTCOMES_KEPT: usize = 512;
+
+fn note_outcome(session: &str, outcome: Outcome) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut map = outcomes().lock_or_recover();
+    if map.len() >= OUTCOMES_KEPT && !map.contains_key(session) {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, (_, at))| *at)
+            .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(session.to_string(), (outcome_word(outcome), at));
+}
+
+/// The newest re-entry outcome Deck settled for `session` in this run.
+pub(crate) fn last_outcome(session: &str) -> Option<(&'static str, u64)> {
+    outcomes().lock_or_recover().get(session).copied()
+}

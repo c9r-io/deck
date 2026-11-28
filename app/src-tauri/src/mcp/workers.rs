@@ -69,13 +69,18 @@
 //! - `deck_worker_close` closes one worker card for the orchestrator card
 //!   that started it, and only for it (`opened_by`: the kernel-proven
 //!   calling card is the one recorded at the start; from no card, nothing).
-//!   It is refused while the user holds the card, while its Agent asks the
-//!   user (`needs-input`), and by its mode (`CloseMode`): once its episode
-//!   moved on (`episode`), or once another program instance, another
-//!   session, a newer accepted line, undelivered lines or an unprovable
-//!   observation stand where the decision was made (`instance`; the
+//!   It is refused while the user holds the card and, in every mode, by the
+//!   shared checks (`shared_verdict`): another program instance or session
+//!   than the one decided on, a running program Deck has no Agent
+//!   observation of (`OBSERVATION_UNKNOWN`), its Agent asking the user
+//!   (`needs-input`), a line still in the queue or accepted and not yet
+//!   queued. Its mode (`CloseMode`) adds what the decision was about: its
+//!   episode (`episode`; `after_episode: 0` passes nothing the shared
+//!   checks refuse), the instance and newest line (`instance`; the
 //!   instance's own turns never refuse it, an ended instance leaves the
-//!   card to close). It goes as a `worker-close` Board intent through the
+//!   card to close), or a gone session and the newest line (`gone`, for a
+//!   card whose `liveness` is `gone`; refused once the session exists
+//!   again). It goes as a `worker-close` Board intent through the
 //!   webview's ordinary close as a remote one (`mcp.js` `closeWorker`);
 //!   while it is under way the card takes no line (`WORKER_CLOSING`) or
 //!   second close; the admission reads the card again with the same rules
@@ -83,7 +88,20 @@
 //!   saw (`admission_refusal`). Every refusal names its stage. Its reports
 //!   stay readable.
 //! - The views carry what an instance-bound close names: `instance` (the
-//!   program in front of the card's pane, `instance_token`) and `lastLine`.
+//!   program in front of the card's pane, `instance_token`) and `lastLine`;
+//!   and what a listing proved (`liveness`: `alive`, `gone`, `unknown`) and
+//!   what is in front (`foreground`: program, shell or unknown, when it
+//!   began, whether it began before this Deck process — the program that
+//!   outlived a Deck restart, whose observation Deck lost — and the newest
+//!   Agent re-entry Deck made into the session this run, its outcome word:
+//!   entered, never resumed or ready). No old working/turn-done is ever
+//!   restored as a new observation.
+//! - A card's lines are the queue's rows (`scheduler::worker_lines`):
+//!   every line still queued, being sent or uncertain is listed and counted
+//!   whatever the history, the per-card bound counts all three in the
+//!   queue's own transaction, and `deck_operation_get` answers one line's
+//!   `delivery` by id. `deck_worker_cancel` cancels one queued line exactly
+//!   (`worker_cancel`, `scheduler::worker_cancel`).
 //! - Within one client, a worker started from an orchestrator card
 //!   (`origin.rs`) is that card's: only calls from it (and from no card) see
 //!   and drive it, its sequences are that card's lane, and once the card
@@ -161,11 +179,17 @@ fn sends_per_minute(doc: &DiskDoc) -> usize {
 }
 /// Worker records kept in all (closed cards are pruned first).
 const MAX_WORKER_RECORDS: usize = 256;
-/// Unsent delegated lines one card may hold.
-const MAX_UNSENT_PER_CARD: usize = 4;
+/// Delegated lines one card may hold still in its queue: queued (pending
+/// or failed), being sent, or of uncertain delivery (`WorkerLines::active`;
+/// an uncertain line keeps its place until the user decides it). Checked
+/// again inside the queue transaction that adds a line
+/// (`scheduler::ActiveBound`).
+const MAX_ACTIVE_PER_CARD: usize = 4;
 /// The longest line a client may send.
 pub(super) const MAX_SEND_BYTES: usize = 16 * 1024;
-/// Recent send operations reported per card.
+/// Settled send operations reported per card: the history only. A line
+/// still in the queue is always reported besides them
+/// (`scheduler::worker_lines`).
 const SENDS_REPORTED: usize = 8;
 
 /// One worker card: which client started it, through which automation, and
@@ -599,6 +623,9 @@ pub(super) struct Seen {
     instance: u64,
     /// The foreground is the pane's own shell: no program runs in front.
     shell: bool,
+    /// When the foreground process began, epoch seconds (0: unknown): an
+    /// instance older than this Deck process outlived a Deck restart.
+    born: u64,
 }
 
 /// A stable 64-bit key of `parts` (the first 8 bytes of their SHA-256):
@@ -640,7 +667,7 @@ pub(super) fn observe_sessions() -> Option<HashMap<String, Seen>> {
 /// The same listing read twice, for the client's views: each session as the
 /// client sees it, and the scheduler's own observation of it, which says at
 /// which stage each of the client's unsent lines waits
-/// (`scheduler::worker_rows`). One tmux call, as before. `None` when tmux
+/// (`scheduler::worker_lines`). One tmux call, as before. `None` when tmux
 /// could not be read.
 fn observe_for_views() -> Option<(HashMap<String, Seen>, crate::scheduler::Observations)> {
     #[cfg(test)]
@@ -674,6 +701,7 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
                     pane: 0,
                     instance: 0,
                     shell: false,
+                    born: 0,
                 },
             )
         })
@@ -694,6 +722,7 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
                 generation.pid()
             ));
             entry.shell = generation.pid() == row.pane_pid;
+            entry.born = seconds;
         }
     }
     for (session, observation) in agents {
@@ -710,7 +739,7 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
 
 #[cfg(test)]
 thread_local! {
-    /// A test's unsent-line count in place of the queue (`unsent_lines`):
+    /// A test's unsent-line count in place of the queue (`close_lines`):
     /// `Some(None)` = the queue cannot be read.
     pub(super) static UNSENT_FOR_TESTS: std::cell::Cell<Option<Option<usize>>> =
         const { std::cell::Cell::new(None) };
@@ -752,6 +781,7 @@ pub(super) fn instance_seen_for_tests(
         pane,
         instance,
         shell,
+        born: 0,
     }
 }
 
@@ -771,6 +801,7 @@ pub(super) fn codex_seen_for_tests(codex: crate::agent_status::CodexSignalTrust)
         pane: TEST_PANE,
         instance: TEST_INSTANCE,
         shell: false,
+        born: 0,
     }
 }
 
@@ -778,13 +809,62 @@ pub(super) fn codex_seen_for_tests(codex: crate::agent_status::CodexSignalTrust)
 /// whose status Deck cannot attribute (it holds until that Codex exits, and
 /// so do the lines queued into it), a Codex that has not proven its status
 /// yet (its lines wait for its first own hook), or no turn seen yet.
-fn unavailable_why(codex: Option<crate::agent_status::CodexSignalTrust>) -> &'static str {
+fn unavailable_why(seen: &Seen) -> &'static str {
     use crate::agent_status::CodexSignalTrust::{Trusted, Unavailable, Unknown};
-    match codex {
+    if seen.shell {
+        // the pane's own shell is in front: no agent program runs there
+        return "no-agent-running";
+    }
+    match seen.codex {
         Some(Unavailable) => "codex-unattributed",
         Some(Unknown) => "codex-unproven",
         Some(Trusted) | None => "no-turn-seen",
     }
+}
+
+/// When this Deck process started, epoch seconds: a card's instance born
+/// before it outlived a Deck restart, and Deck has observed none of its
+/// turns since (`foreground.startedAt`).
+fn deck_started_at() -> u64 {
+    static STARTED: OnceLock<u64> = OnceLock::new();
+    *STARTED.get_or_init(|| {
+        // the kernel's word for this process, not the first call's clock
+        crate::procinfo::process(std::process::id())
+            .map(|p| p.start_seconds)
+            .filter(|s| *s > 0)
+            .unwrap_or(0)
+    })
+}
+
+/// What is in front of a card's pane, for the views: the closed kind, when
+/// it began, whether it began before this Deck process (it outlived a Deck
+/// restart: the program is the one that ran before, its Agent observation
+/// is what Deck lost), and the newest Agent re-entry Deck made into the
+/// session in this run (`agent_reentry` outcome words: `started` and
+/// `confirmed` say a program was launched or entered its session, never
+/// that it resumed its task or is ready for input). `None` when the
+/// listing has no such session.
+fn foreground_view(now: Option<Seen>, session: Option<&str>) -> Value {
+    let Some(now) = now else {
+        return json!(null);
+    };
+    let kind = if now.pane == 0 || now.instance == 0 {
+        "unknown"
+    } else if now.shell {
+        "shell"
+    } else {
+        "program"
+    };
+    let mut view = json!({
+        "kind": kind,
+        "startedAt": (now.born > 0).then_some(now.born),
+        "beforeDeckStarted": (now.born > 0 && deck_started_at() > 0)
+            .then(|| now.born < deck_started_at()),
+    });
+    if let Some((outcome, at)) = session.and_then(crate::agent_reentry::last_outcome) {
+        view["reentry"] = json!({"outcome": outcome, "at": at});
+    }
+    view
 }
 
 /* ---------- views ---------- */
@@ -817,11 +897,86 @@ fn sends_of(doc: &DiskDoc, client: &str, card: &str) -> Vec<String> {
     ids
 }
 
+/// Every operation Deck still records as one of `worker`'s lines: its
+/// start, its accepted lines (`Worker.lines`) and every line record the
+/// ledger keeps for its card. What makes a queue row the worker's besides
+/// the row's own delegation (`scheduler::worker_lines`).
+fn known_of(doc: &DiskDoc, worker: &Worker) -> Vec<String> {
+    let mut ids: Vec<String> = doc
+        .operations
+        .iter()
+        .filter(|o| {
+            o.client_id == worker.client_id
+                && matches!(o.kind.as_str(), WORKER_SEND_KIND | WORKER_START_KIND)
+                && o.result
+                    .as_ref()
+                    .and_then(|r| r.get("cardId"))
+                    .and_then(Value::as_str)
+                    == Some(worker.card_id.as_str())
+        })
+        .map(|o| o.operation_id.clone())
+        .collect();
+    ids.extend(worker.lines.iter().cloned());
+    ids.push(worker.operation_id.clone());
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// One card's lines from its client, as the queue holds them now (`None`:
+/// Deck's queue is not available).
+fn lines_of(
+    runtime: &Runtime,
+    worker: &Worker,
+    known: &[String],
+    recent: &[String],
+    plans: Option<&crate::scheduler::Observations>,
+) -> Option<crate::scheduler::WorkerLines> {
+    queues(runtime).map(|q| {
+        crate::scheduler::worker_lines(
+            &q.q,
+            &worker.card_id,
+            &worker.client_id,
+            known,
+            recent,
+            plans,
+        )
+    })
+}
+
+/// One worker line as a view or `deck_operation_get` carries it: its
+/// operation, where it stands (`scheduler::line_state` words), how it goes
+/// and — while queued and observed — where it waits.
+fn line_view(line: &crate::scheduler::WorkerLine, mode: &str) -> Value {
+    let mut view = json!({
+        "operationId": line.id,
+        "state": line.state,
+        "mode": mode,
+        "cancelable": line.cancelable,
+    });
+    if let Some(plan) = &line.plan {
+        view["waiting"] = json!(plan.stage);
+        view["checkedAt"] = json!(plan.checked_at);
+        if let Some(quiet) = plan.quiet_remaining.filter(|q| *q > 0) {
+            view["quietRemaining"] = json!(quiet);
+        }
+        if let Some(gap) = plan.gap_until {
+            view["gapUntil"] = json!(gap);
+        }
+        if let Some(previous) = &plan.previous {
+            view["previousOperationId"] = json!(previous);
+        }
+    }
+    view
+}
+
 struct WorkerRow {
     worker: Worker,
     taken_over: bool,
     target: Option<crate::documents::CardTarget>,
     sends: Vec<String>,
+    /// `known_of`
+    known: Vec<String>,
     /// Which of `sends` are interjected lines (`result.mode`).
     interjected: HashSet<String>,
     /// The calling card started this card and its agent takes interjected
@@ -841,10 +996,11 @@ fn rows_of(doc: &DiskDoc, client: &str, orchestrator: Option<&str>) -> Vec<Worke
             let target = targets.get(&w.card_id).cloned();
             let cmd = target.as_ref()?.cmd.clone();
             let sends = sends_of(doc, client, &w.card_id);
+            let known = known_of(doc, w);
             let interjected = doc
                 .operations
                 .iter()
-                .filter(|o| sends.contains(&o.operation_id) && is_interjected(o))
+                .filter(|o| known.contains(&o.operation_id) && is_interjected(o))
                 .map(|o| o.operation_id.clone())
                 .collect();
             Some(WorkerRow {
@@ -852,6 +1008,7 @@ fn rows_of(doc: &DiskDoc, client: &str, orchestrator: Option<&str>) -> Vec<Worke
                 taken_over: super::origin::taken_over(w, Some(&targets)),
                 target,
                 sends,
+                known,
                 interjected,
                 may_interject: orchestrator.is_some()
                     && w.orchestrator.as_deref() == orchestrator
@@ -871,11 +1028,8 @@ fn view(
 ) -> Value {
     let target = row.target.as_ref();
     let observed = target.and_then(|t| seen.and_then(|s| s.get(&t.session)).copied());
-    let (unsent, states) = queues(runtime)
-        .map(|q| {
-            crate::scheduler::worker_rows(&q.q, &row.worker.card_id, client, &row.sends, plans)
-        })
-        .unwrap_or_default();
+    debug_assert_eq!(row.worker.client_id, client);
+    let lines = lines_of(runtime, &row.worker, &row.known, &row.sends, plans);
     let agent = match (seen, observed) {
         (None, _) => json!(null),
         (
@@ -889,9 +1043,9 @@ fn view(
         (Some(_), Some(seen)) => json!({
             "state": "unavailable",
             "episode": 0,
-            "why": unavailable_why(seen.codex),
+            "why": unavailable_why(&seen),
         }),
-        (Some(_), None) => json!({"state": "unavailable", "episode": 0}),
+        (Some(_), None) => json!({"state": "unavailable", "episode": 0, "why": "session-gone"}),
     };
     json!({
         "cardId": row.worker.card_id,
@@ -899,6 +1053,11 @@ fn view(
         "automationId": row.worker.automation_id,
         "model": row.worker.model,
         "alive": observed.is_some_and(|o| o.alive),
+        // what the listing proved: `alive` (the session exists), `gone`
+        // (a listing that succeeded has no such session: a close may name
+        // close_mode gone) or `unknown` (the listing failed: proves nothing)
+        "liveness": liveness(seen.is_some(), observed),
+        "foreground": foreground_view(observed, target.map(|t| t.session.as_str())),
         "agent": agent,
         "takenOver": row.taken_over,
         // what a close bound to this agent instance names
@@ -907,26 +1066,49 @@ fn view(
         "instance": observed.as_ref().and_then(instance_token),
         "lastLine": row.worker.lines.last(),
         "mayInterject": row.may_interject,
-        "unsent": unsent,
+        // lines still to be sent (pending or failed); null: the queue
+        // could not be read
+        "unsent": lines.as_ref().map(|l| l.queued),
+        // every line still in the queue, by where it stands: these are
+        // what the card's bound counts and what a close waits for
+        "activeLines": lines.as_ref().map(|l| json!({
+            "queued": l.queued,
+            "sending": l.sending,
+            "uncertain": l.uncertain,
+        })),
         "reports": row.reports,
-        // each line's queue state, how it goes (`queued` after the card is
-        // quiet, `interject` without waiting for that) and, while it is
-        // unsent, the stage it waits at (the panel's own plan stage)
-        "sends": states
-            .iter()
-            .map(|(id, state, waiting)| {
-                let mut line = json!({
-                    "operationId": id,
-                    "state": state,
-                    "mode": if row.interjected.contains(id) { INTERJECT_MODE } else { "queued" },
-                });
-                if let Some(stage) = waiting {
-                    line["waiting"] = json!(stage);
-                }
-                line
-            })
-            .collect::<Vec<_>>(),
+        // each line still in the queue, then the newest settled ones: its
+        // state, how it goes (`queued` after the card is quiet, `interject`
+        // without waiting for that, `start` the card's first line), whether
+        // it can be canceled now and, while queued, where it waits
+        "sends": lines
+            .as_ref()
+            .map(|l| l.lines.iter().map(|line| line_view(line, row.mode_of(&line.id))).collect::<Vec<_>>())
+            .unwrap_or_default(),
     })
+}
+
+impl WorkerRow {
+    /// How line `id` goes: the card's first line, an interjected one or a
+    /// queued one.
+    fn mode_of(&self, id: &str) -> &'static str {
+        if id == self.worker.operation_id {
+            "start"
+        } else if self.interjected.contains(id) {
+            INTERJECT_MODE
+        } else {
+            "queued"
+        }
+    }
+}
+
+/// What a listing proved about a card's session (`liveness` in the views).
+fn liveness(listed: bool, now: Option<Seen>) -> &'static str {
+    match (listed, now) {
+        (false, _) => "unknown",
+        (true, Some(_)) => "alive",
+        (true, None) => "gone",
+    }
 }
 
 type Snapshot = (Vec<WorkerRow>, u64, bool, Vec<Value>);
@@ -964,6 +1146,9 @@ pub(super) fn worker_list(
         "workers": rows.iter().map(|row| view(runtime, client_id, row, seen, plans)).collect::<Vec<_>>(),
         "quota": quota_view(&rows),
         "observed": seen.is_some(),
+        // this Deck process's start (epoch seconds): a card whose
+        // foreground.startedAt is older outlived a Deck restart
+        "deckStartedAt": (deck_started_at() > 0).then(deck_started_at),
         "mayReadReplies": replies,
         "workerTypes": types,
         "nextSendSequence": next,
@@ -1598,14 +1783,17 @@ fn queue_line(
             "Deck's queue is not available",
         ))
     })?;
-    let sends = runtime
-        .read(|doc| sends_of(doc, client_id, &worker.card_id))
+    let known = runtime
+        .read(|doc| known_of(doc, &worker))
         .map_err(map_error)?;
-    let (unsent, _) =
-        crate::scheduler::worker_rows(&queue.q, &worker.card_id, client_id, &sends, None);
-    if unsent >= MAX_UNSENT_PER_CARD {
+    // a first answer; the queue transaction that adds the row decides
+    // (`scheduler::ActiveBound`)
+    let active =
+        crate::scheduler::worker_lines(&queue.q, &worker.card_id, client_id, &known, &[], None)
+            .active();
+    if active >= MAX_ACTIVE_PER_CARD {
         return Err(capacity(
-            "the card already holds 4 unsent lines from this client",
+            "the card already holds 4 lines from this client that are queued, being sent or of uncertain delivery",
         ));
     }
     if let Err(limit) = within_rate(runtime, client_id) {
@@ -1709,6 +1897,10 @@ fn queue_line(
         },
         false,
         first_send_allowed(runtime, client_id),
+        Some(crate::scheduler::ActiveBound {
+            known: &known,
+            max: MAX_ACTIVE_PER_CARD,
+        }),
     );
     let settled = runtime
         .write(|doc| {
@@ -1724,10 +1916,12 @@ fn queue_line(
                 Err(error) => {
                     record.state = "rejected".into();
                     record.code = Some(
-                        if error.kind() == ErrorKind::Invalid {
-                            "NOT_AN_AGENT_CARD"
-                        } else {
-                            "QUEUE_REFUSED"
+                        match error.kind() {
+                            ErrorKind::Invalid => "NOT_AN_AGENT_CARD",
+                            // the card's bound, decided in the queue's own
+                            // transaction (another line took the place)
+                            ErrorKind::RequestConflict => "CAPACITY_EXCEEDED",
+                            _ => "QUEUE_REFUSED",
                         }
                         .into(),
                     );
@@ -1764,23 +1958,38 @@ fn needs_you_refusal() -> Value {
 }
 
 /// How a close is bound to what its orchestrator decided on
-/// (`close_mode`).
+/// (`close_mode`). Every mode stands on the same shared checks
+/// (`shared_verdict`): ownership and the choice, the user's hold, no line
+/// of the card still in its queue or accepted and not yet queued, the
+/// program in front the one the decision saw (a shell back in front of the
+/// same pane: that program ended), a running program's Agent observation
+/// known (`OBSERVATION_UNKNOWN` otherwise, in every mode) and not asking the
+/// user. A mode only adds what the decision was about.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CloseMode {
     /// The original: the card's attention episode (`after_episode`). Any
     /// other accepted observation since — the turn ending included —
-    /// refuses it.
+    /// refuses it. `after_episode: 0` is the episode of a card Deck has no
+    /// observation of; it passes only where the shared checks do (a
+    /// session gone, a shell in front), never past an unknown agent.
     Episode,
     /// Approved 2026-11-28: "I am done with THIS agent instance". Bound to
     /// the program instance in front of the card's pane (`instance`) and to
     /// the newest line accepted for the card (`last_line`): the instance's
     /// own turns (working → turn-done, a new episode) do not refuse it;
     /// another instance (an exit and a new program, a re-entry, a new
-    /// session), a line accepted since the decision, a line still unsent
-    /// or an observation Deck cannot prove do. An instance that ended (a
-    /// shell back in front of the same pane, or its session gone) leaves
-    /// the card to close.
+    /// session) or a line accepted since the decision do. An instance that
+    /// ended (a shell back in front of the same pane, or its session gone)
+    /// leaves the card to close.
     Instance,
+    /// Approved 2026-11-28: "this card's session is gone; clear its
+    /// record". For a card whose `liveness` read `gone` (a listing that
+    /// succeeded has no such session; `instance` is then null, and no
+    /// token from before is needed). Bound to the newest accepted line
+    /// (`last_line`); refused at once, and at the admission, the moment the
+    /// session exists again (`SESSION_PRESENT`): it never becomes a close
+    /// of whatever runs there now, and the shell exception never applies.
+    Gone,
 }
 
 impl CloseMode {
@@ -1788,30 +1997,140 @@ impl CloseMode {
         match self {
             CloseMode::Episode => "episode",
             CloseMode::Instance => "instance",
+            CloseMode::Gone => "gone",
         }
     }
 }
 
-/// What an instance-mode close was decided on.
-#[derive(Clone)]
-struct InstanceBinding {
-    pane: u64,
-    instance: u64,
-    last_line: Option<String>,
+/// What a close's shared checks hold the card to (`shared_verdict`): the
+/// program instance in front of the pane when it was decided on, a session
+/// that was gone, or nothing (an episode close Deck could not read the
+/// instance for, or one accepted by an older build).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Decided {
+    Instance { pane: u64, instance: u64 },
+    Gone,
+    Unbound,
 }
 
-impl InstanceBinding {
-    fn of_plan(plan: &Value) -> Option<Self> {
-        let (pane, instance) = parse_instance(plan.get("instance")?.as_str()?)?;
-        Some(Self {
-            pane,
-            instance,
-            last_line: plan
-                .get("lastLine")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        })
+impl Decided {
+    /// What the card is now, as an episode close binds it at its check.
+    fn of_now(now: Option<Seen>) -> Self {
+        match now {
+            None => Decided::Gone,
+            Some(seen) if seen.pane != 0 && seen.instance != 0 => Decided::Instance {
+                pane: seen.pane,
+                instance: seen.instance,
+            },
+            Some(_) => Decided::Unbound,
+        }
     }
+
+    /// What an accepted close's plan says it was decided on.
+    fn of_plan(plan: &Value) -> Self {
+        let token = |key: &str| {
+            plan.get(key)
+                .and_then(Value::as_str)
+                .and_then(parse_instance)
+        };
+        if plan.get("decidedGone").and_then(Value::as_bool) == Some(true) {
+            return Decided::Gone;
+        }
+        let key = if plan.get("closeMode").and_then(Value::as_str) == Some("instance") {
+            "instance"
+        } else {
+            "seenInstance"
+        };
+        match token(key) {
+            Some((pane, instance)) => Decided::Instance { pane, instance },
+            None => Decided::Unbound,
+        }
+    }
+
+    /// What the plan records of it.
+    fn record(self, plan: &mut Value) {
+        match self {
+            Decided::Gone => plan["decidedGone"] = json!(true),
+            Decided::Instance { pane, instance } => {
+                plan["seenInstance"] = json!(format!("{pane:016x}{instance:016x}"))
+            }
+            Decided::Unbound => plan["seenInstance"] = json!(null),
+        }
+    }
+}
+
+/// The checks every close mode stands on, at its check and again at its
+/// admission: no line of the card still in its queue (`lines`: queued,
+/// being sent or uncertain; `None` when the queue could not be read) or
+/// accepted and not yet queued (`in_flight`); the session and the program
+/// in front the ones `decided` names (a session that was gone must still
+/// be; a program that ended, its session gone or its pane's own shell back
+/// in front, leaves the card to close); a running program's Agent
+/// observation known and not asking the user. `now` is the card's session
+/// in a listing that succeeded (`None`: no such session).
+fn shared_verdict(
+    decided: Decided,
+    now: Option<Seen>,
+    lines: Option<&crate::scheduler::WorkerLines>,
+    in_flight: bool,
+) -> Result<(), &'static str> {
+    match lines {
+        None => return Err("lines-unknown"),
+        Some(lines) if lines.active() > 0 => return Err("lines-pending"),
+        Some(_) if in_flight => return Err("lines-pending"),
+        Some(_) => {}
+    }
+    if decided == Decided::Gone {
+        return match now {
+            Some(_) => Err("session-present"),
+            None => Ok(()),
+        };
+    }
+    let Some(now) = now else {
+        // the session left a listing that succeeded: its program ended
+        return Ok(());
+    };
+    if let Decided::Instance { pane, instance } = decided {
+        if now.pane == 0 || now.instance == 0 {
+            return Err("instance-unknown");
+        }
+        if now.pane != pane {
+            return Err("instance-changed");
+        }
+        if now.instance != instance {
+            // the same pane's own shell back in front (the pane key names
+            // that shell's process): the instance ended; anything else in
+            // front is another program
+            return if now.shell {
+                Ok(())
+            } else {
+                Err("instance-changed")
+            };
+        }
+    }
+    if !now.shell && now.state.is_none() {
+        return Err("observation-unknown");
+    }
+    if now.state == Some("needs-input") {
+        return Err("worker-needs-you");
+    }
+    Ok(())
+}
+
+/// A line accepted for `card` whose queueing has not settled yet (its
+/// operation still `accepted`): work the queue does not show yet, which a
+/// close must not overtake.
+fn line_in_flight(doc: &DiskDoc, client: &str, card: &str) -> bool {
+    doc.operations.iter().any(|o| {
+        o.client_id == client
+            && o.kind == WORKER_SEND_KIND
+            && o.state == "accepted"
+            && o.result
+                .as_ref()
+                .and_then(|r| r.get("cardId"))
+                .and_then(Value::as_str)
+                == Some(card)
+    })
 }
 
 /// One closed refusal word of a close (lowercase: the operation's code
@@ -1836,8 +2155,8 @@ fn close_words(code: &str) -> (&'static str, &'static str, &'static str) {
         ),
         "observation-unknown" => (
             "OBSERVATION_UNKNOWN",
-            "the agent is still running and Deck has no observation of it, so it cannot prove the agent is not asking the user something; nothing was closed",
-            "Wait for the agent's next turn to be observed (deck_worker_wait), or close with close_mode: episode and its episode as deck_worker_list shows it.",
+            "a program is still running in front of the card and Deck has no Agent observation of it (for instance after a Deck restart, or before its first observed turn), so it cannot prove the agent is not asking the user something; no close mode passes this; nothing was closed",
+            "Wait until Deck observes the agent's next turn (deck_worker_wait until: change) and close then, or leave the card to the user (they can close it). Once the agent program ends (its pane back at the shell, or its session gone) the card can be closed.",
         ),
         "new-input" => (
             "NEW_INPUT",
@@ -1846,8 +2165,18 @@ fn close_words(code: &str) -> (&'static str, &'static str, &'static str) {
         ),
         "lines-pending" => (
             "LINES_PENDING",
-            "the card still holds lines that have not been sent; closing now would drop work the decision did not see delivered; nothing was closed",
-            "Wait until its lines are delivered (deck_worker_list sends) and decide again, or close with close_mode: episode to close regardless of them.",
+            "the card still holds lines of yours that are queued, being sent, of uncertain delivery, or accepted and not yet queued; closing now would drop or overtake work the decision did not see settled; no close mode passes this; nothing was closed",
+            "Read the card's sends (deck_worker_list): cancel a queued line you no longer want (deck_worker_cancel with its operationId) or wait until it is delivered, then decide again. A line of uncertain delivery is the user's to resolve in Deck's queue panel.",
+        ),
+        "lines-unknown" => (
+            "LINES_UNKNOWN",
+            "Deck could not read the card's queue, so it cannot prove no line of yours still waits there; nothing was closed",
+            "Read the card again in a moment (deck_worker_list) and close with a new request.",
+        ),
+        "session-present" => (
+            "SESSION_PRESENT",
+            "the card's session exists (again): a close for a gone session never closes what runs there now; nothing was closed",
+            "Read the card again (deck_worker_list): close what runs there by its instance (close_mode: instance) or its episode, which the shared checks decide on.",
         ),
         "worker-needs-you" => (
             "WORKER_NEEDS_YOU",
@@ -1923,13 +2252,14 @@ fn admission_refusal(code: &str, observed: Value) -> Value {
 }
 
 /// What Deck observed of a card when it decided on a close: its episode
-/// and state, the instance in front of its pane, its newest accepted line
-/// and its unsent lines (each null when unknown).
+/// and state, whether the listing has its session, the instance in front
+/// of its pane, its newest accepted line and its lines still in the queue
+/// (each null when unknown).
 fn observed_view(
     now: Option<Seen>,
     listed: bool,
     worker: Option<&Worker>,
-    unsent: Option<usize>,
+    lines: Option<&crate::scheduler::WorkerLines>,
 ) -> Value {
     json!({
         "episode": now.map(|s| s.episode),
@@ -1939,69 +2269,86 @@ fn observed_view(
             None if listed => "gone",
             None => "unknown",
         },
+        "liveness": liveness(listed, now),
         "instance": now.as_ref().and_then(instance_token),
         "lastLine": worker.and_then(|w| w.lines.last()),
-        "unsent": unsent,
+        "unsent": lines.map(|l| l.queued),
+        "activeLines": lines.map(|l| json!({
+            "queued": l.queued,
+            "sending": l.sending,
+            "uncertain": l.uncertain,
+        })),
     })
 }
 
-/// The worker card's lines from this client that are still unsent (pending
-/// or failed rows in the queue): its start's head row and its lines. `None`
-/// when the queue cannot be read.
-pub(super) fn unsent_lines(runtime: &Runtime, worker: &Worker) -> Option<usize> {
+/// The worker card's lines from its client still in the queue (its start's
+/// head row and its lines; `scheduler::worker_lines`), with whether one was
+/// accepted and is not queued yet. `None` when the queue cannot be read.
+pub(super) fn close_lines(
+    runtime: &Runtime,
+    worker: &Worker,
+) -> Option<(crate::scheduler::WorkerLines, bool)> {
     #[cfg(test)]
     if let Some(forced) = UNSENT_FOR_TESTS.with(std::cell::Cell::get) {
-        return forced;
+        return forced.map(|n| {
+            (
+                crate::scheduler::WorkerLines {
+                    queued: n,
+                    ..Default::default()
+                },
+                false,
+            )
+        });
     }
-    let queue = queues(runtime)?;
-    let mut ids = runtime
-        .read(|doc| sends_of(doc, &worker.client_id, &worker.card_id))
+    let (known, in_flight) = runtime
+        .read(|doc| {
+            (
+                known_of(doc, worker),
+                line_in_flight(doc, &worker.client_id, &worker.card_id),
+            )
+        })
         .ok()?;
-    ids.extend(worker.lines.iter().cloned());
-    ids.push(worker.operation_id.clone());
-    Some(crate::scheduler::worker_rows(&queue.q, &worker.card_id, &worker.client_id, &ids, None).0)
+    #[cfg(test)]
+    if runtime.app.is_none() {
+        // a unit test's runtime has no queue: an empty one, unless the test
+        // names its own (`UNSENT_FOR_TESTS`, `Some(None)` = unreadable)
+        return Some((crate::scheduler::WorkerLines::default(), in_flight));
+    }
+    lines_of(runtime, worker, &known, &[], None).map(|lines| (lines, in_flight))
 }
 
-/// Whether an instance-mode close still holds for the card as it is now:
-/// `Err` is the refusal word. `now` is the card's session in a listing that
-/// succeeded (`None`: the session is gone, its instance ended).
-fn instance_verdict(
+/// What one close was decided on: its mode, the episode (episode mode),
+/// the newest line (instance and gone modes) and what the shared checks
+/// hold the card to.
+struct Decision<'a> {
+    mode: CloseMode,
+    episode: u64,
+    last_line: Option<&'a String>,
+    decided: Decided,
+}
+
+/// Whether a close holds for the card as it is now (`Err`: the refusal
+/// word): the mode's own binding first, then the shared checks.
+fn close_verdict(
+    decision: &Decision<'_>,
     worker: &Worker,
-    bound: &InstanceBinding,
     now: Option<Seen>,
-    unsent: Option<usize>,
+    lines: Option<&crate::scheduler::WorkerLines>,
+    in_flight: bool,
 ) -> Result<(), &'static str> {
-    if worker.lines.last() != bound.last_line.as_ref() {
-        return Err("new-input");
+    match decision.mode {
+        CloseMode::Episode => {
+            if now.map_or(0, |s| s.episode) != decision.episode {
+                return Err("episode-moved");
+            }
+        }
+        CloseMode::Instance | CloseMode::Gone => {
+            if worker.lines.last() != decision.last_line {
+                return Err("new-input");
+            }
+        }
     }
-    match unsent {
-        None => return Err("instance-unknown"),
-        Some(n) if n > 0 => return Err("lines-pending"),
-        Some(_) => {}
-    }
-    let Some(now) = now else {
-        // the session left the listing: the instance ended with it
-        return Ok(());
-    };
-    if now.pane == 0 || now.instance == 0 {
-        return Err("instance-unknown");
-    }
-    if now.pane != bound.pane {
-        return Err("instance-changed");
-    }
-    if now.instance != bound.instance {
-        // a shell back in front of the same pane: the instance ended;
-        // anything else in front is another program
-        return if now.shell {
-            Ok(())
-        } else {
-            Err("instance-changed")
-        };
-    }
-    if !now.shell && now.state.is_none() {
-        return Err("observation-unknown");
-    }
-    Ok(())
+    shared_verdict(decision.decided, now, lines, in_flight)
 }
 
 /// A line refused because a close of its card was accepted first.
@@ -2049,7 +2396,7 @@ pub(super) fn opened_by<'a>(
 /// still the card the planning orchestrator card started (the same record:
 /// `workerOperationId`) and nobody took over, its Agent not asking the
 /// user, and — by the close's mode — its episode the one decided on, or its
-/// instance and lines the ones decided on (`instance_verdict`). This is
+/// instance and lines the ones decided on (`close_verdict`). This is
 /// the close's linearization point: what changes before it decides the
 /// outcome; once it admits, the card is closed through the webview's
 /// ordinary close, which may still refuse for the user's own reasons
@@ -2060,7 +2407,7 @@ pub(super) fn close_still_admissible(
     operation: &Operation,
     targets: Option<&HashMap<String, crate::documents::CardTarget>>,
     seen: Option<&HashMap<String, Seen>>,
-    unsent: Option<usize>,
+    lines: Option<&crate::scheduler::WorkerLines>,
 ) -> Result<(), (&'static str, Value)> {
     let bare = |code| (code, json!(null));
     let plan = operation.result.as_ref().ok_or(bare("worker-close-plan"))?;
@@ -2085,22 +2432,36 @@ pub(super) fn close_still_admissible(
     }
     let seen = seen.ok_or(bare("worker-unobserved"))?;
     let now = seen.get(text("session")).copied();
-    let observed = || observed_view(now, true, Some(worker), unsent);
-    if text("closeMode") == CloseMode::Instance.word() {
-        let bound = InstanceBinding::of_plan(plan).ok_or(bare("worker-close-plan"))?;
-        instance_verdict(worker, &bound, now, unsent).map_err(|code| (code, observed()))?;
-    } else if now.map_or(0, |s| s.episode)
-        != plan
-            .get("afterEpisode")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-    {
-        return Err(("episode-moved", observed()));
+    let observed = || observed_view(now, true, Some(worker), lines);
+    let mode = match text("closeMode") {
+        "instance" => CloseMode::Instance,
+        "gone" => CloseMode::Gone,
+        _ => CloseMode::Episode,
+    };
+    if mode == CloseMode::Instance && Decided::of_plan(plan) == Decided::Unbound {
+        return Err(bare("worker-close-plan"));
     }
-    if now.and_then(|s| s.state) == Some("needs-input") {
-        return Err(("worker-needs-you", observed()));
-    }
-    Ok(())
+    let last_line = plan
+        .get("lastLine")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let in_flight = line_in_flight(doc, &operation.client_id, &worker.card_id);
+    close_verdict(
+        &Decision {
+            mode,
+            episode: plan
+                .get("afterEpisode")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            last_line: last_line.as_ref(),
+            decided: Decided::of_plan(plan),
+        },
+        worker,
+        now,
+        lines,
+        in_flight,
+    )
+    .map_err(|code| (code, observed()))
 }
 
 /// The refusal an admission stores in its operation's result.
@@ -2157,11 +2518,12 @@ pub(super) fn worker_close(
     let mode = match args.close_mode.as_deref() {
         None | Some("episode") => CloseMode::Episode,
         Some("instance") => CloseMode::Instance,
+        Some("gone") => CloseMode::Gone,
         Some(_) => {
             return Err(error_value(
                 "INVALID_ARGUMENTS",
-                "close_mode is `episode` or `instance`",
-                "Use close_mode: instance with the card's instance and lastLine, or close_mode: episode (the default) with after_episode.",
+                "close_mode is `episode`, `instance` or `gone`",
+                "Use close_mode: instance with the card's instance and lastLine, close_mode: gone with its lastLine for a card whose liveness is gone, or close_mode: episode (the default) with after_episode.",
             ))
         }
     };
@@ -2185,14 +2547,23 @@ pub(super) fn worker_close(
                 return Err(error_value(
                     "INVALID_ARGUMENTS",
                     "close_mode instance takes instance (and last_line when the card has one), never after_episode",
-                    "Copy the card's instance and lastLine from deck_worker_list or deck_worker_wait; leave last_line out when lastLine is null. A card whose instance is null cannot be closed this way yet.",
+                    "Copy the card's instance and lastLine from deck_worker_list or deck_worker_wait; leave last_line out when lastLine is null. A card whose instance is null cannot be closed this way: if its liveness is gone, use close_mode: gone.",
                 ));
             }
-            parsed.map(|(pane, instance)| InstanceBinding {
-                pane,
-                instance,
-                last_line: args.last_line.clone(),
-            })
+            parsed.map(|(pane, instance)| Decided::Instance { pane, instance })
+        }
+        CloseMode::Gone => {
+            if args.after_episode.is_some()
+                || args.instance.is_some()
+                || args.last_line.as_deref().is_some_and(|l| !valid_id(l))
+            {
+                return Err(error_value(
+                    "INVALID_ARGUMENTS",
+                    "close_mode gone takes last_line when the card has one, and neither after_episode nor instance",
+                    "Copy the card's lastLine from deck_worker_list (leave it out when null); use this mode only for a card whose liveness reads gone.",
+                ));
+            }
+            Some(Decided::Gone)
         }
     };
     let binding = super::admit::Binding::of(args.send_sequence, args.lane_epoch)?;
@@ -2249,30 +2620,31 @@ pub(super) fn worker_close(
         ))
     })?;
     let now = seen.get(&target.session).copied();
-    match &bound {
-        None => {
-            let current = now.map_or(0, |s| s.episode);
-            if Some(current) != args.after_episode {
-                return Err(close_refusal(
-                    "episode-moved",
-                    Some(current),
-                    observed_view(now, true, Some(&worker), None),
-                ));
-            }
-        }
-        Some(bound) => {
-            let unsent = unsent_lines(runtime, &worker);
-            if let Err(code) = instance_verdict(&worker, bound, now, unsent) {
-                return Err(close_refusal(
-                    code,
-                    None,
-                    observed_view(now, true, Some(&worker), unsent),
-                ));
-            }
-        }
-    }
-    if now.and_then(|s| s.state) == Some("needs-input") {
-        return Err(needs_you_refusal());
+    // what the close holds the card to: the instance or gone session it
+    // names, or — an episode close — what is in front now
+    let decided = bound.unwrap_or_else(|| Decided::of_now(now));
+    let lines = close_lines(runtime, &worker);
+    if let Err(code) = close_verdict(
+        &Decision {
+            mode,
+            episode: args.after_episode.unwrap_or(0),
+            last_line: args.last_line.as_ref(),
+            decided,
+        },
+        &worker,
+        now,
+        lines.as_ref().map(|(l, _)| l),
+        lines.as_ref().is_some_and(|(_, f)| *f),
+    ) {
+        let current = (code == "episode-moved").then(|| now.map_or(0, |s| s.episode));
+        return Err(match code {
+            "worker-needs-you" => needs_you_refusal(),
+            _ => close_refusal(
+                code,
+                current,
+                observed_view(now, true, Some(&worker), lines.as_ref().map(|(l, _)| l)),
+            ),
+        });
     }
     if let Err(limit) = within_rate(runtime, client_id) {
         return Err(error_value(
@@ -2310,15 +2682,21 @@ pub(super) fn worker_close(
                 return Ok(Err(refusal));
             }
             // a line accepted since the check above is work the decision
-            // did not see (instance mode)
-            if let Some(bound) = &bound {
-                if record.lines.last() != bound.last_line.as_ref() {
-                    return Ok(Err(close_refusal(
-                        "new-input",
-                        None,
-                        observed_view(now, true, Some(record), None),
-                    )));
-                }
+            // did not see (instance and gone modes bind the newest line;
+            // every mode refuses one still being queued)
+            if mode != CloseMode::Episode && record.lines.last() != args.last_line.as_ref() {
+                return Ok(Err(close_refusal(
+                    "new-input",
+                    None,
+                    observed_view(now, true, Some(record), None),
+                )));
+            }
+            if line_in_flight(doc, client_id, &worker.card_id) {
+                return Ok(Err(close_refusal(
+                    "lines-pending",
+                    None,
+                    observed_view(now, true, Some(record), None),
+                )));
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             let mut plan = json!({
@@ -2332,11 +2710,18 @@ pub(super) fn worker_close(
                 "workerOperationId": worker.operation_id,
                 "closeMode": mode.word(),
             });
-            match &bound {
-                None => plan["afterEpisode"] = json!(args.after_episode.unwrap_or(0)),
-                Some(_) => {
+            match mode {
+                CloseMode::Episode => {
+                    plan["afterEpisode"] = json!(args.after_episode.unwrap_or(0));
+                    decided.record(&mut plan);
+                }
+                CloseMode::Instance => {
                     plan["instance"] = json!(args.instance);
                     plan["lastLine"] = json!(args.last_line);
+                }
+                CloseMode::Gone => {
+                    plan["lastLine"] = json!(args.last_line);
+                    decided.record(&mut plan);
                 }
             }
             let operation = Operation {
@@ -2362,6 +2747,286 @@ pub(super) fn worker_close(
     emit_changed(runtime);
     let mut view = receipt(runtime, client_id, orchestrator, binding, &operation);
     view["nextAction"] = json!("Accepted, not closed yet: deck_operation_get with this operationId says committed once the card is gone, or rejected with a code (result.refusal says at which stage and what Deck observed). Until then the card takes no further line or close.");
+    Ok(view)
+}
+
+/* ---------- one line: its delivery, and canceling it ---------- */
+
+/// A worker line's cancel request (`deck_worker_cancel`).
+pub(super) const WORKER_CANCEL_KIND: &str = "worker-cancel";
+
+/// The worker card a line operation is about, as the caller may see it:
+/// the client's own worker (`own_card`'s reach), its known operations, and
+/// whether the operation is one of its lines — known to the ledger, or a
+/// queue row whose delegation is the client's.
+fn line_owner(
+    runtime: &Runtime,
+    client_id: &str,
+    orchestrator: Option<&str>,
+    card: &str,
+) -> Result<(Worker, Vec<String>), Value> {
+    runtime
+        .read(|doc| {
+            own_card(doc, client_id, orchestrator, card).map(|w| {
+                let known = known_of(doc, &w);
+                (w, known)
+            })
+        })
+        .map_err(map_error)?
+}
+
+/// The `delivery` of one worker line (`deck_operation_get`, the cancel's
+/// answer): where the queue says it stands, how it goes, whether it can be
+/// canceled now and, while queued and observed, where it waits. `ledger` is
+/// the line's MCP operation when the ledger still keeps it: `accepted`
+/// (not queued yet) and `rejected` (never queued) say so; a line the queue
+/// no longer holds is `unknown`, never guessed `canceled` or `delivered`.
+/// `delivered` says the text was handed to the pane, never that the agent
+/// did anything with it.
+fn delivery_view(
+    runtime: &Runtime,
+    worker: &Worker,
+    known: &[String],
+    id: &str,
+    ledger: Option<&Operation>,
+    mode: &str,
+) -> Value {
+    let observed = observe_for_views();
+    let plans = observed.as_ref().map(|(_, plans)| plans);
+    let line = queues(runtime).and_then(|q| {
+        crate::scheduler::worker_line_of(&q.q, &worker.card_id, &worker.client_id, known, id, plans)
+    });
+    let mut view = match (&line, ledger.map(|o| o.state.as_str())) {
+        (Some(line), _) => line_view(line, mode),
+        (None, Some("accepted")) => {
+            json!({"operationId": id, "state": "not-queued-yet", "mode": mode, "cancelable": false})
+        }
+        (None, Some("rejected")) => {
+            json!({"operationId": id, "state": "not-queued", "mode": mode, "cancelable": false})
+        }
+        (None, _) => {
+            json!({"operationId": id, "state": "unknown", "mode": mode, "cancelable": false})
+        }
+    };
+    view["cardId"] = json!(worker.card_id);
+    view["observed"] = json!(observed.is_some());
+    view
+}
+
+/// `deck_operation_get` for a worker start, line or cancel: the operation's
+/// own view (its `state` is the MCP decision: `committed` means the request
+/// was carried out — a line queued, never delivered), plus the line's
+/// `delivery`. With no ledger record (retired), the queue's own operation
+/// of that id on one of the caller's worker cards still answers its
+/// delivery, `record: retired`. `None`: not a worker line of this caller.
+pub(super) fn worker_operation_view(
+    runtime: &Runtime,
+    client_id: &str,
+    operation_id: &str,
+    ledger: Option<&Operation>,
+) -> Option<Value> {
+    let orchestrator = super::origin::orchestrator();
+    let orchestrator = orchestrator.as_deref();
+    let card = match ledger {
+        Some(o) if matches!(o.kind.as_str(), WORKER_SEND_KIND | WORKER_START_KIND) => o
+            .result
+            .as_ref()
+            .and_then(|r| r.get("cardId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)?,
+        Some(_) => return None,
+        None => {
+            queues(runtime).and_then(|q| crate::scheduler::operation_card(&q.q, operation_id))?
+        }
+    };
+    let (worker, known) = line_owner(runtime, client_id, orchestrator, &card).ok()?;
+    let mode = match ledger {
+        Some(o) if o.kind == WORKER_START_KIND => "start",
+        Some(o) if is_interjected(o) => INTERJECT_MODE,
+        Some(_) => "queued",
+        None if operation_id == worker.operation_id => "start",
+        None => "unknown",
+    };
+    let delivery = delivery_view(runtime, &worker, &known, operation_id, ledger, mode);
+    if ledger.is_none() && delivery["state"] == "unknown" {
+        // neither the ledger nor the queue holds it as this caller's line
+        return None;
+    }
+    let mut view = match ledger {
+        Some(o) => operation_view(o),
+        None => json!({"ok": true, "operationId": operation_id, "record": "retired"}),
+    };
+    view["delivery"] = delivery;
+    Some(view)
+}
+
+/// What a cancel's answer tells the caller to do next.
+fn cancel_next(outcome: crate::scheduler::CancelOutcome) -> &'static str {
+    use crate::scheduler::CancelOutcome::*;
+    match outcome {
+        Canceled | AlreadyCanceled => "Canceled: the line will not be sent. To send what it said another way (deck_worker_interject), use a NEW request_id and follow that new operation's delivery (deck_operation_get).",
+        Delivered => "The line was already delivered: nothing was taken back. Do not send the same task again; read the card (deck_worker_wait, deck_worker_reply) to see what the agent does with it.",
+        Sending => "The line is being sent right now and cannot be canceled. Follow it (deck_operation_get with targetOperationId) until it reads delivered or uncertain; do not send the same task again meanwhile.",
+        Uncertain => "Deck cannot tell whether the line went: it stays for the user to resolve in Deck's queue panel. Do not send the same task again on your own.",
+        UserEdited => "The user edited this line: it is theirs now and you cannot cancel it.",
+        NotFound => "Deck's queue holds no such line of yours on that card (never queued, or retired long ago): nothing changed. Read deck_worker_list sends.",
+    }
+}
+
+/// `deck_worker_cancel`: cancel ONE line of a worker card the caller drives
+/// (`own_card`'s reach), named by the operation its `deck_worker_send` or
+/// `deck_worker_interject` (or the start's first line) returned, while it
+/// still waits in the queue. Decided in the queue's own transaction under
+/// the lock the firing intent takes (`scheduler::worker_cancel`): a line is
+/// canceled before its firing intent and never starts, or it is found
+/// sending, delivered or uncertain and left exactly as it is (nothing is
+/// taken back, an uncertain line is never guessed unsent). A line the user
+/// edited, or a card the user took over, is theirs. It cancels that line
+/// only: never the card, its start or its other lines. The request has its
+/// own `request_id`: a repeat answers its recorded outcome; after a lost
+/// answer the queue answers again (`already-canceled`). Never resends.
+pub(super) fn worker_cancel(
+    runtime: &Runtime,
+    client_id: &str,
+    arguments: Value,
+) -> Result<Value, Value> {
+    let args: WorkerCancelArgs = parse(arguments)?;
+    if !valid_id(&args.request_id) || !valid_id(&args.card_id) || !valid_id(&args.operation_id) {
+        return Err(error_value(
+            "INVALID_ARGUMENTS",
+            "request id, card id or operation id is out of shape",
+            "Name the cardId and the line's operationId from deck_worker_list sends, with a fresh request id.",
+        ));
+    }
+    let hash = request_hash("deck_worker_cancel", &args);
+    let orchestrator = super::origin::orchestrator();
+    let orchestrator = orchestrator.as_deref();
+    if let Some(replayed) =
+        replay_worker(runtime, client_id, orchestrator, &args.request_id, &hash)?
+    {
+        return Ok(replayed);
+    }
+    let (worker, known) = line_owner(runtime, client_id, orchestrator, &args.card_id)?;
+    let targets = crate::documents::card_targets(false);
+    if super::origin::taken_over(&worker, targets.as_ref()) {
+        return Err(close_refusal("worker-taken-over", None, json!(null)));
+    }
+    let queue = queues(runtime).ok_or_else(|| {
+        map_error(DeckError::new(
+            ErrorKind::ContextChanged,
+            "Deck's queue is not available",
+        ))
+    })?;
+    // only a line of the caller's: known to the ledger, or a row whose
+    // delegation is the caller's (the queue decides the rest)
+    let line = crate::scheduler::worker_line_of(
+        &queue.q,
+        &worker.card_id,
+        client_id,
+        &known,
+        &args.operation_id,
+        None,
+    );
+    if line.is_some()
+        && !known.contains(&args.operation_id)
+        && !line.as_ref().is_some_and(|l| l.cancelable)
+    {
+        return Err(error_value(
+            "LINE_NOT_FOUND",
+            "that operation is not one of your lines on this card",
+            "Name an operationId from this card's deck_worker_list sends.",
+        ));
+    }
+    let outcome = crate::scheduler::worker_cancel(
+        &queue,
+        runtime.app.as_ref(),
+        &worker.card_id,
+        client_id,
+        &args.operation_id,
+    )
+    .map_err(|_| {
+        error_value(
+            "CANCEL_NOT_SAVED",
+            "Deck could not save the cancel: the line is unchanged and may still be sent",
+            "Repeat the same request (same request_id) in a moment; read the line's delivery first (deck_operation_get with its operationId).",
+        )
+    })?;
+    use crate::scheduler::CancelOutcome::*;
+    let (state, code) = match outcome {
+        Canceled | AlreadyCanceled => ("committed", None),
+        Delivered => ("rejected", Some("ALREADY_DELIVERED")),
+        Sending => ("rejected", Some("LINE_SENDING")),
+        Uncertain => ("rejected", Some("DELIVERY_UNCERTAIN")),
+        UserEdited => ("rejected", Some("LINE_EDITED_BY_USER")),
+        NotFound => ("rejected", Some("LINE_NOT_FOUND")),
+    };
+    if outcome == Canceled {
+        note_worker_change();
+    }
+    let minted = random_id("op_", 16).map_err(map_error)?;
+    let recorded = runtime.write(|doc| -> Result<Operation, DeckError> {
+        permitted(doc, client_id, Choice::Workers)?;
+        if let Some(existing) = existing_operation(doc, client_id, &args.request_id, &hash)? {
+            return Ok(existing.clone());
+        }
+        reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
+        let mut operation = Operation {
+            result: Some(json!({
+                "cardId": worker.card_id,
+                "targetOperationId": args.operation_id,
+                "outcome": outcome.word(),
+            })),
+            ..Operation::new(
+                minted.clone(),
+                client_id,
+                args.request_id.clone(),
+                hash.clone(),
+                WORKER_CANCEL_KIND,
+                state,
+            )
+        };
+        operation.code = code.map(str::to_owned);
+        doc.operations.push(operation.clone());
+        Ok(operation)
+    });
+    let mode = runtime
+        .read(|doc| {
+            doc.operations
+                .iter()
+                .find(|o| o.operation_id == args.operation_id)
+                .map(|o| {
+                    if o.kind == WORKER_START_KIND {
+                        "start"
+                    } else if is_interjected(o) {
+                        INTERJECT_MODE
+                    } else {
+                        "queued"
+                    }
+                })
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(if args.operation_id == worker.operation_id {
+            "start"
+        } else {
+            "unknown"
+        });
+    let delivery = delivery_view(runtime, &worker, &known, &args.operation_id, None, mode);
+    let mut view = match recorded {
+        Ok(operation) => operation_view(&operation),
+        // the queue's answer stands; only its record is missing: the same
+        // request asks the queue again
+        Err(_) => json!({
+            "ok": true,
+            "kind": WORKER_CANCEL_KIND,
+            "state": state,
+            "code": code,
+            "result": {"cardId": worker.card_id, "targetOperationId": args.operation_id, "outcome": outcome.word()},
+            "recorded": false,
+        }),
+    };
+    view["delivery"] = delivery;
+    view["nextAction"] = json!(cancel_next(outcome));
     Ok(view)
 }
 
@@ -2393,6 +3058,10 @@ pub(crate) struct WorkerCardView {
     /// card to acknowledge it (`reports::awaiting_ack`): the label says so
     /// until it does. Never a count, never the text.
     report_pending: bool,
+    /// `reports::receipt_state` of the newest report (`none`, `unowned`,
+    /// `unknown`, `pending`, `acknowledged`): the label tells an untracked
+    /// receipt from a received one.
+    receipt_state: &'static str,
 }
 
 pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckError> {
@@ -2414,6 +3083,7 @@ pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckE
                     reported_at: super::reports::reported_at(doc, w),
                     report_pending: super::reports::awaiting_ack(w)
                         && !super::origin::taken_over(w, targets.as_ref()),
+                    receipt_state: super::reports::receipt_state(w).word(),
                 })
             })
             .collect()
@@ -3110,6 +3780,7 @@ pub(super) fn settle_start(runtime: &Runtime, operation_id: &str, session: &str)
             },
             true,
             first_send,
+            None,
         ),
         _ => Err(DeckError::new(
             ErrorKind::ContextChanged,

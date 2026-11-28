@@ -3573,6 +3573,20 @@ export async function verifyWorktreeSwitchRelaunch() {
   await runWorkersSmoke({ worktreeRelaunch: true });
 }
 
+// A queued worker line kept past nine delivered interjections and canceled
+// exactly, then a Deck restart with the worker agent alive (no close mode
+// passes its unknown observation) and its gone session cleared
+// (workers-smoke.mjs, scenario `recovery`).
+export async function verifyWorkerRecovery() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ recovering: true });
+}
+
+export async function verifyWorkerRecoveryRelaunch() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ recoveryRelaunch: true });
+}
+
 // A Claude worker type under a second config folder (a second account):
 // the `types` run with `CLAUDE_CONFIG_DIR=<folder> claude …`
 // (workers-smoke.mjs, scenario `account`).

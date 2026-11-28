@@ -157,3 +157,30 @@ test('a report its orchestrator has not acknowledged says so until it is, then t
   // the orchestrator card gone: the user's card, no pending label
   assert.equal(workerLabel(worker, [{ id: 'W1', title: 'Fix' }], now).pending, false);
 });
+
+test('the receipt label tells an untracked receipt from a received one', async () => {
+  setLocale('en');
+  const { workerLabel } = await import('../js/workers.js');
+  const { fmtClock } = await import('../js/scheduler-model.js');
+  const now = new Date(2026, 10, 28, 15, 0);
+  const at = new Date(2026, 10, 28, 14, 5).getTime();
+  const base = { cardId: 'W1', clientName: 'Orchestrator', takenOver: false, orchestratorCardId: 'OA', reportedAt: at, reportPending: false };
+  const cards = [{ id: 'OA', title: 'Orch A' }, { id: 'W1', title: 'Fix' }];
+  const time = fmtClock(Math.floor(at / 1000), now);
+  const driven = t('workers.driven', { name: 'Orch A' });
+  // acknowledged: null on an owned card with reports → "receipt unknown", never "received"
+  const unknown = workerLabel({ ...base, receiptState: 'unknown' }, cards, now);
+  assert.equal(unknown.text, `${driven} · ${t('workers.reportUnknown', { time })}`);
+  assert.ok(unknown.title.endsWith(t('workers.reportUnknownTitle')));
+  assert.equal(unknown.pending, false);
+  const received = workerLabel({ ...base, receiptState: 'acknowledged' }, cards, now);
+  assert.equal(received.text, `${driven} · ${t('workers.reportReceived', { time })}`);
+  assert.notEqual(t('workers.reportReceived', { time }), t('workers.reportUnknown', { time }));
+  // pending outranks the receipt word; unowned is the plain label
+  const pending = workerLabel({ ...base, reportPending: true, receiptState: 'pending' }, cards, now);
+  assert.equal(pending.text, `${driven} · ${t('workers.reportPending', { time })}`);
+  const unowned = workerLabel({ ...base, receiptState: 'unowned' }, cards, now);
+  assert.equal(unowned.text, `${driven} · ${t('workers.reported', { time })}`);
+  // a card the user took over says nothing of receipt
+  assert.ok(!workerLabel({ ...base, takenOver: true, receiptState: 'unknown' }, cards, now).text.includes(t('workers.reportUnknown', { time })));
+});

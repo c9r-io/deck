@@ -294,15 +294,70 @@ pub(super) fn summary(doc: &DiskDoc, worker: &super::workers::Worker) -> Value {
         // the highest sequence its orchestrator acknowledged (null: not
         // tracked), and whether the newest is past it: never a count
         "acknowledged": worker.acknowledged,
+        // kept for older clients: true only for a KNOWN pending report;
+        // false is not "received" (read `receiptState`)
         "awaitingAck": awaiting_ack(worker),
+        "receiptState": receipt_state(worker).word(),
     })
+}
+
+/// Where the receipt of a card's NEWEST report stands, derived from the
+/// record's own fields every time (never stored beside them):
+/// - `none`: no report yet;
+/// - `unowned`: reports, but no orchestrator card owns the card (nobody
+///   acknowledges for it);
+/// - `unknown`: an owned card's reports whose receipt Deck never tracked
+///   (reports from before acknowledgments, `acknowledged: null`), or a
+///   record whose numbers do not fit together: never read as received;
+/// - `pending`: tracked, and the newest report is past the highest one its
+///   orchestrator acknowledged;
+/// - `acknowledged`: the orchestrator acknowledged the newest report.
+///
+/// It is about the newest report only: an acknowledgment of one sequence
+/// says nothing of the ones before it, and none of these is review,
+/// approval, handling or the task's completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReceiptState {
+    None,
+    Unowned,
+    Unknown,
+    Pending,
+    Acknowledged,
+}
+
+impl ReceiptState {
+    pub(super) fn word(self) -> &'static str {
+        match self {
+            ReceiptState::None => "none",
+            ReceiptState::Unowned => "unowned",
+            ReceiptState::Unknown => "unknown",
+            ReceiptState::Pending => "pending",
+            ReceiptState::Acknowledged => "acknowledged",
+        }
+    }
+}
+
+pub(super) fn receipt_state(worker: &super::workers::Worker) -> ReceiptState {
+    if worker.reported == 0 {
+        return ReceiptState::None;
+    }
+    if worker.orchestrator.is_none() {
+        return ReceiptState::Unowned;
+    }
+    match worker.acknowledged {
+        None => ReceiptState::Unknown,
+        Some(a) if a < worker.reported => ReceiptState::Pending,
+        Some(a) if a == worker.reported => ReceiptState::Acknowledged,
+        // past what the card was ever given: the record is not trusted
+        Some(_) => ReceiptState::Unknown,
+    }
 }
 
 /// Whether the card's newest report waits for its orchestrator's
 /// acknowledgment: tracked, and newer than what was acknowledged. An
 /// untracked record (`None`) says nothing either way.
 pub(super) fn awaiting_ack(worker: &super::workers::Worker) -> bool {
-    worker.acknowledged.is_some_and(|a| worker.reported > a)
+    receipt_state(worker) == ReceiptState::Pending
 }
 
 /// One kept report as a reader with `allow_replies` sees it.
@@ -718,6 +773,7 @@ pub(super) fn worker_reports_ack(
                 "latest": worker.reported,
                 "firstKept": first_kept,
                 "awaitingAck": awaiting_ack(worker),
+                "receiptState": receipt_state(worker).word(),
                 "nextAction": if awaiting_ack(worker) {
                     "A newer report than the one acknowledged is waiting: read it (deck_worker_reports after this sequence), then acknowledge its sequence."
                 } else {

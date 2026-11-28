@@ -264,19 +264,40 @@ pub(super) fn operation_get(
     arguments: Value,
 ) -> Result<Value, Value> {
     let args: OperationArgs = parse(arguments)?;
-    runtime
+    let found = runtime
         .read(|doc| {
             client(doc, client_id)?;
-            doc.operations
-                .iter()
-                .find(|operation| {
-                    operation.operation_id == args.operation_id && operation.client_id == client_id
-                })
-                .map(operation_view)
-                .ok_or_else(|| DeckError::new(ErrorKind::Missing, "operation not found"))
+            Ok::<_, DeckError>(
+                doc.operations
+                    .iter()
+                    .find(|operation| {
+                        operation.operation_id == args.operation_id
+                            && operation.client_id == client_id
+                    })
+                    .cloned(),
+            )
         })
         .map_err(map_error)?
-        .map_err(map_error)
+        .map_err(map_error)?;
+    // a worker start or line also says where its text is (`delivery`),
+    // read from the queue itself, also once the ledger retired its record
+    let workers = runtime
+        .read(|doc| permitted(doc, client_id, Choice::Workers).is_ok())
+        .unwrap_or(false);
+    if workers {
+        if let Some(view) = super::workers::worker_operation_view(
+            runtime,
+            client_id,
+            &args.operation_id,
+            found.as_ref(),
+        ) {
+            return Ok(view);
+        }
+    }
+    found
+        .as_ref()
+        .map(operation_view)
+        .ok_or_else(|| map_error(DeckError::new(ErrorKind::Missing, "operation not found")))
 }
 
 pub(super) fn inspect(

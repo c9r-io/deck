@@ -10,7 +10,7 @@ use super::*;
 /// added there without listing the tool here (and in
 /// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
 /// to the fixture and check that every member routes.
-pub(super) const CONTROL_TOOLS: [&str; 40] = [
+pub(super) const CONTROL_TOOLS: [&str; 41] = [
     "deck_automation_list",
     "deck_automation_trigger",
     "deck_capabilities",
@@ -35,6 +35,7 @@ pub(super) const CONTROL_TOOLS: [&str; 40] = [
     "deck_worker_reports_ack",
     "deck_worker_send",
     "deck_worker_interject",
+    "deck_worker_cancel",
     "deck_worker_start",
     "deck_worker_close",
     "deck_config_describe",
@@ -222,6 +223,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "deck_worker_interject" => {
                 worker_interject(runtime, &request.client_id, request.arguments)
             }
+            "deck_worker_cancel" => worker_cancel(runtime, &request.client_id, request.arguments),
             "deck_worker_start" => worker_start(runtime, &request.client_id, request.arguments),
             "deck_worker_close" => worker_close(runtime, &request.client_id, request.arguments),
             "deck_config_describe" => {
@@ -271,6 +273,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 | "deck_automation_trigger"
                 | "deck_worker_send"
                 | "deck_worker_interject"
+                | "deck_worker_cancel"
                 | "deck_worker_start"
                 | "deck_worker_close"
                 | "deck_worker_report"
@@ -299,6 +302,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 "deck_worker_start",
                 "deck_worker_send",
                 "deck_worker_interject",
+                "deck_worker_cancel",
                 "deck_worker_close",
                 "deck_worker_report",
                 "deck_worker_reports_ack",

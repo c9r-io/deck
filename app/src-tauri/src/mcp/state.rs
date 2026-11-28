@@ -754,6 +754,7 @@ pub(super) fn compact(doc: &mut DiskDoc, current_service: Option<&str>) -> bool 
                 | super::workers::WORKER_SEND_KIND
                 | super::workers::WORKER_START_KIND
                 | super::workers::WORKER_CLOSE_KIND
+                | super::workers::WORKER_CANCEL_KIND
                 | super::cards::CARD_UPDATE_KIND
                 | super::notes::CARD_NOTE_KIND
         )

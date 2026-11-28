@@ -291,13 +291,13 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     ),
     // a worker card's close (`deck_worker_close`): an Agent asking the
     // user (`needs-input`) REFUSES the close, at the request and again at
-    // admission, and nothing else is read: no word ever closes a card
-    // (contract test `a_worker_card_closes_only_for_the_orchestrator_card_
-    // that_started_it`)
-    ("mcp/workers.rs", "worker_close", "\"needs-input\"", 1, Hold),
+    // admission — one shared check every close mode stands on — and
+    // nothing else is read: no word ever closes a card (contract tests
+    // `a_worker_card_closes_only_for_the_orchestrator_card_that_started_it`,
+    // `closes_share_one_boundary_after_a_deck_restart`)
     (
         "mcp/workers.rs",
-        "close_still_admissible",
+        "shared_verdict",
         "\"needs-input\"",
         1,
         Hold,

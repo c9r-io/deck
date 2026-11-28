@@ -813,7 +813,7 @@ fn every_text_carrying_tauri_command_is_reviewed() {
                 assert!(body(file, "add_reviewed_rows").contains("validate_add("));
             }
             Command::OwnerQueue => {
-                assert!(text.contains("queue_add_core(state, app, args, None, false)"));
+                assert!(text.contains("queue_add_core(state, app, args, None, false, None)"));
                 assert!(body(file, "queue_add_core").contains("validate_add("));
             }
             _ => assert!(

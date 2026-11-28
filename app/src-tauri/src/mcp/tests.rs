@@ -10107,7 +10107,7 @@ fn a_close_bound_to_its_instance_survives_the_workers_own_turn_ending() {
     UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(1))));
     assert_eq!(code(&close_b("i6", json!({}))), "LINES_PENDING");
     UNSENT_FOR_TESTS.with(|cell| cell.set(Some(None)));
-    assert_eq!(code(&close_b("i7", json!({}))), "INSTANCE_UNKNOWN");
+    assert_eq!(code(&close_b("i7", json!({}))), "LINES_UNKNOWN");
     UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(0))));
     // a line accepted for the card since the decision: refused first, and
     // at admission when it came after the acceptance
@@ -10160,6 +10160,261 @@ fn a_close_bound_to_its_instance_survives_the_workers_own_turn_ending() {
     UNSENT_FOR_TESTS.with(|cell| cell.set(None));
     OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
     drop(root);
+}
+
+/// Feedback 2026-11-28: after a Deck upgrade nine worker cards read
+/// `unavailable / no-turn-seen`; every instance close answered
+/// OBSERVATION_UNKNOWN, yet `after_episode: 0` closed them all. Both modes
+/// now stand on one shared boundary: a program running in front with no
+/// Agent observation (a GUI restart with tmux and the agent alive) closes in
+/// no mode; a card whose session a listing that succeeded no longer has
+/// closes without any earlier token (`close_mode: gone`), and only while it
+/// stays gone; a listing that failed proves nothing; lines still in the
+/// queue refuse every mode.
+#[test]
+fn closes_share_one_boundary_after_a_deck_restart() {
+    let (runtime, _runner, root) = fixture("close-shared", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    client_permissions(&runtime, "client_a", round2_workers_on(true)).unwrap();
+    let card = |id: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": "claude", "dir": "/tmp", "projectId": "P1", "columnId": "C1"});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("OA"), card("WA"), card("WB"), card("WC")]}),
+        true,
+    );
+    runtime
+        .write(|doc| {
+            doc.workers.extend([
+                round2_worker("WA", Some("OA")),
+                round2_worker("WB", Some("OA")),
+                round2_worker("WC", Some("OA")),
+            ]);
+            Ok(())
+        })
+        .unwrap();
+    type Listed<'a> = (&'a str, Option<&'static str>, u64, u64, u64, bool);
+    let observe = |entries: &[Listed]| {
+        let map: HashMap<String, Seen> = entries
+            .iter()
+            .map(|(session, state, episode, pane, instance, shell)| {
+                (
+                    (*session).to_owned(),
+                    instance_seen_for_tests(*state, *episode, *pane, *instance, *shell),
+                )
+            })
+            .collect();
+        OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(map)));
+    };
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(0))));
+    let call = |tool: &str, args: Value| {
+        let _as = super::origin::enter_as(Some("OA"));
+        route(&runtime, request(tool, args))
+    };
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+    let lane = call("deck_worker_list", json!({}))["laneEpoch"]
+        .as_u64()
+        .unwrap();
+    // after the restart: WA's agent still runs (a program in front, its
+    // observation lost), WB's session is gone, WC's agent ended (its shell)
+    observe(&[
+        ("deck-oa", Some("working"), 3, 0x10, 0x20, false),
+        ("deck-wa", None, 0, 0x11, 0x21, false),
+        ("deck-wc", None, 0, 0x13, 0x41, true),
+    ]);
+    let listed = call("deck_worker_list", json!({}));
+    let view = |id: &str| {
+        listed["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["cardId"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(view("WA")["liveness"], "alive");
+    assert_eq!(view("WA")["agent"]["why"], "no-turn-seen");
+    assert_eq!(view("WA")["foreground"]["kind"], "program");
+    assert_eq!(view("WB")["liveness"], "gone", "{listed}");
+    assert!(view("WB")["instance"].is_null());
+    assert_eq!(view("WB")["agent"]["why"], "session-gone");
+    assert_eq!(view("WC")["agent"]["why"], "no-agent-running");
+    assert_eq!(view("WC")["foreground"]["kind"], "shell");
+
+    // 1. the live agent Deck cannot observe: no mode closes it
+    let ep0 = call(
+        "deck_worker_close",
+        json!({"request_id": "a-ep0", "lane_epoch": lane, "card_id": "WA", "after_episode": 0}),
+    );
+    assert_eq!(code(&ep0), "OBSERVATION_UNKNOWN", "{ep0}");
+    assert_eq!(ep0["error"]["stage"], "precheck");
+    assert!(
+        !ep0["error"]["nextAction"]
+            .as_str()
+            .unwrap()
+            .contains("close_mode: episode"),
+        "the refusal never points at a weaker mode: {ep0}"
+    );
+    let inst = call(
+        "deck_worker_close",
+        json!({"request_id": "a-in", "lane_epoch": lane, "card_id": "WA", "close_mode": "instance", "instance": token_for_tests(0x11, 0x21)}),
+    );
+    assert_eq!(code(&inst), "OBSERVATION_UNKNOWN", "{inst}");
+    let gone_alive = call(
+        "deck_worker_close",
+        json!({"request_id": "a-gone", "lane_epoch": lane, "card_id": "WA", "close_mode": "gone"}),
+    );
+    assert_eq!(code(&gone_alive), "SESSION_PRESENT", "{gone_alive}");
+    // an episode close accepted while the agent was observed is refused at
+    // its admission once the observation is lost (the restart came between)
+    observe(&[("deck-wa", Some("turn-done"), 4, 0x11, 0x21, false)]);
+    let accepted = call(
+        "deck_worker_close",
+        json!({"request_id": "a-ep4", "lane_epoch": lane, "card_id": "WA", "after_episode": 4}),
+    );
+    assert_eq!(accepted["state"], "accepted", "{accepted}");
+    let op = accepted["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &op).unwrap();
+    observe(&[("deck-wa", None, 4, 0x11, 0x21, false)]);
+    assert!(close_admit(&runtime, &op).is_err());
+    assert_eq!(
+        round2_state(&runtime, &op).1.as_deref(),
+        Some("observation-unknown")
+    );
+    // and a new program in front of the same pane (a re-entry) refuses an
+    // episode close decided on the old one, whatever its episode says
+    observe(&[("deck-wa", Some("turn-done"), 4, 0x11, 0x21, false)]);
+    let again = call(
+        "deck_worker_close",
+        json!({"request_id": "a-ep4b", "lane_epoch": lane, "card_id": "WA", "after_episode": 4}),
+    );
+    let op = again["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &op).unwrap();
+    observe(&[("deck-wa", Some("turn-done"), 4, 0x11, 0x22, false)]);
+    assert!(close_admit(&runtime, &op).is_err());
+    assert_eq!(
+        round2_state(&runtime, &op).1.as_deref(),
+        Some("instance-changed")
+    );
+
+    // 2. the gone session: no token from before, the newest line only
+    observe(&[("deck-wa", Some("turn-done"), 4, 0x11, 0x21, false)]);
+    let shape = call(
+        "deck_worker_close",
+        json!({"request_id": "b-bad", "lane_epoch": lane, "card_id": "WB", "close_mode": "gone", "after_episode": 0}),
+    );
+    assert_eq!(code(&shape), "INVALID_ARGUMENTS");
+    // a listing that failed proves nothing: nothing is accepted
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(None));
+    let blind = call(
+        "deck_worker_close",
+        json!({"request_id": "b-blind", "lane_epoch": lane, "card_id": "WB", "close_mode": "gone"}),
+    );
+    assert!(
+        blind["ok"] == false && blind.get("state").is_none(),
+        "{blind}"
+    );
+    // lines of its own still queued refuse it (the scheduler would start a
+    // gone session again to deliver them)
+    observe(&[("deck-wa", Some("turn-done"), 4, 0x11, 0x21, false)]);
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(1))));
+    let pending = call(
+        "deck_worker_close",
+        json!({"request_id": "b-pend", "lane_epoch": lane, "card_id": "WB", "close_mode": "gone"}),
+    );
+    assert_eq!(code(&pending), "LINES_PENDING", "{pending}");
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(None)));
+    assert_eq!(
+        code(&call(
+            "deck_worker_close",
+            json!({"request_id": "b-unk", "lane_epoch": lane, "card_id": "WB", "close_mode": "gone"}),
+        )),
+        "LINES_UNKNOWN"
+    );
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(0))));
+    let gone = call(
+        "deck_worker_close",
+        json!({"request_id": "b-gone", "lane_epoch": lane, "card_id": "WB", "close_mode": "gone"}),
+    );
+    assert_eq!(gone["state"], "accepted", "{gone}");
+    assert_eq!(gone["result"]["closeMode"], "gone");
+    assert_eq!(gone["result"]["decidedGone"], true);
+    assert_eq!(gone["result"]["workerOperationId"], "op_WB");
+    let gone_op = gone["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &gone_op).unwrap();
+    // the session came back (the user reopened the card) before the
+    // admission: refused, never a close of what runs there now — not even
+    // its own shell
+    observe(&[("deck-wb", None, 0, 0x12, 0x31, true)]);
+    assert!(close_admit(&runtime, &gone_op).is_err());
+    let (state, why, result) = round2_state(&runtime, &gone_op);
+    assert_eq!(
+        (state.as_str(), why.as_deref()),
+        ("rejected", Some("session-present"))
+    );
+    assert_eq!(result["refusal"]["code"], "SESSION_PRESENT");
+    // gone again: a new request closes it
+    observe(&[("deck-wa", Some("turn-done"), 4, 0x11, 0x21, false)]);
+    let gone2 = call(
+        "deck_worker_close",
+        json!({"request_id": "b-gone2", "lane_epoch": lane, "card_id": "WB", "close_mode": "gone"}),
+    );
+    let gone2_op = gone2["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &gone2_op).unwrap();
+    assert!(close_admit(&runtime, &gone2_op).is_ok());
+    // WC: its agent ended, its shell in front — an episode close goes
+    observe(&[("deck-wc", None, 0, 0x13, 0x41, true)]);
+    let ep_gone = call(
+        "deck_worker_close",
+        json!({"request_id": "c-ep0", "lane_epoch": lane, "card_id": "WC", "after_episode": 0}),
+    );
+    assert_eq!(ep_gone["state"], "accepted", "{ep_gone}");
+    let ep_gone_op = ep_gone["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &ep_gone_op).unwrap();
+    // a new program started in front of that shell meanwhile: refused
+    observe(&[("deck-wc", Some("working"), 0, 0x13, 0x42, false)]);
+    assert!(close_admit(&runtime, &ep_gone_op).is_err());
+    assert_eq!(
+        round2_state(&runtime, &ep_gone_op).1.as_deref(),
+        Some("instance-changed")
+    );
+
+    UNSENT_FOR_TESTS.with(|cell| cell.set(None));
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// `receiptState` keeps `acknowledged: null` what it is: an owned card's
+/// reports whose receipt Deck never tracked read `unknown`, never received;
+/// an unowned card's read `unowned`; a numbered acknowledgment of the newest
+/// reads `acknowledged`, of an older one `pending`.
+#[test]
+fn a_report_receipt_is_never_read_as_received_unless_acknowledged() {
+    use super::reports::{receipt_state, ReceiptState};
+    let mut w = round2_worker("W", Some("OA"));
+    assert_eq!(receipt_state(&w), ReceiptState::None);
+    w.reported = 3;
+    assert_eq!(
+        receipt_state(&w),
+        ReceiptState::Unknown,
+        "a record from before acknowledgments"
+    );
+    assert!(
+        !super::reports::awaiting_ack(&w),
+        "awaitingAck stays false: known pending only"
+    );
+    w.acknowledged = Some(2);
+    assert_eq!(receipt_state(&w), ReceiptState::Pending);
+    assert!(super::reports::awaiting_ack(&w));
+    w.acknowledged = Some(3);
+    assert_eq!(receipt_state(&w), ReceiptState::Acknowledged);
+    w.acknowledged = Some(9);
+    assert_eq!(
+        receipt_state(&w),
+        ReceiptState::Unknown,
+        "numbers that do not fit are not trusted"
+    );
+    let mut unowned = round2_worker("U", None);
+    unowned.reported = 1;
+    assert_eq!(receipt_state(&unowned), ReceiptState::Unowned);
 }
 
 /// `handoff` (B) and report acknowledgment (D): the status word is taken,

@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false, closing = false, worktreeSwitch = false, worktreeRelaunch = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false, closing = false, worktreeSwitch = false, worktreeRelaunch = false, recovering = false, recoveryRelaunch = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -895,6 +895,54 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     await provider.close(orch.id);
     await report('done', !failed, 1, 6);
   };
+  /* `worker-recovery` / `worker-recovery-relaunch` (2026-11-28, close and
+     queue reliability): one client with one Claude worker type (the
+     fixture's hooks), the first-send choice and replies, and ONE plain-shell
+     orchestrator card "Orch R". Phase 1: after `recovery-armed` the runner
+     types scripts/mcp-recovery-e2e.py --phase 1 IN that card's pane (a
+     queued line kept past nine delivered interjections, then canceled and
+     replaced); the page sees the worker card (`recovery-card`) and ends at
+     once (`done` b=3): the runner waits for the client's own evidence, then
+     stops the carrier and relaunches it on the same data and tmux server.
+     Phase 2: both cards are still on the Board, their sessions alive
+     (`recovery-restored`); the runner types --phase 2 into "Orch R" (the
+     agent alive but unobserved, then its session ended and cleared by
+     `close_mode: gone`); the page sees the worker card leave the Board
+     (`recovery-cleared`) and closes "Orch R" (`done` b=4). */
+  const recoveryRun = async ({ project, work, fixture }) => {
+    const cmd = `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
+    if (!recoveryRelaunch) {
+      await inv('mcp_enable');
+      const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+        permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: true,
+          workerTypes: [{ name: 'claude', cmd, description: 'Write code' }], workerFirstSend: true } });
+      const listed = await until(async () => {
+        const status = await inv('mcp_status');
+        return status.enabled && status.socketReady
+          && status.clients.some(value => value.id === client.id && value.allowWorkers) ? status : null;
+      }, 15_000, 250);
+      await report('workers-client', !!listed);
+      const orch = (await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id,
+        title: 'Orch R', dir: work, cmd: '' }, { requireCreated: true })).card;
+      await report('recovery-armed', !!orch?.session);
+      const worker = await until(() => workerCards()[0] || null, 600_000, 1000);
+      await report('recovery-card', !!worker && worker.cmd === cmd && worker.dir === work);
+      await report('done', !failed, 1, 3);
+      return;
+    }
+    const orch = store.cards.find(card => card.title === 'Orch R');
+    const worker = workerCards()[0];
+    /* the Board's own poll: a card whose session is gone reads stopped */
+    const live = card => !!card && !!provider.get(card.id)?.status && provider.get(card.id).status !== 'stopped';
+    const restored = !!(await until(() => (live(orch) && live(worker) ? true : null), 60_000, 1000));
+    await report('recovery-restored', restored, 1, (orch ? 1 : 0) + (worker ? 2 : 0));
+    const cleared = worker ? await until(() => (provider.get(worker.id) ? null : true), 1_200_000, 1000) : null;
+    await report('recovery-cleared', !!cleared);
+    /* the client still checks the replay and writes its evidence there */
+    await pause(30_000);
+    if (orch) await provider.close(orch.id);
+    await report('done', !failed, 1, 4);
+  };
   /* `worktree-switch` / `worktree-switch-relaunch` (2026-11-28): the
      linked-worktree switch saved in the real Permissions… dialog, restored
      after a relaunch, then used by a real MCP client. Phase 1: a project
@@ -964,15 +1012,16 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
       await worktreeRun({ fixture: marker.slice(0, marker.lastIndexOf('/')) });
       return;
     }
-    if (store.cards.length) throw new Error('nonempty isolated board');
+    if (store.cards.length && !recoveryRelaunch) throw new Error('nonempty isolated board');
     /* `live`: Claude Code workers (parts A and B); `codex`: one Codex
        `--no-daemon` worker through part A only (no reply is forwarded for
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
       : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : agyTrusting ? 'agy-trust'
         : accounting ? 'account' : capacity ? 'capacity' : interjecting ? 'interject' : closing ? 'close'
+          : (recovering || recoveryRelaunch) ? 'recovery'
           : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'account', 'capacity', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes', 'interject', 'close'].includes(scenario)) throw new Error('scenario');
+    if (!['live', 'codex', 'types', 'account', 'capacity', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes', 'interject', 'close', 'recovery'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -1002,6 +1051,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     if (scenario === 'agy-trust') { await agyTrustRun({ project, work }); return; }
     if (scenario === 'interject') { await interjectRun({ project, work, fixture }); return; }
     if (scenario === 'close') { await closeRun({ project, work, fixture }); return; }
+    if (scenario === 'recovery') { await recoveryRun({ project, work, fixture }); return; }
     if (scenario === 'projects') {
       await projectsRun({ work, cmd: 'claude --setting-sources project', fixture });
       return;
