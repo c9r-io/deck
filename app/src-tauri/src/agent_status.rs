@@ -2116,6 +2116,7 @@ impl Intake {
         let deadline = std::time::Instant::now() + FIRST_LINE_BUDGET;
         let Some(slot) = FirstLine::take(&self.reading) else {
             note(&self.drops, Some("listener-busy"));
+            unread_while_armed();
             return;
         };
         if stream.set_nonblocking(true).is_err() {
@@ -2130,12 +2131,27 @@ impl Intake {
                 Ok(arrival) => {
                     if arrivals.try_send(arrival).is_err() {
                         note(&drops, Some("listener-busy"));
+                        unread_while_armed();
                     }
                 }
-                Err(Some(reason)) => note(&drops, Some(reason)),
+                Err(Some(reason)) => {
+                    note(&drops, Some(reason));
+                    unread_while_armed();
+                }
                 Err(None) => {}
             }
         });
+    }
+}
+
+/// A connection dropped before its line reached the dispatcher, while a
+/// re-entry lease is armed: it may have been any lease's lifecycle receipt,
+/// so every armed lease's record is incomplete from here on
+/// (`lifecycle::lost_unread`). Without an armed lease nothing happens.
+fn unread_while_armed() {
+    use crate::agent_reentry::lifecycle;
+    if lifecycle::armed() {
+        lifecycle::lost_unread();
     }
 }
 
@@ -2310,10 +2326,20 @@ impl Receipt {
             peer,
             deadline,
         } = self;
+        let key = claim.key();
         let result = {
             let _deadline = crate::session_runtime::Deadline::until(deadline);
             crate::agent_reentry::lifecycle::receive(claim, peer, deadline, kernel)
         };
+        // A claim that named an armed lease and was refused leaves that
+        // lease's record incomplete: what the client said is missing, never
+        // taken for something it did not say. A lease that is gone or full
+        // already says so on its own.
+        if let Err(reason) = result {
+            if !matches!(reason, "lifecycle-no-lease" | "lifecycle-overflow") {
+                crate::agent_reentry::lifecycle::lost(key);
+            }
+        }
         // recorded or refused: only now is the helper released
         drop(stream);
         result
@@ -2367,9 +2393,14 @@ impl Receipts {
     }
 
     /// Hand one receipt to the worker without waiting for it. A refused
-    /// receipt is dropped with its connection: nothing was recorded for it.
+    /// receipt is dropped with its connection: nothing was recorded for it,
+    /// and its lease's record is incomplete from here on (`lifecycle::lost`).
     fn hand(&self, receipt: Receipt) -> Result<(), &'static str> {
-        self.queue.try_send(receipt).map_err(|_| "lifecycle-busy")
+        let key = receipt.claim.key();
+        self.queue.try_send(receipt).map_err(|_| {
+            crate::agent_reentry::lifecycle::lost(key);
+            "lifecycle-busy"
+        })
     }
 }
 
@@ -4981,6 +5012,61 @@ mod tests {
         reset_for_tests();
     }
 
+    /// A receipt the worker refuses (here: no peer to attribute it to)
+    /// leaves its lease's record incomplete; one whose lease is gone marks
+    /// nothing.
+    #[test]
+    fn a_refused_receipt_leaves_its_lease_incomplete() {
+        use crate::agent_reentry::lifecycle;
+        use std::time::Instant;
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        crate::agent_reentry::reset_for_tests();
+        lifecycle::begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
+        let lease = || {
+            lifecycle::Lease::exit(
+                4242,
+                "%7",
+                (1, (1, 1)),
+                (2, (2, 2)),
+                crate::procinfo::ExecutableRef::of_this_test(),
+            )
+        };
+        lifecycle::arm(0, lease());
+        let line = concat!(
+            r#"{"protocol":"agent-lifecycle","v":1,"source":"claude-code","#,
+            r#""event":"session-end","nativeSessionId":"aaaaaaaa-0000-4000-8000-000000000001","#,
+            r#""endReason":"other","socket":"deck","server_pid":4242,"pane":"%7"}"#
+        );
+        let receipt = || {
+            let (ours, _theirs) = UnixStream::pair().expect("a connection");
+            let wire = lifecycle::parse(line, |_| Some(&crate::agent_reentry::claude::RECEIPTS))
+                .expect("a valid line");
+            Receipt {
+                claim: lifecycle::claim(wire).expect("the armed lease"),
+                stream: ours,
+                peer: None,
+                deadline: Instant::now() + Duration::from_secs(60),
+            }
+        };
+        assert_eq!(
+            receipt().settle(&lifecycle::Kernel::live()),
+            Err("lifecycle-no-peer")
+        );
+        let facts = lifecycle::peek(0);
+        assert!(!lifecycle::complete(&facts));
+        assert_eq!(
+            crate::agent_reentry::claude::final_after_hangup(&facts, 0),
+            None
+        );
+        // a claim whose lease was sealed meanwhile marks nothing new
+        let stale = receipt();
+        lifecycle::seal(0);
+        lifecycle::arm(0, lease());
+        assert!(stale.settle(&lifecycle::Kernel::live()).is_err());
+        assert!(lifecycle::complete(&lifecycle::peek(0)));
+        lifecycle::end();
+    }
+
     /// The hand-over to the receipt worker never waits and never grows.
     /// While the one worker is inside a verification that does not return,
     /// exactly `RECEIPT_QUEUE` further receipts wait; the next one is
@@ -5073,6 +5159,14 @@ mod tests {
             verdict,
             Ok(Err("lifecycle-busy")),
             "a full queue refuses at once; the hand-over never waits"
+        );
+        // the refused receipt is missing from its lease's record, and the
+        // record says so: it names no final session from here on
+        let facts = lifecycle::peek(0);
+        assert!(!lifecycle::complete(&facts));
+        assert_eq!(
+            crate::agent_reentry::claude::final_session(&facts, &[]),
+            None
         );
         assert_eq!(
             std::io::Read::read(&mut refused, &mut [0u8; 1]).expect("the refused connection"),

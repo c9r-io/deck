@@ -2,13 +2,20 @@
 //! Exit keys are guarded by the observed tmux generation and foreground name.
 //! The exit wait is bounded and refuses nothing: every agent gets its keys
 //! first, then all share ONE wait (`EXIT_BUDGET`). An agent still running
-//! when it ends is ended with the server like any other foreground program —
-//! the user confirmed that every session ends — and is never taken for
-//! exited: elapsed time never proves a saved resume, so re-entry skips it
-//! (no final receipt, or its old generation still alive at the launch). A
-//! refusal there would only lose the agents that DID exit: on 2026-11-06
-//! nine of eleven exited inside two seconds, two were late, and the old
-//! refusal threw away every re-entry.
+//! when it ends is ended — the user confirmed that every session ends — and
+//! is never taken for exited: elapsed time never proves a saved resume. A
+//! client the re-entry transaction approved and froze, of an adapter with a
+//! late exit (Claude Code), is ended by the transaction itself right after
+//! the wait: SIGHUP to that exact generation while its shell and the server
+//! still run (`agent_reentry::Plan::end_late_clients`, `LATE_EXIT_BUDGET`),
+//! so that its own end names its session (2026-11-28: a Claude Code with
+//! live background work answers Ctrl+D with its own question and never
+//! leaves by itself). Every other agent still running ends with the server
+//! like any other foreground program, and re-entry skips it (no final
+//! receipt, or its old generation still alive at the launch). A refusal
+//! there would only lose the agents that DID exit: on 2026-11-06 nine of
+//! eleven exited inside two seconds, two were late, and the old refusal
+//! threw away every re-entry.
 //! Order: what may refuse the restart for the shells' sake (their snapshots)
 //! runs BEFORE the first exit key; after it only identity and safety checks
 //! may still refuse (a pane lost or added, another server, the queue pause,
@@ -36,10 +43,18 @@ use crate::session_runtime::{check_deadline, Deadline};
 use crate::tmux::{same_pane, unchanged_rows, PaneRow};
 
 /// Everything before the replacement: the shells' snapshots, the one exit
-/// wait, the exited agents' screens, the seal and the queue pause.
-pub(crate) const PREPARE_BUDGET: Duration = Duration::from_secs(20);
+/// wait, the exited agents' screens, the late exit, the seal and the queue
+/// pause.
+pub(crate) const PREPARE_BUDGET: Duration = Duration::from_secs(23);
 /// The prepare budget plus the replacement's own five seconds.
-pub(crate) const TOTAL_BUDGET: Duration = Duration::from_secs(25);
+pub(crate) const TOTAL_BUDGET: Duration = Duration::from_secs(28);
+/// The late exit's own share after the exit wait: an approved Claude client
+/// still running is hung up as that exact generation and its own end is
+/// waited for (`agent_reentry::Plan::end_late_clients`). Measured on Claude
+/// Code 2.1.332: the end is reported about 0.2 s after the hang-up and the
+/// client is gone about 0.7 s after it, also with its "Background work is
+/// running" question open or a turn running.
+pub(crate) const LATE_EXIT_BUDGET: Duration = Duration::from_secs(3);
 /// The one wait every agent shares after its keys. Many clients exiting at
 /// once each run their exit hooks, which Deck answers one at a time; two
 /// seconds were not enough for eleven.
@@ -273,7 +288,7 @@ pub(crate) fn prepare(
     // nothing; past the keys a deadline would lose every agent that exited.
     if total > 0
         && crate::session_runtime::deadline_remaining()
-            .is_some_and(|left| left < EXIT_BUDGET + AFTER_EXIT)
+            .is_some_and(|left| left < EXIT_BUDGET + LATE_EXIT_BUDGET + AFTER_EXIT)
     {
         return Err(DeckError::restart(RestartFailure::Deadline));
     }

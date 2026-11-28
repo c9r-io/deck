@@ -11,9 +11,11 @@
 //!   session, the native session id, the client's generation, the server's
 //!   generation, the pane, the client's executable path and working
 //!   directory. A `SessionEnd` the user caused (`prompt-input-exit`,
-//!   `logout`) deletes it; a `clear` or `resume` end is followed by the
-//!   next start, which replaces it; an `other` end deletes nothing (a client
-//!   killed with its server says that). Nothing is polled for a session id.
+//!   `logout`) deletes it, and so does a switch away (`clear`, `resume`):
+//!   the next start records the new session, and a start that is lost on
+//!   its way (a full queue, a refused attribution) then leaves no record
+//!   naming a session the client already left (2026-11-28). An `other` end
+//!   deletes nothing (a client killed with its server says that). Nothing is polled for a session id.
 //!   The file is `~/.deck/agent-recovery.json`, bounded (`MAX_BYTES`,
 //!   `MAX_RECORDS`), written atomically with fsync, 0600 like the rest of
 //!   the tree. A record is recovery material, never authority: it names
@@ -46,6 +48,22 @@
 //!   record the offer read, and a confirmed recovery deletes them BEFORE
 //!   the first shell is created: a crash during the recovery never offers
 //!   the same session again. If that write fails nothing is launched.
+//!   Reading a record is not a claim: a ticked card launches only when
+//!   ITS record was still in the file and was deleted by that write
+//!   (`consume` answers which were); one taken meanwhile — by an end, a
+//!   later start or a restart's late exit — launches nothing.
+//! - **The late exit's claim** (`claim_at`, 2026-11-28). A restart that hung
+//!   up an approved Claude client after its exit wait re-enters the
+//!   session the client named as it ended only when the card's one record
+//!   names that same session for that very client generation (and no
+//!   other card's record names it): an independent second source, written
+//!   by this recorder from a kernel-attributed start. The check and the
+//!   deletion are one section under the store lock, the deletion written
+//!   before the restart creates the card's shell; a mismatch, a missing or
+//!   unreadable record, or a write that fails launches nothing. The claimed
+//!   generation is remembered in memory, per file, so a start of it still
+//!   on its way is never written back (`recovery-claimed`). It is the
+//!   restart's authorization that launches, never the record.
 //! - **The launch is re-entry's.** The executable at the recorded path is
 //!   read and validated in full as Claude Code now (the old image is gone;
 //!   this is a weaker identity than a restart's, which binds the running
@@ -61,7 +79,7 @@
 //! - **Privacy.** The file holds native ids and paths; views and logs carry
 //!   card id, session, closed codes and counts only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -281,15 +299,23 @@ pub(crate) fn upsert(records: &mut Vec<Record>, record: Record) -> bool {
     true
 }
 
-/// A user-caused end of `client`'s session `native_id` deletes its record;
-/// any other end deletes nothing.
+/// An end that leaves `client`'s session `native_id` behind deletes its
+/// record: the user's own exit or logout, and a switch away from it
+/// (`clear`, `resume`). After a switch the record would otherwise go on
+/// naming a session the client is no longer in until the next start is
+/// recorded, and that start can be lost (a full queue, a refused
+/// attribution). An `other` end deletes nothing: a client killed with its
+/// server says that, and its session is what a recovery offers.
 pub(crate) fn ended(
     records: &mut Vec<Record>,
     client: Gen,
     native_id: &str,
     reason: EndReason,
 ) -> bool {
-    if !matches!(reason, EndReason::PromptInputExit | EndReason::Logout) {
+    if !matches!(
+        reason,
+        EndReason::PromptInputExit | EndReason::Logout | EndReason::Clear | EndReason::Resume
+    ) {
         return false;
     }
     let before = records.len();
@@ -446,6 +472,10 @@ pub(crate) fn observe(
     };
     if !record.valid() {
         return Err("recovery-not-supported");
+    }
+    // a generation whose record a restart's late exit claimed is over
+    if claimed_generation(rec.store, record.client) {
+        return Err("recovery-claimed");
     }
     let session = record.session.clone();
     let changed = update_at(rec.store, |records| upsert(records, record))?;
@@ -784,15 +814,120 @@ pub(crate) fn offer(env: &Env, store: &Path) -> Result<OfferView, DeckError> {
     })
 }
 
-/// Delete exactly these records.
-fn consume(store: &Path, lost: &[Record]) -> Result<(), DeckError> {
+/// Delete exactly these records, under the one store lock. `Ok` carries
+/// the records that WERE in the file and are deleted now, the write done:
+/// a record already gone — deleted by an end, replaced by a later start,
+/// claimed by a restart's late exit — is not in it, and nothing may launch
+/// for it.
+fn consume(store: &Path, lost: &[Record]) -> Result<Vec<Record>, DeckError> {
+    let mut taken = Vec::new();
     update_at(store, |records| {
-        let before = records.len();
-        records.retain(|known| !lost.iter().any(|old| old.same(known)));
-        records.len() != before
+        records.retain(|known| {
+            let wanted = lost.iter().any(|old| old.same(known));
+            if wanted {
+                taken.push(known.clone());
+            }
+            !wanted
+        });
+        !taken.is_empty()
     })
-    .map(|_| ())
-    .map_err(records_error)
+    .map_err(records_error)?;
+    Ok(taken)
+}
+
+// ---------- the late exit's claim --------------------------------------------------
+
+/// The client generations whose records a restart's late exit claimed in
+/// this process. Such a client is gone; a line of it that is still on its
+/// way (a start that waited in a queue) must not write its record back
+/// after the claim. In memory only, and bounded.
+static CLAIMED: Mutex<VecDeque<(PathBuf, Gen)>> = Mutex::new(VecDeque::new());
+const CLAIMED_KEPT: usize = 256;
+
+/// Whether a late exit claimed `client`'s record from `store`.
+fn claimed_generation(store: &Path, client: Gen) -> bool {
+    CLAIMED
+        .lock_or_recover()
+        .iter()
+        .any(|(path, known)| path == store && *known == client)
+}
+
+/// What a restart's late exit asks of the record file for one entry: the
+/// card and session it froze, the old client generation it froze, and the
+/// final session that client named itself as it was hung up.
+pub(crate) struct Wanted<'a> {
+    pub(crate) card_id: &'a str,
+    pub(crate) session: &'a str,
+    pub(crate) native_id: &'a str,
+    pub(crate) client: Gen,
+}
+
+/// The answer of `claim_at`. Only `Claimed` lets anything launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Claim {
+    /// The card's one record was exactly the wanted session of the wanted
+    /// client; it is deleted and that write is done.
+    Claimed,
+    /// The card has no record.
+    Missing,
+    /// The card's record names another session or another client
+    /// generation, or another card's record names the same session.
+    Mismatch,
+    /// The file could not be read (also a later version) or written.
+    Unavailable,
+}
+
+/// Verify and consume, in ONE section under the store lock, the record a
+/// late exit re-enters from. The record gives the session's identity a
+/// second, independent source — what the kernel-attributed recorder wrote
+/// for this very client generation — beside the end that client reported;
+/// both must name the same session. It is deleted, and the deletion
+/// written, before `Claimed` is answered: a crash after it re-enters
+/// nothing and offers nothing, and a later recovery or a second claim finds
+/// nothing to take. A write that fails launches nothing.
+pub(crate) fn claim_at(store: &Path, wanted: &Wanted) -> Claim {
+    let mut answer = Claim::Missing;
+    let changed = update_at(store, |records| {
+        let mine: Vec<usize> = records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.card_id == wanted.card_id)
+            .map(|(at, _)| at)
+            .collect();
+        let elsewhere = records
+            .iter()
+            .any(|record| record.card_id != wanted.card_id && record.native_id == wanted.native_id);
+        answer = match mine.as_slice() {
+            [] => Claim::Missing,
+            [at] => {
+                let record = &records[*at];
+                let exact = record.session == wanted.session
+                    && record.source == SOURCE
+                    && record.native_id == wanted.native_id
+                    && record.client == wanted.client;
+                if exact && !elsewhere {
+                    records.remove(*at);
+                    Claim::Claimed
+                } else {
+                    Claim::Mismatch
+                }
+            }
+            _ => Claim::Mismatch,
+        };
+        answer == Claim::Claimed
+    });
+    match changed {
+        Ok(true) => {
+            let mut claimed = CLAIMED.lock_or_recover();
+            claimed.push_back((store.to_path_buf(), wanted.client));
+            while claimed.len() > CLAIMED_KEPT {
+                claimed.pop_front();
+            }
+            Claim::Claimed
+        }
+        Ok(false) => answer,
+        Err(_) => Claim::Unavailable,
+    }
 }
 
 fn take_offer(token: &str) -> Result<Offer, DeckError> {
@@ -869,8 +1004,18 @@ pub(crate) fn run(
         })
         .collect();
     // Once only: every record the offer read is deleted BEFORE anything is
-    // created. If that fails, nothing is launched.
-    consume(store, &offer.lost)?;
+    // created. If that fails, nothing is launched. A record that is no
+    // longer in the file when it is deleted — an end, a later start or a
+    // restart's late exit took it meanwhile — launches nothing either:
+    // reading it above is not a claim; being deleted here is.
+    let taken = consume(store, &offer.lost)?;
+    let chosen: Vec<(String, Option<Record>)> = chosen
+        .into_iter()
+        .map(|(card, record)| {
+            let record = record.filter(|record| taken.iter().any(|known| known.same(record)));
+            (card, record)
+        })
+        .collect();
     let preparing = crate::session_runtime::Deadline::until(Instant::now() + PREPARE_SHARE);
     // whose code the recorded program must be: the adapter of the recorded
     // source, as this environment has it
@@ -942,6 +1087,7 @@ pub(crate) fn run(
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
     *OFFER.lock_or_recover() = None;
+    CLAIMED.lock_or_recover().clear();
 }
 
 #[cfg(test)]

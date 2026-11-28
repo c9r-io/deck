@@ -1604,6 +1604,8 @@ pub(crate) struct ReentryParts<'a> {
     /// The bundled lifecycle helper, when this build has one.
     pub(crate) helper: Option<PathBuf>,
     pub(crate) home: &'a Path,
+    /// The crash-recovery record file a late exit claims from.
+    pub(crate) recovery_store: PathBuf,
 }
 
 /// Run `work` with the re-entry environment assembled from `parts`.
@@ -1657,6 +1659,7 @@ pub(crate) fn assemble_reentry_env<R>(
         login_shell: &login_shell,
         fenced: &fenced,
         create_shell: &create,
+        recovery_store: &parts.recovery_store,
     })
 }
 
@@ -1688,6 +1691,7 @@ fn with_reentry_env<R>(work: impl FnOnce(&crate::agent_reentry::Env) -> R) -> Op
             adapters: &adapters,
             helper: crate::agent_status::bundled_lifecycle_helper(),
             home: &home,
+            recovery_store: crate::agent_reentry::recovery::store(),
         },
         work,
     ))
@@ -2173,10 +2177,18 @@ fn restart_transaction_on(
     // Foreground changes caused by graceful exit are expected. Refresh the
     // content-free intent so crash recovery compares the post-exit identity.
     let post_exit = prepare_restart_with(server, snapshot, restore_shells, &frozen, progress)?;
-    // The exit wait is over: seal each approved entry's final session (its
-    // exit receipt; its old client generation is proven gone at its launch).
-    // Nothing here refuses the restart: the exit keys were sent.
+    // The exit wait is over. An approved client still running is hung up
+    // now, as that exact generation and while its shell still lives, so it
+    // reports its own end (the late exit, its own share). Then each approved
+    // entry's final session is sealed: its exit receipt, or the end a
+    // hung-up client reported; its old client generation is proven gone
+    // before its shell. Nothing here refuses the restart: the exit keys
+    // were sent.
     if let (Some(plan), Some((env, _, _))) = (plan.as_mut(), reentry) {
+        plan.end_late_clients(
+            env,
+            std::time::Instant::now() + crate::restart::LATE_EXIT_BUDGET,
+        );
         plan.seal_exits(env);
     }
     let paused = pause()?;

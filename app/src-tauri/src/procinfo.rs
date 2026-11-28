@@ -2018,6 +2018,24 @@ pub(crate) fn generation_liveness(pid: u32, birth: (u64, u32)) -> Liveness {
     }
 }
 
+/// Hang up exactly the process `pid` born at `birth`: SIGHUP, the signal a
+/// terminal's end delivers, sent only when the kernel says, immediately
+/// before, that this pid is still that generation. `true` when the signal
+/// was delivered to it. The one caller is a restart's late exit
+/// (`agent_reentry::Plan::end_late_clients`): an approved client that did
+/// not leave in the exit wait, which the replacement would hang up a few
+/// seconds later anyway. The pid cannot be reused while that generation
+/// lives, so a birth read just before is the closest proof `kill(2)` allows;
+/// a pid that names a later process, or whose birth cannot be read, is
+/// never signalled.
+pub(crate) fn hang_up(pid: u32, birth: (u64, u32)) -> bool {
+    if pid <= 1 || process_start(pid) != Some(birth) {
+        return false;
+    }
+    // SAFETY: kill(2) with SIGHUP on a pid whose generation was read just now.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGHUP) == 0 }
+}
+
 /// Whether THIS process's environment — the baseline every tmux server and
 /// pane Deck starts inherits — carries exactly `home` and none of the names
 /// the grammar refuses, nor its carried name (a config folder is one

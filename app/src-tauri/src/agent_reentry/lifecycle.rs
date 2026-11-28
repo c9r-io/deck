@@ -80,8 +80,13 @@
 //! long another entry's check takes.
 //!
 //! A lease keeps at most `MAX_FACTS` facts; one more marks its
-//! record incomplete (`Event::Overflow`), and an incomplete record names no
-//! final session and confirms no entry. An event without a matching lease is
+//! record incomplete (`Event::Overflow`). A line that named an armed lease
+//! and was then not kept — the receipt queue was full, its attribution was
+//! refused or came late — marks that lease's record incomplete too
+//! (`Event::Lost`, `lost`), and so does a connection dropped unread while
+//! any lease is armed (`lost_unread`: it may have been any lease's line).
+//! An incomplete record names no final session and confirms no entry: a
+//! receipt that went missing is never read as one that was never sent. An event without a matching lease is
 //! dropped here: this mailbox keeps no session registry and no "latest id",
 //! and nothing here reaches the Signal store, interactions, episodes, the
 //! scheduler, any readiness or any authority. (The same line, parsed by the
@@ -138,6 +143,12 @@ pub(crate) enum Event {
     /// Not a wire event: the lease's record reached its bound and at least
     /// one fact was not kept.
     Overflow,
+    /// Not a wire event: a line that named this lease was read and then not
+    /// kept — the receipt queue was full, its attribution was refused or
+    /// came late — or, while the lease was armed, a connection was dropped
+    /// before its line could be read (`lost`, `lost_unread`). Something the
+    /// client may have said is missing, so the record is incomplete.
+    Lost,
 }
 
 /// The source's own words of one line, as they were written: closed keys,
@@ -757,7 +768,90 @@ pub(crate) fn receive(
 /// final session and confirms no entry, whatever its source's reducers
 /// would read from the facts that were kept.
 pub(crate) fn complete(facts: &[Fact]) -> bool {
-    !facts.iter().any(|fact| fact.event == Event::Overflow)
+    !facts
+        .iter()
+        .any(|fact| matches!(fact.event, Event::Overflow | Event::Lost))
+}
+
+/// What names one claim's lease after the claim itself was handed on: the
+/// operation, the entry and the arming. Copyable, so the listener and the
+/// receipt worker can still say "this one was not kept" (`lost`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ClaimKey {
+    operation: u64,
+    entry: usize,
+    serial: u64,
+}
+
+impl Claim {
+    pub(crate) fn key(&self) -> ClaimKey {
+        ClaimKey {
+            operation: self.operation,
+            entry: self.entry,
+            serial: self.lease.serial,
+        }
+    }
+}
+
+/// Mark one record incomplete (`Event::Lost`): the claim `key` named its
+/// lease and was then not kept. Only the very operation and arming the
+/// claim was taken from; a lease sealed or armed again meanwhile is left
+/// alone, and so is a lease whose phase is over (a launch lease after the
+/// post share takes nothing, a marker included); a record that is already
+/// incomplete keeps one marker.
+pub(crate) fn lost(key: ClaimKey) {
+    let mut mailbox = MAILBOX.lock_or_recover();
+    let Some(mailbox) = mailbox.as_mut().filter(|m| m.operation == key.operation) else {
+        return;
+    };
+    let Some(lease) = mailbox
+        .leases
+        .get(&key.entry)
+        .filter(|lease| lease.serial == key.serial)
+    else {
+        return;
+    };
+    if lease
+        .closes()
+        .is_some_and(|closes| Instant::now() >= closes)
+    {
+        return;
+    }
+    mark_lost(mailbox, key.entry);
+    ARRIVED.notify_all();
+}
+
+/// Mark every armed lease's record incomplete: while they were armed, a
+/// connection to the status socket was dropped before its line was read,
+/// and any of them may have been that line.
+pub(crate) fn lost_unread() {
+    let mut mailbox = MAILBOX.lock_or_recover();
+    let Some(mailbox) = mailbox.as_mut() else {
+        return;
+    };
+    let now = Instant::now();
+    let entries: Vec<usize> = mailbox
+        .leases
+        .iter()
+        .filter(|(_, lease)| lease.closes().is_none_or(|closes| now < closes))
+        .map(|(entry, _)| *entry)
+        .collect();
+    for entry in entries {
+        mark_lost(mailbox, entry);
+    }
+    ARRIVED.notify_all();
+}
+
+fn mark_lost(mailbox: &mut Mailbox, entry: usize) {
+    let facts = mailbox.facts.entry(entry).or_default();
+    if facts.iter().any(|fact| fact.event == Event::Lost) {
+        return;
+    }
+    facts.push(Fact {
+        event: Event::Lost,
+        native_id: String::new(),
+        client: (0, (0, 0)),
+    });
 }
 
 /// What a launch lease's record says about entering the wanted session
@@ -1164,6 +1258,127 @@ mod tests {
         begin("deck", Path::new("/nonexistent/deck-lifecycle-helper"));
         work();
         end_mailbox_for_test();
+    }
+
+    /// A claim that named an armed lease and was then not kept — a full
+    /// queue, a refused or late attribution — leaves that record
+    /// incomplete, once; a claim of an earlier arming or operation changes
+    /// nothing; a connection dropped unread marks every armed lease.
+    #[test]
+    fn a_receipt_that_was_not_kept_leaves_its_record_incomplete() {
+        with_lease(exit_lease(), || {
+            let key = claim(end_wire(ID)).expect("the armed lease").key();
+            record_for_tests(0, fact(claude::ended(EndReason::PromptInputExit), ID));
+            assert!(complete(&peek(0)));
+            assert_eq!(final_session(&peek(0), &[]).as_deref(), Some(ID));
+            lost(key);
+            lost(key);
+            let facts = peek(0);
+            assert!(
+                !complete(&facts),
+                "a missing receipt is never one that was not sent"
+            );
+            assert_eq!(facts.iter().filter(|f| f.event == Event::Lost).count(), 1);
+            assert_eq!(final_session(&facts, &[]), None);
+            assert_eq!(claude::final_after_hangup(&facts, 0), None);
+        });
+        // a lease armed again meanwhile: the old claim marks nothing
+        with_lease(exit_lease(), || {
+            let key = claim(end_wire(ID)).expect("the armed lease").key();
+            arm(0, exit_lease());
+            lost(key);
+            assert!(complete(&peek(0)));
+        });
+        // another operation: nothing
+        let stale = with_lease_key();
+        with_lease(exit_lease(), || {
+            lost(stale);
+            assert!(complete(&peek(0)));
+        });
+        // unread while armed: every armed lease
+        with_mailbox(|| {
+            arm(0, exit_lease());
+            arm(
+                1,
+                Lease::exit(4242, "%8", SHELL, CLIENT, ExecutableRef::of_this_test()),
+            );
+            lost_unread();
+            assert!(!complete(&peek(0)) && !complete(&peek(1)));
+        });
+        // without a mailbox nothing happens and nothing panics
+        let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+        end_mailbox_for_test();
+        lost_unread();
+        lost(stale);
+    }
+
+    fn with_lease_key() -> ClaimKey {
+        let mut key = None;
+        with_lease(exit_lease(), || {
+            key = Some(claim(end_wire(ID)).unwrap().key())
+        });
+        key.unwrap()
+    }
+
+    /// The late exit's reducer: only the hung-up client's own LAST end
+    /// after the hang-up names its session — `other`, or the user's own
+    /// exit at the last moment — and never an incomplete record.
+    #[test]
+    fn a_hung_up_client_names_its_session_only_by_its_own_end_after_the_hang_up() {
+        use claude::final_after_hangup;
+        let other = claude::ended(EndReason::Other);
+        let exit = claude::ended(EndReason::PromptInputExit);
+        let switched_out = claude::ended(EndReason::Clear);
+        let switched_in = claude::started(StartSource::Clear);
+        assert_eq!(final_after_hangup(&[], 0), None);
+        assert_eq!(
+            final_after_hangup(&[fact(other, ID)], 1),
+            None,
+            "nothing after the hang-up"
+        );
+        assert_eq!(
+            final_after_hangup(&[fact(other, ID)], 0).as_deref(),
+            Some(ID)
+        );
+        assert_eq!(
+            final_after_hangup(&[fact(exit, ID)], 0).as_deref(),
+            Some(ID)
+        );
+        // a switch before it went: its end names the session it was in
+        assert_eq!(
+            final_after_hangup(
+                &[
+                    fact(switched_out, ID),
+                    fact(switched_in, OTHER),
+                    fact(other, OTHER)
+                ],
+                0
+            )
+            .as_deref(),
+            Some(OTHER)
+        );
+        // not the last word, or two ends that disagree
+        assert_eq!(
+            final_after_hangup(&[fact(other, ID), fact(switched_in, OTHER)], 0),
+            None
+        );
+        assert_eq!(
+            final_after_hangup(&[fact(exit, OTHER), fact(other, ID)], 0),
+            None
+        );
+        // an end from before the hang-up is not this one
+        assert_eq!(
+            final_after_hangup(&[fact(other, OTHER), fact(other, ID)], 1).as_deref(),
+            Some(ID)
+        );
+        for marker in [Event::Lost, Event::Overflow] {
+            assert_eq!(
+                final_after_hangup(&[fact(marker, ""), fact(other, ID)], 0),
+                None
+            );
+        }
+        // the ordinary exit never takes an `other` end for the final session
+        assert_eq!(final_session(&[fact(other, ID)], &[]), None);
     }
 
     #[test]

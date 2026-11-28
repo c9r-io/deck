@@ -398,7 +398,7 @@ test('the startup configuration note stands once whenever something can be selec
   assert.equal(planView(chosen).policy, POLICY_BYPASS);
   for (const plan of [fresh, selectAll(fresh), chosen, withSelection(fresh, 'B', true)]) {
     const view = planView(plan);
-    assert.deepEqual(noteKeys(view), ['reentry.note.ordinary', 'reentry.note.scope', 'reentry.note.context', 'reentry.note.dirs']);
+    assert.deepEqual(noteKeys(view), ['reentry.note.ordinary', 'reentry.note.scope', 'reentry.note.context', 'reentry.note.dirs', 'reentry.note.lateExit']);
     assert.deepEqual(view.help.map(line => line.key), ['reentry.note.otherClients', 'reentry.help.context']);
     assert.ok([...view.notes, ...view.help].every(line => !line.params), 'standing copy: no count, no card');
   }
@@ -873,4 +873,69 @@ test('a row whose launch the grammar refused says what refused it, by a closed w
   assert.equal(notes[3], t('reentry.reason.launch-environment'));
   assert.equal(notes[4], t('reentry.reason.identity-unavailable', { agent: 'Claude Code' }), 'anything else is not shown');
   assert.equal(plan.entries[5].launchRefused, null, 'a candidate carries none');
+});
+
+test('a late exit says how it was re-entered only on a confirmed row, and never that background work ended', () => {
+  const view = projectResult({ replaced: true, requested: ['A', 'B', 'C', 'D', 'E'], result: reentryResult(complete([
+    entry('A', 'confirmed', { route: 'late-exit' }),
+    entry('B', 'confirmed', { route: 'exit' }),
+    entry('C', 'unconfirmed', { route: 'late-exit', reason: 'launch-unconfirmed', clientObserved: true }),
+    entry('D', 'not-attempted', { reason: 'recovery-record-mismatch' }),
+    entry('E', 'confirmed', { route: 'something-else' }),
+  ])) });
+  setLocale('en');
+  assert.deepEqual(view.rows.map(row => [row.cardId, row.tone, say(row.line)]), [
+    ['A', 'ok', 'Claude session re-entry confirmed. No bypass flag was added.'],
+    ['B', 'ok', 'Claude session re-entry confirmed. No bypass flag was added.'],
+    ['C', 'warn', 'Claude started, but re-entry could not be confirmed'],
+    ['D', 'info', 'Re-entry was not attempted'],
+    ['E', 'ok', 'Claude session re-entry confirmed. No bypass flag was added.'],
+  ]);
+  // the one extra line belongs to the confirmed late exit, first among its details
+  assert.deepEqual(view.rows[0].details.map(say), [
+    'Claude did not exit in time, so Deck ended it and re-entered the session it named as it ended. A turn in progress may have been interrupted; background work is not guaranteed to come back.',
+  ]);
+  assert.deepEqual(view.rows[1].details, []);
+  assert.equal(view.rows[2].details.some(line => line.key === 'reentry.result.lateExit'), false, 'not confirmed: the ordinary wording');
+  assert.deepEqual(view.rows[3].details.map(say), [
+    'Claude did not exit in time, and the session it named does not match Deck’s record. Claude was not automatically started.',
+  ]);
+  assert.deepEqual(view.rows[4].details, [], 'an unknown route word is dropped');
+  assert.equal(reentryResult(complete([entry('X', 'confirmed', { route: 'late-exit' })])).entries[0].route, 'late-exit');
+  assert.equal(reentryResult(complete([entry('X', 'confirmed', { route: 'bogus' })])).entries[0].route, null);
+  // every new reason has its own sentence in every dictionary
+  for (const reason of ['late-exit-unconfirmed', 'old-client-not-gone', 'recovery-record-missing', 'recovery-record-mismatch', 'recovery-record-unavailable', 'duplicate-session']) {
+    const row = projectResult({ replaced: true, requested: ['R'], result: reentryResult(complete([entry('R', 'not-attempted', { reason })])) }).rows[0];
+    assert.deepEqual(row.details.map(line => line.key), [`reentry.reason.${reason}`], reason);
+  }
+  // no copy of it says that background work ended or was stopped, or that
+  // every timeout came from the background question
+  for (const dictionary of Object.values(dictionaries)) {
+    for (const key of ['reentry.note.lateExit', 'reentry.result.lateExit', 'reentry.reason.late-exit-unconfirmed', 'reentry.reason.recovery-record-missing', 'reentry.reason.recovery-record-mismatch']) {
+      assert.doesNotMatch(dictionary[key], /background (?:work|tasks?) (?:was|were|has|have) (?:all )?(?:ended|stopped)|后台(?:任务|工作)已(?:全部)?(?:结束|停止)|always|总是/i, key);
+    }
+  }
+  setLocale('en');
+});
+
+test('the late-exit note stands once, and only while a Claude row can be chosen', () => {
+  const codex = (id, launchProfile, observed = true) => ({ ...candidate(id, launchProfile, observed), source: 'codex' });
+  const both = planView(selectAll(reentryPlan({ token: 'T', lifecycleObservation: true, entries: [candidate('A', 'ordinary'), codex('X', 'ordinary')] })));
+  assert.equal(both.notes.filter(note => note.key === 'reentry.note.lateExit').length, 1);
+  const codexOnly = planView(selectAll(reentryPlan({ token: 'T', lifecycleObservation: true, entries: [codex('X', 'ordinary')] })));
+  assert.equal(codexOnly.notes.some(note => note.key === 'reentry.note.lateExit'), false);
+  const unobserved = planView(reentryPlan({ token: 'T', lifecycleObservation: true, entries: [candidate('A', 'ordinary', false), codex('X', 'ordinary')] }));
+  assert.equal(unobserved.notes.some(note => note.key === 'reentry.note.lateExit'), false, 'a Claude row that cannot be ticked says nothing of it');
+  setLocale('en');
+  assert.equal(t('reentry.note.lateExit'), 'If Claude does not exit in time — for example while it asks whether to stop background work — Deck ends it and re-enters the session Claude names as it ends. A turn in progress may be interrupted, and background work is not guaranteed to come back.');
+});
+
+test('a late exit keeps the result list, so its caveat is read; an ordinary all-confirmed restart is still the toast', () => {
+  const answer = route => reentryResult({ requestId: 'R', state: 'complete', serverReplaced: true, queuePaused: 0,
+    entries: [entry('A', 'confirmed', { route }), entry('B', 'confirmed', { route: 'exit' })] });
+  assert.deepEqual(projectResult({ replaced: true, result: answer('exit'), requested: ['A', 'B'] }).quiet,
+    { key: 'reentry.result.quiet', params: { count: 2 } });
+  const late = projectResult({ replaced: true, result: answer('late-exit'), requested: ['A', 'B'] });
+  assert.equal(late.quiet, null, 'the list stays');
+  assert.equal(late.rows[0].details[0].key, 'reentry.result.lateExit');
 });

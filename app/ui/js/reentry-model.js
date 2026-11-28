@@ -52,6 +52,14 @@
 // `check-incomplete` is a check that did not finish; it is worded as that and
 // never as a program that changed. No row names a release, a digest or a
 // certification: the page has no such field to show.
+// A late exit (`route: 'late-exit'`: the client did not leave in the exit
+// wait, Deck ended it, and the session it named as it ended was re-entered)
+// adds ONE detail line to a confirmed row: that a turn in progress may have
+// been interrupted and background work is not guaranteed to come back. It
+// never says that background work ended, and an entry that is not confirmed
+// keeps its ordinary wording; a skipped entry's reason says why. The
+// confirmation's notes say the same once whenever a Claude row can be
+// ticked (`reentry.note.lateExit`), with no extra step.
 // Every entry carries `settled`: its outcome is final. An entry is settled
 // when the backend says so or when the whole operation is `complete`; a
 // missing flag in a `running` operation is NOT settled. An unsettled entry is
@@ -65,7 +73,8 @@
 // some (`queuePaused` > 0, with the count) or the backend did not say
 // (null); an additional working directory is said on its own entry only.
 // `quiet` is the one toast that REPLACES the list: a completed replacement
-// where every requested card was confirmed re-entered, no entry carries a
+// where every requested card was confirmed re-entered, none of them by a
+// late exit (its row says what may not have come back), no entry carries a
 // warning other than `bypass-reauthorized`, and the backend said that no
 // queue row was paused. The toast says that the bypass flag was sent as
 // authorized when it was; any other result keeps the list.
@@ -104,6 +113,7 @@ const AGENT_NAMES = { 'claude-code': 'Claude', codex: 'Codex', pi: 'Pi' };
 const agentOf = source => (own(AGENT_NAMES, source) ? AGENT_NAMES[source] : 'Agent');
 const PROFILES = ['bypass', 'ordinary', 'unknown'];
 const OUTCOMES = ['not-attempted', 'refused-before-launch', 'confirmed', 'started', 'unconfirmed', 'known-no-launch-failure'];
+const ROUTES = ['exit', 'late-exit'];
 
 const PROFILE_KEYS = {
   bypass: 'reentry.profile.bypass',
@@ -120,6 +130,12 @@ const REASON_KEYS = {
   'final-session-unconfirmed': 'reentry.reason.final-session-unconfirmed',
   'check-incomplete': 'reentry.reason.check-incomplete',
   'exit-timeout': 'reentry.reason.exit-timeout',
+  'late-exit-unconfirmed': 'reentry.reason.late-exit-unconfirmed',
+  'old-client-not-gone': 'reentry.reason.old-client-not-gone',
+  'recovery-record-missing': 'reentry.reason.recovery-record-missing',
+  'recovery-record-mismatch': 'reentry.reason.recovery-record-mismatch',
+  'recovery-record-unavailable': 'reentry.reason.recovery-record-unavailable',
+  'duplicate-session': 'reentry.reason.duplicate-session',
   'impact-changed': 'reentry.reason.impact-changed',
   'launch-refused': 'reentry.reason.launch-refused',
   'launch-unconfirmed': 'reentry.reason.launch-unconfirmed',
@@ -316,6 +332,9 @@ export function planView(plan, { managed = false } = {}) {
   // Codex reports entering a session only at its first turn, and may go on
   // with an active goal by itself: said once when a Codex row can be chosen
   const codex = candidates.some(entry => selectable(plan, entry) && entry.source === 'codex');
+  // Claude: a client that does not leave in time is ended by Deck and
+  // re-entered from the session it names as it ends (said once)
+  const claude = candidates.some(entry => selectable(plan, entry) && entry.source === 'claude-code');
   return {
     visible: plan.entries.length > 0 || plan.unknown === true,
     summary: plan.unknown === true ? text('reentry.summary.unknown')
@@ -328,7 +347,8 @@ export function planView(plan, { managed = false } = {}) {
     canSelect: counts.candidates > 0,
     // said once for the whole confirmation, under either policy
     notes: counts.candidates > 0
-      ? ['reentry.note.ordinary', 'reentry.note.scope', 'reentry.note.context', 'reentry.note.dirs', ...(codex ? ['reentry.note.codex'] : [])]
+      ? ['reentry.note.ordinary', 'reentry.note.scope', 'reentry.note.context', 'reentry.note.dirs',
+        ...(claude ? ['reentry.note.lateExit'] : []), ...(codex ? ['reentry.note.codex'] : [])]
         .map(key => text(key)) : [],
     help: counts.candidates > 0 ? [text('reentry.note.otherClients'), text('reentry.help.context')] : [],
     allSelected: counts.candidates > 0 && counts.selected === counts.candidates,
@@ -404,6 +424,9 @@ export function reentryResult(raw) {
         warnings: (Array.isArray(entry.warnings) ? entry.warnings : []).filter(code => own(WARNING_KEYS, code)),
         shell: entry.shell === true,
         clientObserved: entry.clientObserved === true,
+        // how the final session was found: the client's own exit, or the
+        // late exit (Deck ended a client that did not leave in time)
+        route: ROUTES.includes(entry.route) ? entry.route : null,
       };
     }).filter(Boolean),
   };
@@ -446,8 +469,12 @@ function resultRow(entry, running, pollEnded) {
   const warnings = warningLines(verified ? entry.warnings
     : entry.warnings.filter(code => code !== 'bypass-reauthorized'), agent);
   const reason = own(REASON_KEYS, entry.reason);
+  // A late exit: the client did not leave in the exit wait, Deck ended it,
+  // and it was re-entered in the session it named as it ended. Said only of
+  // a confirmed entry; what may not have come back is said with it.
+  const late = entry.route === 'late-exit' ? [text('reentry.result.lateExit', A)] : [];
   if (entry.outcome === 'confirmed') {
-    return { ...base, tone: 'ok', details: warnings,
+    return { ...base, tone: 'ok', details: [...late, ...warnings],
       line: text(entry.warnings.includes('bypass-reauthorized') ? 'reentry.result.confirmed' : 'reentry.result.confirmedOrdinary', A) };
   }
   // started by exactly the request, in the expected context, by an agent
@@ -543,7 +570,7 @@ function quietToast(result, rows, requested) {
   if (!entries.length || rows.length !== entries.length) return null;
   const ids = new Set(entries.map(entry => entry.cardId));
   if (requested.some(cardId => idOf(cardId) && !ids.has(cardId))) return null;
-  const clean = entries.every(entry => entry.outcome === 'confirmed'
+  const clean = entries.every(entry => entry.outcome === 'confirmed' && entry.route !== 'late-exit'
     && entry.warnings.every(code => QUIET_WARNINGS.includes(code)));
   if (!clean) return null;
   const bypass = entries.some(entry => entry.warnings.includes('bypass-reauthorized'));

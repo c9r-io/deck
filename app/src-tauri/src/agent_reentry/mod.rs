@@ -49,7 +49,9 @@
 //!   own record (`recovery.rs`: one Claude session per card, written on
 //!   lifecycle events, offered only after the server and client are gone,
 //!   deleted before its one launch); it reuses this plan's post phase
-//!   (`Plan::recovered` → `reopen`) and nothing of a restart.
+//!   (`Plan::recovered` → `reopen`) and nothing of a restart. The one thing
+//!   a restart does to that file is the late exit's claim (below): it
+//!   DELETES the record it re-enters from, and writes nothing.
 //! - **States.** Preview → Frozen → Exiting → Prepared → Replacing →
 //!   ShellsReopening → Launching → Confirming → Complete. A preview issues a
 //!   single-use opaque token, and only for an answer its caller received in
@@ -63,19 +65,40 @@
 //!   executable or working directory is not the one previewed; it never
 //!   rebinds an approval to a new target. Exit leases are armed before the
 //!   first exit key. An entry launches only with BOTH the applicable final
-//!   receipt (`SessionEnd`, `prompt-input-exit`) and its old client
-//!   generation proven gone; neither stands in for the other. `seal_exits`
+//!   receipt and its old client generation proven gone; neither stands in
+//!   for the other. The applicable final receipt has two routes and an
+//!   entry has ONE launch slot whichever it took (`Route`): the client's
+//!   own exit receipt (`SessionEnd`, `prompt-input-exit`), or — the late
+//!   exit, Claude Code only (2026-11-28) — for an approved client still
+//!   running when the one exit wait ended, the end it reported after Deck
+//!   hung up that exact generation while its shell still lived
+//!   (`Plan::end_late_clients`, `ReentryCapability::late_exit`; a Claude
+//!   Code with live background work answers Ctrl+D with its own question
+//!   and never leaves by itself). A late exit's session is launched only
+//!   when the card's crash-recovery record, written for that very client
+//!   generation, names the same session and has been CLAIMED — verified
+//!   and deleted in one section, the deletion written — before the shell
+//!   (`recovery::claim_at`); anything less refuses that card alone with
+//!   its own reason. Time never stands in for a receipt, and a record that
+//!   did not change is never proof of the session: only the client's own
+//!   end names it, and a record whose lease lost a receipt (a full queue, a
+//!   refused or late attribution, a connection dropped unread) names
+//!   nothing (`lifecycle::Event::Lost`). `seal_exits`
 //!   takes the receipts and refuses nothing for the whole restart: by then
 //!   the exit keys were sent, and a refusal would only lose every client
 //!   that did exit (2026-11-06: two late clients threw away eight
-//!   re-entries). A client still running at the seal, with no receipt, is
-//!   that card's `ExitTimeout` — it ends with the server, as the user was
-//!   told every session does; one gone without a valid receipt is that
-//!   card's `FinalSessionUnconfirmed`. A receipt from a client that has not
+//!   re-entries). A client hung up without such an end is that card's
+//!   `LateExitUnconfirmed`; one still running that was not hung up (an
+//!   adapter without a late exit, or a generation that could not be proven)
+//!   is its `ExitTimeout` — it ends with the server, as the user was told
+//!   every session does; one gone without a valid receipt is that card's
+//!   `FinalSessionUnconfirmed`. Every entry left without a final session is
+//!   logged with its closed reason at the seal. A receipt from a client that has not
 //!   gone yet keeps its entry, and `launch` asks again, after the
 //!   replacement and before the shell: an old generation that is not proven
-//!   gone then is that card's refusal, never a second client in one
-//!   session. `reopen` runs only after the server replacement was read back.
+//!   gone then is that card's refusal (`OldClientNotGone`), never a second
+//!   client in one session. Two entries that name one native session, by
+//!   either route, are both refused (`DuplicateSession`). `reopen` runs only after the server replacement was read back.
 //! - **Card scope through the side effect.** The card ↔ session binding is
 //!   read from the Board this process committed last, as authority
 //!   (`documents::board_authority`: the user's current version; a Board
@@ -249,6 +272,7 @@
 //!   interaction or authority is created, restored or released here.
 //! - **Privacy.** Views and logs carry card id, session, closed codes and
 //!   counts — never a native id, pid, path, digest, argv or environment.
+//!   Each entry's result line names its outcome, reason and route.
 //!
 //! Vendor knowledge is `claude.rs` (static, pure); lifecycle wire parsing,
 //! kernel attribution and the transaction mailbox are `lifecycle.rs`; the
@@ -315,7 +339,19 @@ pub(crate) struct ReentryCapability {
     /// is `Started` — never `Confirmed`; a resume receipt that does arrive
     /// confirms it like any other.
     pub(crate) entry_receipt: bool,
+    /// The late exit (Claude Code only, 2026-11-28): an approved client of
+    /// this adapter that is still running when the restart's exit wait ends
+    /// is hung up by Deck — that exact generation, while its shell still
+    /// lives (`Plan::end_late_clients`) — and this reducer reads the final
+    /// session from the end the client reported as it went, given the
+    /// facts its exit lease held at the hang-up. `None`: such a client ends
+    /// with the server, as before, and is that card's `ExitTimeout`.
+    pub(crate) late_exit: Option<LateExit>,
 }
+
+/// A late exit's reducer: the facts of an exit lease and how many of them
+/// it held at the hang-up, to the final session they name.
+pub(crate) type LateExit = fn(&[lifecycle::Fact], usize) -> Option<String>;
 
 /// What the core decided for one request, handed to the adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,9 +444,32 @@ pub(crate) enum Reason {
     ExecutableUnavailable,
     FinalSessionUnconfirmed,
     /// The old client was still running when the restart's one exit wait
-    /// ended, with no final receipt: it ended with the server. Not a
-    /// statement about its session.
+    /// ended, with no final receipt, and its adapter has no late exit (or it
+    /// could not be hung up as that exact generation): it ended with the
+    /// server. Not a statement about its session.
     ExitTimeout,
+    /// The late exit (`Plan::end_late_clients`): Deck hung the old client up
+    /// after the exit wait, and no end of it named a session in time — none
+    /// arrived, one was lost or refused, or it was not the last word. Not a
+    /// statement about its session.
+    LateExitUnconfirmed,
+    /// The old client generation was not proven gone when its card's shell
+    /// was to be created: still alive, or its exit could not be read. A
+    /// second client in one session is never started.
+    OldClientNotGone,
+    /// The late exit: the card has no crash-recovery record to confirm the
+    /// session the client named.
+    RecoveryRecordMissing,
+    /// The late exit: the card's record names another session or another
+    /// client generation than the one that was hung up (it may be stale),
+    /// or another card's record names the same session.
+    RecoveryRecordMismatch,
+    /// The late exit: the record file could not be read or the claim could
+    /// not be written; nothing is launched without it.
+    RecoveryRecordUnavailable,
+    /// Two entries of one operation named the same native session: neither
+    /// is launched.
+    DuplicateSession,
     LaunchRefused,
     LaunchUnconfirmed,
     UserActionRequired,
@@ -436,6 +495,12 @@ impl Reason {
             Reason::ExecutableUnavailable => "executable-unavailable",
             Reason::FinalSessionUnconfirmed => "final-session-unconfirmed",
             Reason::ExitTimeout => "exit-timeout",
+            Reason::LateExitUnconfirmed => "late-exit-unconfirmed",
+            Reason::OldClientNotGone => "old-client-not-gone",
+            Reason::RecoveryRecordMissing => "recovery-record-missing",
+            Reason::RecoveryRecordMismatch => "recovery-record-mismatch",
+            Reason::RecoveryRecordUnavailable => "recovery-record-unavailable",
+            Reason::DuplicateSession => "duplicate-session",
             Reason::LaunchRefused => "launch-refused",
             Reason::LaunchUnconfirmed => "launch-unconfirmed",
             Reason::UserActionRequired => "user-action-required",
@@ -611,6 +676,29 @@ pub(crate) struct PreviewView {
     entries: Vec<PreviewEntryView>,
 }
 
+/// How an entry's final session was found: two routes, one launch slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Route {
+    /// The client left in the exit wait and its exit receipt named the
+    /// session (`ReceiptContract::final_session`).
+    Exit,
+    /// The client was still running when the wait ended; Deck hung it up
+    /// and the end it reported as it went named the session
+    /// (`ReentryCapability::late_exit`), confirmed by the card's
+    /// crash-recovery record, which was claimed before the shell.
+    LateExit,
+}
+
+impl Route {
+    fn code(self) -> &'static str {
+        match self {
+            Route::Exit => "exit",
+            Route::LateExit => "late-exit",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EntryView {
@@ -628,6 +716,9 @@ pub(crate) struct EntryView {
     /// This entry's outcome is final. `false` while the operation is still
     /// running for it: not a result, and never to be shown as one.
     pub(crate) settled: bool,
+    /// How its final session was found, once it was (`Route`); `None` for
+    /// an entry that never had one, and for a crash recovery's.
+    pub(crate) route: Option<Route>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -703,6 +794,10 @@ pub(crate) struct Env<'a> {
     /// the ordinary transcript restore when `restore` is set. Called under
     /// the restart's guards; must take none of them itself.
     pub(crate) create_shell: &'a dyn Fn(&str, &Path, bool) -> Result<(), DeckError>,
+    /// The crash-recovery record file (`recovery::store` in production): a
+    /// late exit claims its entry's record there before the shell
+    /// (`recovery::claim_at`).
+    pub(crate) recovery_store: &'a Path,
 }
 
 impl Env<'_> {
@@ -1432,6 +1527,10 @@ struct Entry {
     /// pane already showed at the freeze, with multiplicity, so that what
     /// the exit prints is read as the difference (`printed`).
     printed_before: Vec<String>,
+    /// The late exit: Deck hung this entry's old client up, and its exit
+    /// lease held this many facts at that instant. Only what arrived after
+    /// it can name the final session (`ReentryCapability::late_exit`).
+    hung_up: Option<usize>,
 }
 
 /// The resume ids `pane` shows for `launcher`, with multiplicity and in
@@ -1656,6 +1755,7 @@ pub(crate) fn freeze(
             shell: false,
             client_observed: false,
             settled: false,
+            route: None,
         };
         let (bypass, eligible) = match decision {
             Decision::NotApproved | Decision::Repreview => return Err(changed()),
@@ -1697,6 +1797,7 @@ pub(crate) fn freeze(
                 awaiting: false,
                 sent_at: None,
                 printed_before,
+                hung_up: None,
             },
             eligible,
         ));
@@ -1835,6 +1936,7 @@ impl Plan {
                 shell: false,
                 client_observed: false,
                 settled: true,
+                route: None,
             };
             match item.ready {
                 Some(client) if observed => {
@@ -1866,6 +1968,7 @@ impl Plan {
                         awaiting: false,
                         sent_at: None,
                         printed_before: Vec::new(),
+                        hung_up: None,
                     });
                 }
                 Some(_) => {
@@ -1946,18 +2049,117 @@ impl Plan {
         })
     }
 
-    /// After the restart's one exit wait, whether or not every agent left.
+    /// The late exit, between the restart's one exit wait and the seal: an
+    /// approved entry whose old client is still running, of an adapter with
+    /// a late exit (Claude Code), is hung up by Deck — SIGHUP to that exact
+    /// generation (`procinfo::hang_up`), checked just before as still alive,
+    /// still the pane's foreground and still bound to the frozen executable,
+    /// while its shell and the server still run — so that the client
+    /// reports its own end as it goes, through the exit lease armed at the
+    /// freeze. That end is the only way such a client's final session is
+    /// ever named (`seal_exits`): the server's own end, a few seconds later,
+    /// would end it the same way but with the pane and its shell already
+    /// gone, and no report of it could be attributed. Waits, at most until
+    /// `until`, for every client it hung up to be gone with a fact after
+    /// the hang-up. Nothing is typed, no prompt or dialog of the client is
+    /// answered, no entry that was not approved and no other program is
+    /// touched; an entry whose client cannot be proven to be that
+    /// generation is left to end with the server (`ExitTimeout`).
+    pub(crate) fn end_late_clients(&mut self, env: &Env, until: Instant) {
+        use crate::procinfo::{Binding, Liveness};
+        let started = Instant::now();
+        let mut sent = 0usize;
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            if entry.view.reason.is_some() {
+                continue;
+            }
+            let Some(capability) = entry.client.capability(env) else {
+                continue;
+            };
+            if capability.late_exit.is_none() {
+                continue;
+            }
+            let (pid, birth) = (entry.client.pid, entry.client.birth);
+            if crate::procinfo::generation_liveness(pid, birth) != Liveness::Alive {
+                continue;
+            }
+            let foreground = crate::agent_status::live_generation(entry.old.pane_pid)
+                .map(|leader| (leader.pid(), leader.birth()));
+            if foreground != Some((pid, birth)) {
+                continue;
+            }
+            let bound = crate::procinfo::binding(pid, birth, &entry.client.executable);
+            // the validation cannot be interrupted: one that answered after
+            // the preparation's deadline is no answer, and nothing more is
+            // hung up
+            if crate::session_runtime::check_deadline().is_err() || Instant::now() >= until {
+                break;
+            }
+            if bound != Binding::Bound {
+                continue;
+            }
+            let held = lifecycle::peek(index).len();
+            if crate::procinfo::hang_up(pid, birth) {
+                entry.hung_up = Some(held);
+                sent += 1;
+            }
+        }
+        if sent == 0 {
+            return;
+        }
+        applog(&format!(
+            "[agent-reentry] late-exit sent={sent} elapsed_ms={}",
+            started.elapsed().as_millis()
+        ));
+        let pending = |entries: &[Entry]| {
+            entries.iter().enumerate().any(|(index, entry)| {
+                entry.hung_up.is_some_and(|held| {
+                    crate::procinfo::generation_liveness(entry.client.pid, entry.client.birth)
+                        != Liveness::Gone
+                        || lifecycle::peek(index).len() <= held
+                })
+            })
+        };
+        loop {
+            let now = Instant::now();
+            if !pending(&self.entries) || now >= until {
+                break;
+            }
+            lifecycle::wait((until - now).min(Duration::from_millis(50)));
+        }
+        let gone = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.hung_up.is_some()
+                    && crate::procinfo::generation_liveness(entry.client.pid, entry.client.birth)
+                        == Liveness::Gone
+            })
+            .count();
+        applog(&format!(
+            "[agent-reentry] late-exit done sent={sent} gone={gone} elapsed_ms={}",
+            started.elapsed().as_millis()
+        ));
+    }
+
+    /// After the restart's one exit wait and its late exit, whether or not
+    /// every agent left.
     ///
     /// Refuses nothing for the whole restart: the exit keys were sent, and
     /// a refusal here would only lose every client that did exit (module
     /// header). A shell in the foreground is still not the client's exit:
     /// each entry keeps going only with its applicable final receipt, and
-    /// `launch` proves its old generation gone before anything is typed.
-    /// Without a receipt, a client still running is that card's
+    /// `open_shell` proves its old generation gone before anything is
+    /// created. Two routes find that receipt, and an entry has ONE launch
+    /// slot whichever it took (`Route`): the exit receipt
+    /// (`ReceiptContract::final_session`) or, for a client Deck hung up,
+    /// the end it reported after the hang-up (`ReentryCapability::
+    /// late_exit`). Without either, a client hung up is that card's
+    /// `LateExitUnconfirmed`, one still running that was not is its
     /// `ExitTimeout` — it ends with the server, as every foreground
-    /// program does — and one gone or unreadable is that card's
-    /// `FinalSessionUnconfirmed`. Nothing is waited for and nothing is
-    /// killed here.
+    /// program does — and one gone or unreadable is its
+    /// `FinalSessionUnconfirmed`. Nothing is waited for here. Every entry
+    /// left without a final session is logged with its reason now.
     pub(crate) fn seal_exits(&mut self, env: &Env) {
         use crate::procinfo::Liveness;
         let liveness: Vec<Liveness> = self
@@ -1988,9 +2190,22 @@ impl Plan {
                 .and_then(|launcher| printed(env, &entry.old.pane_id, launcher))
                 .map(|now| newly_printed(&entry.printed_before, &now))
                 .unwrap_or_default();
-            entry.final_id = (capability.receipts.final_session)(&facts, &printed_now);
+            let exit = (capability.receipts.final_session)(&facts, &printed_now);
+            let late = match (exit.is_none(), entry.hung_up, capability.late_exit) {
+                (true, Some(from), Some(reduce)) => reduce(&facts, from),
+                _ => None,
+            };
+            let (final_id, route) = match (exit, late) {
+                (Some(id), _) => (Some(id), Some(Route::Exit)),
+                (None, Some(id)) => (Some(id), Some(Route::LateExit)),
+                (None, None) => (None, None),
+            };
+            entry.final_id = final_id;
+            entry.view.route = route;
             if entry.final_id.is_none() {
-                entry.view.reason = Some(if liveness[index] == Liveness::Alive {
+                entry.view.reason = Some(if entry.hung_up.is_some() {
+                    Reason::LateExitUnconfirmed
+                } else if liveness[index] == Liveness::Alive {
                     Reason::ExitTimeout
                 } else {
                     Reason::FinalSessionUnconfirmed
@@ -2004,8 +2219,9 @@ impl Plan {
                 entry.view.reason = Some(Reason::IdentityUnavailable);
             }
         }
-        // One operation launches a native session at most once: entries
-        // that sealed the same id are both left to the user, with no winner.
+        // One operation launches a native session at most once, whichever
+        // route named it: entries that sealed the same id are both left to
+        // the user, with no winner.
         let ids: Vec<Option<String>> = self.entries.iter().map(|e| e.final_id.clone()).collect();
         for entry in &mut self.entries {
             let Some(id) = &entry.final_id else { continue };
@@ -2016,13 +2232,23 @@ impl Plan {
                 > 1
             {
                 entry.final_id = None;
-                entry.view.reason = Some(Reason::IdentityUnavailable);
+                entry.view.reason = Some(Reason::DuplicateSession);
+            }
+        }
+        for entry in &mut self.entries {
+            if entry.final_id.is_none() {
+                entry.view.route = None;
+                Self::log_entry(entry);
             }
         }
         applog(&format!(
-            "[agent-reentry] sealed final={} of={}",
+            "[agent-reentry] sealed final={} of={} late={}",
             self.entries.iter().filter(|e| e.final_id.is_some()).count(),
-            self.entries.len()
+            self.entries.len(),
+            self.entries
+                .iter()
+                .filter(|e| e.final_id.is_some() && e.view.route == Some(Route::LateExit))
+                .count()
         ));
         self.publish();
     }
@@ -2043,8 +2269,15 @@ impl Plan {
         entry.view.reason = reason;
         entry.view.settled = true;
         entry.awaiting = false;
+        Self::log_entry(entry);
+    }
+
+    /// One closed line per entry result: its session tag, outcome, reason
+    /// and route. Never a native id, pid, path or text.
+    fn log_entry(entry: &Entry) {
+        let outcome = entry.view.outcome;
         applog(&format!(
-            "[{}] entry {} outcome={} reason={}",
+            "[{}] entry {} outcome={} reason={} route={}",
             entry.tag,
             session_tag(&entry.view.session),
             match outcome {
@@ -2055,7 +2288,8 @@ impl Plan {
                 Outcome::Unconfirmed => "unconfirmed",
                 Outcome::KnownNoLaunchFailure => "known-no-launch-failure",
             },
-            reason.map_or("none", Reason::code)
+            entry.view.reason.map_or("none", Reason::code),
+            entry.view.route.map_or("none", Route::code)
         ));
     }
 
@@ -2365,7 +2599,33 @@ impl Plan {
         if crate::procinfo::generation_liveness(entry.client.pid, entry.client.birth)
             != crate::procinfo::Liveness::Gone
         {
-            return refuse(entry, Outcome::NotAttempted, Reason::IdentityUnavailable);
+            return refuse(entry, Outcome::NotAttempted, Reason::OldClientNotGone);
+        }
+        // A late exit's session, named by the end the hung-up client
+        // reported, is launched only when the card's crash-recovery record —
+        // written for this very client generation — names the same session,
+        // and only once that record is claimed: verified and deleted in one
+        // section, the deletion written (`recovery::claim_at`). Nothing is
+        // created before it; a refusal here creates nothing.
+        if entry.view.route == Some(Route::LateExit) {
+            let claim = recovery::claim_at(
+                env.recovery_store,
+                &recovery::Wanted {
+                    card_id: &entry.view.card_id,
+                    session: &entry.view.session,
+                    native_id: entry.final_id.as_deref().unwrap_or_default(),
+                    client: recovery::Gen::of(entry.client.pid, entry.client.birth),
+                },
+            );
+            let refused = match claim {
+                recovery::Claim::Claimed => None,
+                recovery::Claim::Missing => Some(Reason::RecoveryRecordMissing),
+                recovery::Claim::Mismatch => Some(Reason::RecoveryRecordMismatch),
+                recovery::Claim::Unavailable => Some(Reason::RecoveryRecordUnavailable),
+            };
+            if let Some(reason) = refused {
+                return refuse(entry, Outcome::NotAttempted, reason);
+            }
         }
         let created = (env.create_shell)(&session, entry.client.cwd.path(), restore_shells);
         let mine: Vec<PaneRow> = listed(env)

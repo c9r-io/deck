@@ -33,6 +33,7 @@ const CARRIERS = {
   'pi-layout-smoke.mjs': ['pi-layout'],
   'locale-layout-smoke.mjs': ['locale-layout'],
   'reentry-live-smoke.mjs': ['reentry-live', 'reentry-live-relaunch'],
+  'reentry-late-smoke.mjs': ['reentry-late'],
   'recovery-live-smoke.mjs': ['recovery-live', 'recovery-live-relaunch'],
   'reminder-smoke.mjs': ['reminder'],
   'reminder-native-smoke.mjs': ['reminder-native'],
@@ -70,6 +71,8 @@ const DYNAMIC = [
   ['review-smoke.mjs', "report(seq === 2 ? 'review-second' : 'review-last', ", ['review-second', 'review-last']],
   ['voice-smoke.mjs', 'report(`voice-theme-${theme}`, ', ['voice-theme-light', 'voice-theme-high-contrast', 'voice-theme-deck-dark']],
   ['voice-smoke.mjs', 'report(`voice-exception-${stage}`, ', ['voice-exception-0', 'voice-exception-1', 'voice-exception-2', 'voice-exception-3', 'voice-exception-4']],
+  // the operator's hold of the shared reentry-live harness (`hold`)
+  ['reentry-late-smoke.mjs', 'await hold(1, ', ['relive-hold']],
 ];
 
 /* Checkpoints the backend logs itself from a debug-only setup seam in

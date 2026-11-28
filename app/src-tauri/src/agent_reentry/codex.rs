@@ -143,6 +143,9 @@ pub(crate) const CAPABILITY: ReentryCapability = ReentryCapability {
     receipts: &RECEIPTS,
     exit_hint: Some("codex"),
     entry_receipt: false,
+    // a Codex client that outlives the exit wait ends with the server:
+    // Deck does not hang it up, and nothing of its end is read
+    late_exit: None,
 };
 
 pub(crate) const RECEIPTS: ReceiptContract = ReceiptContract {

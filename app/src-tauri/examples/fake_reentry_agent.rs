@@ -55,6 +55,18 @@
 //! a test of an operator's reading of the pane (`Ui`), and `keys=<file>`
 //! makes it write down every byte it is sent.
 //!
+//! The late exit (a Claude Code whose background work keeps it from leaving
+//! at Ctrl+D): `exit=dialog` never leaves at its keys — it stands for the
+//! client's own "Background work is running" question, which no key of
+//! Deck's answers — and `dialog-switch=<uuid>` makes it switch to that
+//! session (a `/clear`-style end/start pair) at the first Ctrl+D. What it
+//! does at a hang-up (SIGHUP to this process alone) is `hup=`: `other`
+//! reports the end of its CURRENT session with reason `other` and leaves,
+//! as Claude Code 2.1.332 does; `silent` leaves without a report; `ignore`
+//! stays; `late:<ms>` reports that many milliseconds after the hang-up;
+//! `switch:<uuid>` reports a switch to that session first, then its end.
+//! Without `hup=` a hang-up ends it the default way, with no report.
+//!
 //! This file uses nothing but the standard library (`sys` below declares
 //! the few C calls it makes): the re-entry tests compile it by itself with
 //! `rustc` (`tests.rs`, `standin_program`), because cargo builds an example
@@ -123,6 +135,60 @@ static BUILD_TAG: [u8; 46] = *b"DECK-FAKE-REENTRY-AGENT-BUILD:0000000000000000";
 /// Set for the program an exiting client replaced itself with: the session
 /// that client was in.
 const EXITING: &str = "FAKE_REENTRY_EXITING";
+
+/// The session this client is in now (`hup=`), and whether it was hung up.
+static CURRENT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static HUNG_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The session lock, poisoned or not. This file is built by `rustc` alone
+/// (module header), so the crate's `LockRecover` is not in reach.
+#[allow(clippy::disallowed_methods)]
+fn current() -> std::sync::MutexGuard<'static, String> {
+    CURRENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn now_in(session: &str) {
+    *current() = session.to_string();
+}
+
+extern "C" fn on_hang_up(_: std::os::raw::c_int) {
+    HUNG_UP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `hup=`: what a hang-up does (module header). The handler only sets a
+/// flag; one thread watches it and reports from outside the handler.
+fn on_hang_up_do(mode: &str) {
+    if mode == "ignore" {
+        // SAFETY: ignores SIGHUP for this process only.
+        unsafe { sys::signal(sys::SIGHUP, sys::SIG_IGN) };
+        return;
+    }
+    // SAFETY: a handler that only stores to an atomic.
+    unsafe { sys::signal(sys::SIGHUP, on_hang_up as *const () as usize) };
+    let mode = mode.to_string();
+    std::thread::spawn(move || loop {
+        if !HUNG_UP.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        }
+        let session = current().clone();
+        if let Some(wait) = mode.strip_prefix("late:") {
+            let wait = wait.parse().unwrap_or(0);
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+            hook("session-end", &session, "other");
+        } else if let Some(next) = mode.strip_prefix("switch:") {
+            hook("session-end", &session, "clear");
+            hook("session-start", next, "clear");
+            hook("session-end", next, "other");
+        } else if mode == "other" {
+            hook("session-end", &session, "other");
+        }
+        reported(&format!("hup {session}"));
+        std::process::exit(0);
+    });
+}
 
 fn plan() -> std::collections::HashMap<String, String> {
     std::fs::read_to_string("fake-agent.plan")
@@ -371,6 +437,10 @@ fn main() {
         let _ = Command::new(program).args(&args).env(REEXEC, id).exec();
     }
     let mut session = asked.or_else(|| resumed.clone()).unwrap_or(fresh);
+    now_in(&session);
+    if let Some(mode) = plan.get("hup") {
+        on_hang_up_do(mode);
+    }
     let saved = raw_terminal();
     let restore = || {
         if let Some(saved) = saved {
@@ -451,6 +521,7 @@ fn main() {
         {
             hook("session-end", &session, "clear");
             session = next;
+            now_in(&session);
             hook("session-start", &session, "clear");
         }
         // A hook of ANOTHER family beside the lifecycle pair, as a user's own
@@ -524,8 +595,17 @@ fn main() {
         }
         if byte[0] == 4 {
             eofs += 1;
+            // the late exit's stand-in: at the first Ctrl+D, a switch
+            if eofs == 1 && exit == "dialog" {
+                if let Some(next) = plan.get("dialog-switch") {
+                    hook("session-end", &session, "clear");
+                    session = next.clone();
+                    now_in(&session);
+                    hook("session-start", &session, "clear");
+                }
+            }
         }
-        if eofs >= 2 && exit != "stall" {
+        if eofs >= 2 && exit != "stall" && exit != "dialog" {
             break;
         }
         if let Some(ui) = ui.as_mut() {

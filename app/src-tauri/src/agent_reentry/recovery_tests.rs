@@ -209,8 +209,10 @@ fn a_start_records_the_cards_current_session_and_a_user_exit_deletes_it() {
         fake.observe(start(StartSource::Startup), ID),
         Ok("unchanged")
     );
-    // `/clear`: the end names nothing, the next start replaces the session
-    assert_eq!(fake.observe(end(EndReason::Clear), ID), Ok("end-kept"));
+    // `/clear`: the end leaves the session behind and deletes its record
+    // at once; the next start records the new session
+    assert_eq!(fake.observe(end(EndReason::Clear), ID), Ok("ended"));
+    assert!(fake.records().is_empty());
     assert_eq!(
         fake.observe(start(StartSource::Clear), OTHER),
         Ok("recorded")
@@ -659,5 +661,147 @@ fn an_offer_is_answered_once_by_its_own_token() {
         set("T1", old);
         assert!(decline("T1", &path).is_err(), "an old offer is expired");
     }
+    reset_for_tests();
+}
+
+/// A switch away from a session deletes its record at its end, so a start
+/// that is then lost (a full queue, a refused attribution) leaves no stale
+/// record naming the old session — for `clear` and `resume` alike.
+#[test]
+fn a_switch_away_deletes_the_record_and_a_lost_start_leaves_none_behind() {
+    for reason in [EndReason::Clear, EndReason::Resume] {
+        let fake = Fake::new();
+        assert_eq!(
+            fake.observe(start(StartSource::Startup), ID),
+            Ok("recorded")
+        );
+        assert_eq!(fake.observe(end(reason), ID), Ok("ended"));
+        // the start of the next session never arrives
+        assert!(fake.records().is_empty(), "{reason:?}");
+        // the end of a session the record does not name deletes nothing
+        assert_eq!(
+            fake.observe(start(StartSource::Clear), OTHER),
+            Ok("recorded")
+        );
+        assert_eq!(fake.observe(end(reason), ID), Ok("end-kept"));
+        assert_eq!(fake.records().len(), 1);
+    }
+}
+
+fn wanted<'a>(card: &'a str, session: &'a str, native_id: &'a str, client: Gen) -> Wanted<'a> {
+    Wanted {
+        card_id: card,
+        session,
+        native_id,
+        client,
+    }
+}
+
+/// The late exit's claim: the card's ONE record, exactly the session the
+/// hung-up client named and that client's generation, is verified and
+/// deleted in one section and the deletion written; anything else claims
+/// nothing and changes nothing. Once claimed, it cannot be claimed again
+/// or written back by a start that was still on its way.
+#[test]
+fn a_late_exit_claims_only_the_exact_record_once_and_it_is_never_written_back() {
+    let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    reset_for_tests();
+    let fake = Fake::new();
+    let store = fake.store();
+    let stranger = Gen::of(CLIENT, (21, 0));
+    let mine = record("A", ID, client());
+    write_for_tests(
+        &store,
+        vec![mine.clone(), record("B", OTHER, Gen::of(400, (40, 0)))],
+    );
+    let before = std::fs::read(&store).unwrap();
+    // another session, another generation of the same pid, another session
+    // name, another card: nothing is claimed, the file is untouched
+    for (wanted, answer) in [
+        (wanted("A", "deck-A", OTHER, client()), Claim::Mismatch),
+        (wanted("A", "deck-A", ID, stranger), Claim::Mismatch),
+        (wanted("A", "deck-Z", ID, client()), Claim::Mismatch),
+        (wanted("C", "deck-C", ID, client()), Claim::Missing),
+    ] {
+        assert_eq!(claim_at(&store, &wanted), answer);
+        assert_eq!(std::fs::read(&store).unwrap(), before);
+    }
+    // another card's record naming the same session: no winner
+    write_for_tests(
+        &store,
+        vec![mine.clone(), record("B", ID, Gen::of(400, (40, 0)))],
+    );
+    assert_eq!(
+        claim_at(&store, &wanted("A", "deck-A", ID, client())),
+        Claim::Mismatch
+    );
+    // the exact record: claimed, deleted and written
+    write_for_tests(
+        &store,
+        vec![mine.clone(), record("B", OTHER, Gen::of(400, (40, 0)))],
+    );
+    assert_eq!(
+        claim_at(&store, &wanted("A", "deck-A", ID, client())),
+        Claim::Claimed
+    );
+    let left = load_for_tests(&store).unwrap();
+    assert_eq!(
+        left.iter().map(|r| r.card_id.as_str()).collect::<Vec<_>>(),
+        ["B"]
+    );
+    // a second claim finds nothing
+    assert_eq!(
+        claim_at(&store, &wanted("A", "deck-A", ID, client())),
+        Claim::Missing
+    );
+    // a start of the claimed generation that was still on its way is not
+    // written back
+    assert_eq!(
+        fake.observe(start(StartSource::Startup), ID),
+        Err("recovery-claimed")
+    );
+    assert_eq!(load_for_tests(&store).unwrap().len(), 1);
+    reset_for_tests();
+}
+
+/// A file that cannot be read, or a claim that cannot be written, claims
+/// nothing: nothing may launch without it.
+#[test]
+fn a_claim_that_cannot_be_read_or_written_claims_nothing() {
+    let _lock = crate::agent_reentry::TEST_LOCK.lock_or_recover();
+    reset_for_tests();
+    let fake = Fake::new();
+    let store = fake.store();
+    std::fs::write(&store, b"{ not json").unwrap();
+    assert_eq!(
+        claim_at(&store, &wanted("A", "deck-A", ID, client())),
+        Claim::Unavailable
+    );
+    // a later version is refused untouched
+    std::fs::write(&store, br#"{"v":99,"records":[]}"#).unwrap();
+    assert_eq!(
+        claim_at(&store, &wanted("A", "deck-A", ID, client())),
+        Claim::Unavailable
+    );
+    assert_eq!(std::fs::read(&store).unwrap(), br#"{"v":99,"records":[]}"#);
+    // a directory that refuses the write: the record stays, nothing claimed
+    std::fs::remove_file(&store).unwrap();
+    write_for_tests(&store, vec![record("A", ID, client())]);
+    let dir = store.parent().unwrap().to_path_buf();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let answer = claim_at(&store, &wanted("A", "deck-A", ID, client()));
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(answer, Claim::Unavailable);
+    assert_eq!(
+        load_for_tests(&store).unwrap().len(),
+        1,
+        "the record was not deleted"
+    );
+    // and its generation is not marked claimed
+    assert_eq!(
+        fake.observe(start(StartSource::Startup), ID),
+        Ok("unchanged")
+    );
     reset_for_tests();
 }

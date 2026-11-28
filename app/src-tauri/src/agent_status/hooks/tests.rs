@@ -1708,6 +1708,7 @@ fn production_read_entries_child() {
             }],
             helper: helper.clone(),
             home: &home,
+            recovery_store: std::path::PathBuf::from("/nonexistent/agent-recovery.json"),
         },
         |env| (env.adapters[0].observation, env.adapters[0].baseline),
     );

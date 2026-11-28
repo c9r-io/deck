@@ -69,6 +69,12 @@
 //!   strings stay linked in the binary; `scripts/check-edr-binary` names
 //!   them as gated rather than forbidden.
 //!
+//! - deliver a signal to a process other than its own children and smoke
+//!   fixtures, with ONE exception: a restart's late exit hangs up (SIGHUP)
+//!   an approved, frozen Agent client that outlived the exit wait, as that
+//!   exact generation (`procinfo::hang_up`, approved 2026-11-28). Every
+//!   production `kill(2)` that delivers a signal is a reviewed site
+//!   (`REVIEWED_SIGNAL_SITES`);
 //! - post anything as a macOS notification but a card's title, its project
 //!   name and a fixed phrase: one of two for an agent's away notification
 //!   and one for a delivery deck holds for a person (`notify.rs`), one for
@@ -686,6 +692,52 @@ fn every_production_spawn_is_on_the_allowlist() {
         seen, EXPECTED_COMMAND_SITES,
         "the production process surface changed and needs EDR review"
     );
+}
+
+/// Every production `kill(2)` that DELIVERS a signal, by file and
+/// enclosing function: a closed, reviewed list. Signal 0 (an existence
+/// question) is not a delivery. The one signal Deck sends to a process it
+/// did not start is the late exit's hang-up of an approved, frozen Agent
+/// client after a restart's exit wait (`procinfo::hang_up`, 2026-11-28);
+/// everything else ends Deck's own children or smoke-only processes.
+const REVIEWED_SIGNAL_SITES: &[(&str, &str)] = &[
+    ("tmux.rs", "reap_orphaned_query_clients"),
+    ("pane_client.rs", "kill"),
+    ("procinfo.rs", "hang_up"),
+    ("smoke_faults.rs", "smoke_tmux_server_signal"),
+];
+
+#[test]
+fn every_production_signal_delivery_is_reviewed() {
+    let mut found = Vec::new();
+    for (name, src) in production_sources() {
+        let code = code_only(&src);
+        for (at, _) in code.match_indices("libc::kill(") {
+            let call = &code[at..code[at..].find(')').map_or(code.len(), |end| at + end + 1)];
+            let signal = call.rsplit(',').next().unwrap_or_default().trim();
+            if signal == "0)" {
+                continue;
+            }
+            let file = name.rsplit('/').next().unwrap_or(&name).to_string();
+            found.push((file, enclosing_function(&code, at)));
+        }
+    }
+    for site in &found {
+        assert!(
+            REVIEWED_SIGNAL_SITES
+                .iter()
+                .any(|(file, function)| site.0 == *file && site.1 == *function),
+            "an unreviewed signal delivery: {site:?}"
+        );
+    }
+    for (file, function) in REVIEWED_SIGNAL_SITES {
+        assert!(
+            found
+                .iter()
+                .any(|site| site.0 == *file && site.1 == *function),
+            "stale reviewed signal site ({file}, {function})"
+        );
+    }
 }
 
 /// A pane program must not be able to write the macOS clipboard through

@@ -317,6 +317,7 @@ pub(crate) const CAPABILITY: ReentryCapability = ReentryCapability {
     // the exit receipt names the final session by itself
     exit_hint: None,
     entry_receipt: true,
+    late_exit: Some(final_after_hangup),
 };
 
 /// What Claude Code's lifecycle receipts mean (`lifecycle::ReceiptContract`):
@@ -388,6 +389,36 @@ pub(crate) fn final_session(facts: &[Fact], _printed: &[String]) -> Option<Strin
     facts
         .iter()
         .filter(|fact| fact.event == exit)
+        .all(|fact| fact.native_id == last.native_id)
+        .then(|| last.native_id.clone())
+}
+
+/// The final native session of a client Deck hung up after the restart's
+/// exit wait (`ReentryCapability::late_exit`): its own end, reported as it
+/// went. `from` is how many facts its exit lease held when the hang-up was
+/// sent; only a fact after that counts. The LAST fact must be an end of
+/// reason `other` (what Claude Code reports for a hang-up, measured on
+/// 2.1.332 in every state: idle, a turn running, its "Background work is
+/// running" exit question open, after `/clear`) or `prompt-input-exit` (the
+/// user answered that question at the last moment), and every such end
+/// since the hang-up must name the same id. An incomplete record names
+/// nothing; neither does a record where nothing arrived after the hang-up.
+/// A switch the client made before it went (`/clear`, `/resume`) is in its
+/// last end: the end names the session it was in when it ended.
+pub(crate) fn final_after_hangup(facts: &[Fact], from: usize) -> Option<String> {
+    let ends = |fact: &&Fact| {
+        fact.event == ended(EndReason::Other) || fact.event == ended(EndReason::PromptInputExit)
+    };
+    if !lifecycle::complete(facts) || facts.len() <= from {
+        return None;
+    }
+    let last = facts.last()?;
+    if !ends(&last) {
+        return None;
+    }
+    facts[from..]
+        .iter()
+        .filter(ends)
         .all(|fact| fact.native_id == last.native_id)
         .then(|| last.native_id.clone())
 }
@@ -671,6 +702,7 @@ mod tests {
             receipts: _,
             exit_hint: _,
             entry_receipt: _,
+            late_exit: _,
         } = CAPABILITY;
         let sources = [
             ("claude.rs", production(include_str!("claude.rs"))),

@@ -540,10 +540,16 @@ an addition to the transaction above, never a change of it:
    generation proven gone, which its launch asks after the replacement. The
    end of the wait refuses nothing: the exit keys were sent, and a refusal
    would only lose every client that did exit (2026-11-06: two late clients
-   of eleven threw away eight re-entries). A client still running then, with
-   no receipt, ends with the server like any other foreground program and
-   its card says so (`exit-timeout`); a missing receipt otherwise skips that
-   card (`final-session-unconfirmed`). A client that reported its exit but
+   of eleven threw away eight re-entries). An approved Claude client still
+   running then is hung up (SIGHUP to that exact generation, its shell still
+   alive, `LATE_EXIT_BUDGET` three seconds) so that its own `SessionEnd`
+   (`other`) names its session; it re-enters only when the card's
+   crash-recovery record for that generation names the same session and is
+   claimed before the shell (`late-exit-unconfirmed`,
+   `recovery-record-missing`, `-mismatch`, `-unavailable` otherwise). Any
+   other client still running ends with the server like any other
+   foreground program and its card says so (`exit-timeout`); a missing
+   receipt otherwise skips that card (`final-session-unconfirmed`). A client that reported its exit but
    outlives the server is refused at its launch: never a second client in
    one session.
 4. **Replacement**: unchanged, including the durable queue pause before the

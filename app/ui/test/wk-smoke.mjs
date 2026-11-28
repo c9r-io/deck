@@ -3817,6 +3817,14 @@ export async function verifyReentryLive() {
   await runReentryLiveSmoke();
 }
 
+// The late exit through the real dialog with real Claude clients: one held
+// by its background-work question, one idle, one in a running tool call
+// (reentry-late-smoke.mjs).
+export async function verifyReentryLate() {
+  const { runReentryLateSmoke } = await import('./reentry-late-smoke.mjs');
+  await runReentryLateSmoke();
+}
+
 export async function verifyReentryLiveRelaunch() {
   const { runReentryLiveRelaunchSmoke } = await import('./reentry-live-smoke.mjs');
   await runReentryLiveRelaunchSmoke();

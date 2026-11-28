@@ -547,7 +547,18 @@ Chromium testing of the mock catches none of these; verify in the real app.
   restart's Policy B, or the words that ask Codex for the ordinary profile
   under Policy A on a bypass launch. One attempt, never retried; a client is
   admitted by verified code identity, never a release list; a confirmed or
-  started entry is not readiness, authority or task progress. Codex's final
+  started entry is not readiness, authority or task progress. A ticked
+  Claude client still running when the restart's exit wait ends (a Claude
+  Code with live background work answers Ctrl+D with its own question and
+  never leaves by itself) is hung up by Deck — SIGHUP to that exact
+  generation while its shell and the server still run, approved
+  2026-11-28, `Plan::end_late_clients` — and is re-entered, under the same
+  ticks, policy and launch, only in the session its own `SessionEnd`
+  named after the hang-up, once the card's crash-recovery record for that
+  generation names the same session and was claimed (verified and deleted,
+  written) before the shell (`recovery::claim_at`); anything less skips
+  that card alone with its reason. Deck answers no prompt or dialog of the
+  client, types nothing for it, and hangs up no other Agent. Codex's final
   session is its receipts crossed with the resume hint its pane printed at
   the exit; pane text alone never names a session, and a Codex entry is at
   best `started` (no entry receipt before its first turn). Contract:

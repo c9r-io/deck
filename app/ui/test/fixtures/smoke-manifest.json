@@ -486,6 +486,21 @@
         "relive-next-preview": {"a": 15}
       }
     },
+    "reentry-late": {
+      "terminal": "done",
+      "checks": {
+        "late-clean": {"a": 15},
+        "late-observe": {"a": 3},
+        "late-cards": {"a": 3, "b": 7},
+        "relive-hold": {},
+        "late-preview": {"a": 7, "b": 1},
+        "late-request": {"a": 3},
+        "late-terms": {"metric": true},
+        "late-result": {"a": 63},
+        "late-screens": {"a": 7},
+        "late-stage": {"metric": true, "failureOnly": true}
+      }
+    },
     "reentry-live-relaunch": {
       "terminal": "done",
       "checks": {

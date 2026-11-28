@@ -115,10 +115,17 @@ foreground processes to exit, sharing ONE ten-second exit window across all
 panes. With terminal output recovery enabled, Deck waits for stable shell
 output and saves the bounded tails before the first exit key; a snapshot
 failure aborts there, before anything exited. The end of the exit window
-refuses nothing: an agent still running then ends with the server like any
-other foreground program and is not re-entered, while the agents that did
-exit are. Preparation has a twenty-second budget and the backend returns a
-result within twenty-five seconds. A stalled filesystem worker retains the restart locks until it
+refuses nothing: the agents that did exit are re-entered. A Claude Code
+client ticked for re-entry that is still running then (one with live
+background work answers the exit key with its own question and never leaves
+by itself) is hung up by Deck as that exact process, while its shell still
+runs, and is re-entered in the session it names as it ends, once the card's
+crash-recovery record confirms that session; a turn it was in is
+interrupted, and background work is not guaranteed to come back. Any other
+agent still running ends with the server like any other foreground program
+and is not re-entered. Preparation has a twenty-three-second budget (three
+seconds of it for that hang-up) and the backend returns a result within
+twenty-eight seconds. A stalled filesystem worker retains the restart locks until it
 returns, and its expired deadline prevents a later kill. Pending prompts for
 reviewed sessions are durably paused before replacement and stay paused until
 the user resumes them. Other foreground programs retain the ordinary restart

@@ -206,6 +206,7 @@ fn views_carry_closed_codes_and_no_native_identity() {
         shell: true,
         client_observed: true,
         settled: true,
+        route: None,
     };
     let json = serde_json::to_value(&view).unwrap();
     let mut keys: Vec<&str> = json
@@ -222,6 +223,7 @@ fn views_carry_closed_codes_and_no_native_identity() {
             "clientObserved",
             "outcome",
             "reason",
+            "route",
             "session",
             "settled",
             "shell",
@@ -230,6 +232,10 @@ fn views_carry_closed_codes_and_no_native_identity() {
         ]
     );
     assert_eq!(json["outcome"], "confirmed");
+    assert_eq!(json["route"], serde_json::Value::Null);
+    // the two routes are closed words
+    assert_eq!(serde_json::to_value(Route::Exit).unwrap(), "exit");
+    assert_eq!(serde_json::to_value(Route::LateExit).unwrap(), "late-exit");
     assert_eq!(json["source"], "claude-code");
     assert_eq!(
         serde_json::to_value(Outcome::Started).unwrap(),
@@ -281,6 +287,7 @@ fn the_seal_refuses_nothing_and_says_per_card_why_an_entry_stops() {
             shell: false,
             client_observed: false,
             settled: false,
+            route: None,
         },
         old: PaneRow::default(),
         shell_birth: (1, 1),
@@ -304,6 +311,7 @@ fn the_seal_refuses_nothing_and_says_per_card_why_an_entry_stops() {
         awaiting: false,
         sent_at: None,
         printed_before: Vec::new(),
+        hung_up: None,
     };
     let mut plan = Plan {
         shared: Arc::new(Mutex::new(ReentryResult {
@@ -405,6 +413,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
             shell: false,
             client_observed: false,
             settled: false,
+            route: None,
         },
         old: PaneRow::default(),
         shell_birth: (1, 1),
@@ -428,6 +437,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         awaiting: false,
         sent_at: None,
         printed_before: Vec::new(),
+        hung_up: None,
     };
     let mut plan = Plan {
         shared: Arc::new(Mutex::new(ReentryResult {
@@ -465,7 +475,7 @@ fn two_entries_with_the_same_final_session_are_both_left_to_the_user() {
         assert_eq!(plan.entries[same].final_id, None);
         assert_eq!(
             plan.entries[same].view.reason,
-            Some(Reason::IdentityUnavailable)
+            Some(Reason::DuplicateSession)
         );
     }
     assert_eq!(plan.entries[2].final_id.as_deref(), Some(ID_C));
@@ -503,6 +513,7 @@ fn bare_env<R>(cards: &[(&str, &str)], work: impl FnOnce(&Env) -> R) -> R {
         login_shell: Path::new("/bin/zsh"),
         fenced: &fenced,
         create_shell: &create,
+        recovery_store: Path::new("/nonexistent/agent-recovery.json"),
     })
 }
 
@@ -898,6 +909,7 @@ impl World {
             receipts: claude::CAPABILITY.receipts,
             exit_hint: None,
             entry_receipt: true,
+            late_exit: claude::CAPABILITY.late_exit,
         })
     }
 
@@ -916,6 +928,7 @@ impl World {
             receipts: codex::CAPABILITY.receipts,
             exit_hint: codex::CAPABILITY.exit_hint,
             entry_receipt: codex::CAPABILITY.entry_receipt,
+            late_exit: codex::CAPABILITY.late_exit,
         })
     }
 
@@ -936,6 +949,7 @@ impl World {
             receipts: claude::CAPABILITY.receipts,
             exit_hint: None,
             entry_receipt: true,
+            late_exit: claude::CAPABILITY.late_exit,
         })))
     }
 
@@ -1025,6 +1039,7 @@ impl World {
                 }],
                 helper: Some(self.helper.clone()),
                 home: &self.home,
+                recovery_store: self.base.join("agent-recovery.json"),
             },
             work,
         )
@@ -1748,7 +1763,7 @@ fn a_client_that_outlives_the_server_is_never_joined_by_a_second_one() {
     let result = result.unwrap();
     let refused = entry(&result, "a");
     assert_eq!(refused.outcome, Outcome::NotAttempted);
-    assert_eq!(refused.reason, Some(Reason::IdentityUnavailable));
+    assert_eq!(refused.reason, Some(Reason::OldClientNotGone));
     assert!(!refused.shell, "no shell was created for it");
     assert_eq!(entry(&result, "b").outcome, Outcome::Confirmed);
     assert_eq!(world.pasted(), [line(&world, "", ID_B)]);
@@ -2707,6 +2722,7 @@ fn scripted_env_for<R>(
         login_shell: Path::new("/bin/zsh"),
         fenced: &fenced,
         create_shell: &create,
+        recovery_store: Path::new("/nonexistent/agent-recovery.json"),
     })
 }
 
@@ -5253,6 +5269,7 @@ fn native_m1_tap() {
                     lifecycle::Event::Claude(claude::Told::End(reason))
                     | lifecycle::Event::Codex(codex::Told::End(reason)) => end(reason),
                     lifecycle::Event::Overflow => ("none", "overflow"),
+                    lifecycle::Event::Lost => ("none", "lost"),
                 };
                 format!(
                     "event={event} word={word} idh={} claims-this-socket={}",
@@ -6518,6 +6535,7 @@ fn remote_read(world: &World) -> impl FnOnce() -> Result<Previewed, DeckError> +
                 }],
                 helper: Some(helper),
                 home: &home,
+                recovery_store: PathBuf::from("/nonexistent/agent-recovery.json"),
             },
             read_preview,
         )
@@ -8322,4 +8340,343 @@ fn the_post_share_grows_with_the_entries_and_stops_at_its_ceiling() {
     assert_eq!(post_budget(8), POST_BUDGET);
     assert_eq!(post_budget(16), POST_BUDGET + Duration::from_secs(4));
     assert_eq!(post_budget(1000), POST_BUDGET_MAX);
+}
+
+// ---------- the late exit (2026-11-28) ----------------------------------------------
+
+const ID_D: &str = "eeeeeeee-0000-4000-8000-000000000005";
+const ID_LE: &str = "ffffffff-0000-4000-8000-000000000006";
+const ID_F: &str = "abababab-0000-4000-8000-000000000007";
+const ID_G: &str = "cdcdcdcd-0000-4000-8000-000000000008";
+
+/// What the recorder would have written for card `card`'s client in
+/// session `id`, on this world's current server.
+fn late_record(world: &World, card: &str, id: &str) -> recovery::Record {
+    let server = world.server_pid();
+    let birth = crate::procinfo::process_start(server).expect("the server's birth");
+    recorded(world, card, id, recovery::Gen::of(server, birth))
+}
+
+fn late_store(world: &World) -> PathBuf {
+    world.base.join("agent-recovery.json")
+}
+
+/// The client's generation, read now.
+fn generation_of(world: &World, card: &str) -> (u32, Birth) {
+    let pid = world.foreground_pid(card);
+    (
+        pid,
+        crate::procinfo::process_start(pid).expect("the client runs"),
+    )
+}
+
+/// Whatever the test does, a stand-in that ignores the hang-up ends.
+struct Reap(u32);
+impl Drop for Reap {
+    fn drop(&mut self) {
+        // SAFETY: kill(2) on a stand-in's own pid, read by the test.
+        unsafe { libc::kill(self.0 as libc::pid_t, libc::SIGKILL) };
+    }
+}
+
+/// A Claude client held by its own exit question (`exit=dialog`: no key of
+/// Deck's makes it leave) is hung up by Deck after the exit wait, as that
+/// exact generation, reports the end of its session (`hup=other`), and is
+/// re-entered in that session from its claimed record: one request, the
+/// same words as an ordinary exit's — here under Policy B on a bypass
+/// launch, with the carried mode of another card. The card that left
+/// normally takes the exit route in the same restart; a ticked-off card in
+/// the same state is never hung up.
+#[test]
+fn a_client_held_by_its_own_exit_question_is_hung_up_and_reentered_in_its_own_session() {
+    let world = World::new();
+    world.card(
+        "a",
+        &format!("session={ID_A}\nexit=dialog\nhup=other"),
+        Some(&format!("{{agent}} {BYPASS}")),
+    );
+    world.card(
+        "b",
+        &format!("session={ID_B}"),
+        Some("{agent} --permission-mode plan"),
+    );
+    world.card(
+        "c",
+        &format!("session={ID_C}\nexit=dialog\nhup=other"),
+        Some("{agent} --permission-mode plan"),
+    );
+    world.card(
+        "u",
+        &format!("session={ID_D}\nexit=dialog\nhup=other"),
+        Some("{agent}"),
+    );
+    recovery::write_for_tests(
+        &late_store(&world),
+        vec![
+            late_record(&world, "a", ID_A),
+            late_record(&world, "c", ID_C),
+            late_record(&world, "u", ID_D),
+        ],
+    );
+    let (held, birth) = generation_of(&world, "a");
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a", "b", "c"], Policy::ReapplyBypass);
+    let (old, new, result) = world.restart("req-late", &approval).expect("the restart");
+    assert_ne!(old, new, "the server was replaced");
+    let result = result.unwrap();
+    for (card, route) in [
+        ("a", Route::LateExit),
+        ("b", Route::Exit),
+        ("c", Route::LateExit),
+    ] {
+        let entry = entry(&result, card);
+        assert_eq!(
+            (entry.outcome, entry.reason, entry.route),
+            (Outcome::Confirmed, None, Some(route)),
+            "{card}"
+        );
+        assert!(entry.shell && entry.client_observed, "{card}");
+    }
+    assert_eq!(
+        entry(&result, "a").warnings,
+        [Warning::BypassReauthorized],
+        "Policy B reaches a late exit exactly as an ordinary one"
+    );
+    // one request each, the same words an ordinary exit gets
+    let mut pasted = world.pasted();
+    pasted.sort();
+    let mut expected = vec![
+        line(&world, &format!("{BYPASS} "), ID_A),
+        line(&world, "--permission-mode plan ", ID_B),
+        line(&world, "--permission-mode plan ", ID_C),
+    ];
+    expected.sort();
+    assert_eq!(pasted, expected);
+    // the two ticked held clients were hung up and said so; the unticked
+    // one was not (it ended with the server, silently)
+    let reports = world.lines("reported.log");
+    assert!(reports.contains(&format!("hup {ID_A}")), "{reports:?}");
+    assert!(reports.contains(&format!("hup {ID_C}")), "{reports:?}");
+    assert!(
+        !reports.iter().any(|line| line.contains(ID_D)),
+        "{reports:?}"
+    );
+    assert_eq!(
+        crate::procinfo::generation_liveness(held, birth),
+        crate::procinfo::Liveness::Gone
+    );
+    // the claimed records are gone, the unticked card's is left for a recovery
+    let left = recovery::load_for_tests(&late_store(&world)).unwrap();
+    assert_eq!(
+        left.iter().map(|r| r.card_id.as_str()).collect::<Vec<_>>(),
+        ["card-u"]
+    );
+}
+
+/// Every way a late exit cannot prove its session refuses that card alone,
+/// before anything is created for it, with its own reason: no record, a
+/// stale record, a client that left without a word, one that ignored the
+/// hang-up, one that answered too late, two cards in one session. A switch
+/// the client made after the freeze is followed: its end names the new
+/// session, and a record of that session is claimed. No card is typed into
+/// twice and nothing is typed for a refused card.
+#[test]
+fn a_late_exit_that_cannot_prove_its_session_refuses_only_that_card() {
+    let world = World::new();
+    let held = |id: &str, hup: &str| format!("session={id}\nexit=dialog\nhup={hup}");
+    world.card("a", &held(ID_A, "other"), Some("{agent}"));
+    world.card("c", &held(ID_C, "other"), Some("{agent}"));
+    world.card(
+        "d",
+        &format!("{}\ndialog-switch={ID_LE}", held(ID_D, "other")),
+        Some("{agent}"),
+    );
+    world.card("s", &held(ID_F, "silent"), Some("{agent}"));
+    world.card("i", &held(ID_G, "ignore"), Some("{agent}"));
+    world.card("l", &held(ID_X, "late:4000"), Some("{agent}"));
+    world.card("p", &held(ID_B, "other"), Some("{agent}"));
+    world.card("q", &held(ID_B, "other"), Some("{agent}"));
+    let (ignoring, ignoring_birth) = generation_of(&world, "i");
+    let _reap = Reap(ignoring);
+    recovery::write_for_tests(
+        &late_store(&world),
+        vec![
+            // c: the record names a session the client is not in (a stale
+            // record: the start of its switch was lost)
+            late_record(&world, "c", ID_LE.replace('f', "9").as_str()),
+            // d: the recorder followed its switch after the freeze
+            late_record(&world, "d", ID_LE),
+            late_record(&world, "s", ID_F),
+            late_record(&world, "i", ID_G),
+            late_record(&world, "l", ID_X),
+        ],
+    );
+    let (token, _) = world.preview();
+    let cards = ["a", "c", "d", "s", "i", "l", "p", "q"];
+    let approval = world.approval(&token, &cards, Policy::Ordinary);
+    let (_, _, result) = world
+        .restart("req-late-refusals", &approval)
+        .expect("restart");
+    let result = result.unwrap();
+    let said = |card: &str| {
+        let entry = entry(&result, card);
+        (entry.outcome, entry.reason, entry.shell)
+    };
+    let refused = |reason| (Outcome::NotAttempted, Some(reason), false);
+    assert_eq!(said("a"), refused(Reason::RecoveryRecordMissing));
+    assert_eq!(said("c"), refused(Reason::RecoveryRecordMismatch));
+    assert_eq!(said("s"), refused(Reason::LateExitUnconfirmed));
+    assert_eq!(said("i"), refused(Reason::LateExitUnconfirmed));
+    assert_eq!(said("l"), refused(Reason::LateExitUnconfirmed));
+    assert_eq!(said("p"), refused(Reason::DuplicateSession));
+    assert_eq!(said("q"), refused(Reason::DuplicateSession));
+    let d = entry(&result, "d");
+    assert_eq!(
+        (d.outcome, d.route),
+        (Outcome::Confirmed, Some(Route::LateExit)),
+        "the session after its switch"
+    );
+    assert_eq!(world.pasted(), [line(&world, "", ID_LE)]);
+    // the client that ignored the hang-up reported nothing (it left only
+    // when its terminal closed with the server), and the silent one and the
+    // late one named no session in time: none of them was launched
+    let reports = world.lines("reported.log");
+    assert!(
+        !reports.iter().any(|line| line.contains(ID_G)),
+        "{reports:?}"
+    );
+    let _ = (ignoring, ignoring_birth);
+    // only d's record was claimed; every refused card keeps what it had
+    let mut left: Vec<String> = recovery::load_for_tests(&late_store(&world))
+        .unwrap()
+        .into_iter()
+        .map(|record| record.card_id)
+        .collect();
+    left.sort();
+    assert_eq!(left, ["card-c", "card-i", "card-l", "card-s"]);
+}
+
+/// A record file that cannot be read claims nothing, and nothing is
+/// launched without a claim.
+#[test]
+fn a_late_exit_without_a_readable_record_file_launches_nothing() {
+    let world = World::new();
+    world.card(
+        "a",
+        &format!("session={ID_A}\nexit=dialog\nhup=other"),
+        Some("{agent}"),
+    );
+    std::fs::write(late_store(&world), b"{ not json").unwrap();
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a"], Policy::Ordinary);
+    let (_, _, result) = world.restart("req-late-file", &approval).expect("restart");
+    let result = result.unwrap();
+    let a = entry(&result, "a");
+    assert_eq!(
+        (a.outcome, a.reason, a.shell),
+        (
+            Outcome::NotAttempted,
+            Some(Reason::RecoveryRecordUnavailable),
+            false
+        )
+    );
+    assert!(world.pasted().is_empty());
+    assert_eq!(std::fs::read(late_store(&world)).unwrap(), b"{ not json");
+}
+
+/// No other adapter is hung up: a Codex-like client held at its exit ends
+/// with the server and is that card's `ExitTimeout`, as before.
+#[test]
+fn a_held_client_of_an_adapter_without_a_late_exit_is_left_to_the_server() {
+    let world = World::new_with(World::codex_capability());
+    world.card(
+        "a",
+        &format!("session={ID_A}\nsource=codex\nexit=dialog\nhup=other"),
+        Some("{agent} --no-daemon"),
+    );
+    let (token, _) = world.preview();
+    let approval = world.approval(&token, &["a"], Policy::Ordinary);
+    let (_, _, result) = world.restart("req-late-codex", &approval).expect("restart");
+    let result = result.unwrap();
+    let a = entry(&result, "a");
+    assert_eq!(
+        (a.outcome, a.reason, a.route),
+        (Outcome::NotAttempted, Some(Reason::ExitTimeout), None)
+    );
+    assert!(world.pasted().is_empty());
+    assert!(
+        !world
+            .lines("reported.log")
+            .iter()
+            .any(|line| line.starts_with("hup")),
+        "Deck sent it no hang-up"
+    );
+}
+
+/// Reading a record into an offer is not a claim: a record that a restart's
+/// late exit claimed between the offer and the user's confirmation (the
+/// same session, re-entered already) launches nothing in the recovery, and
+/// the other ticked card is recovered as usual. One native session, at most
+/// one launch, whichever operation reaches it first.
+#[test]
+fn a_record_claimed_after_its_offer_is_never_recovered() {
+    let world = World::new();
+    world.card("a", &format!("session={ID_A}"), Some("{agent}"));
+    world.card("b", &format!("session={ID_B}"), Some("{agent}"));
+    let old = world.server_pid();
+    let server = recovery::Gen::of(
+        old,
+        crate::procinfo::process_start(old).expect("the server's birth"),
+    );
+    let records = vec![
+        recorded(&world, "a", ID_A, server),
+        recorded(&world, "b", ID_B, server),
+    ];
+    let store = world.base.join("agent-recovery.json");
+    recovery::write_for_tests(&store, records.clone());
+    lose_the_server(&world, &[records[0].client, records[1].client]);
+    let view = world
+        .with_env(|env| recovery::offer(env, &store))
+        .expect("an offer");
+    let token = view.token.clone().expect("a token");
+    // meanwhile the record of a is claimed (by a late exit)
+    assert_eq!(
+        recovery::claim_at(
+            &store,
+            &recovery::Wanted {
+                card_id: "card-a",
+                session: "a",
+                native_id: ID_A,
+                client: records[0].client,
+            }
+        ),
+        recovery::Claim::Claimed
+    );
+    let now = world.server_pid();
+    let _scope = crate::session_runtime::test_activity_scope();
+    let held = crate::session_runtime::exclusive().expect("the activity guard");
+    let approval = recovery::RecoveryApproval {
+        token,
+        cards: vec!["card-a".into(), "card-b".into()],
+    };
+    let result = world
+        .with_env(|env| {
+            recovery::run(
+                env,
+                &store,
+                "req-claimed",
+                &approval,
+                now,
+                false,
+                &held,
+                &|_, _, _| {},
+            )
+        })
+        .expect("the recovery ran")
+        .expect("its result");
+    let a = entry(&result, "a");
+    assert_eq!((a.outcome, a.shell), (Outcome::NotAttempted, false));
+    assert_eq!(entry(&result, "b").outcome, Outcome::Confirmed);
+    assert_eq!(world.pasted(), [line(&world, "", ID_B)]);
+    assert!(recovery::load_for_tests(&store).unwrap().is_empty());
 }

@@ -212,6 +212,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("locale-layout", "m.verifyLocaleLayout()"),
     ("reentry-live", "m.verifyReentryLive()"),
     ("reentry-live-relaunch", "m.verifyReentryLiveRelaunch()"),
+    ("reentry-late", "m.verifyReentryLate()"),
     ("recovery-live", "m.verifyRecoveryLive()"),
     ("recovery-live-relaunch", "m.verifyRecoveryLiveRelaunch()"),
     ("connector", "m.verifyConnector()"),
