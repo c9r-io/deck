@@ -28,7 +28,7 @@ import sys
 import time
 
 PROTOCOL = "2025-06-18"
-TOOLS = 39
+TOOLS = 40
 
 
 def parse():

@@ -1,0 +1,2 @@
+smoke-verdict worker-close: FAIL (5/6 expected checkpoints, 6 lines)
+  FAIL close-label: a=0

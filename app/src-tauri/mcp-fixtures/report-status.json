@@ -1,0 +1,15 @@
+{
+  "_comment": "The words a worker report's fields.status may carry: mcp/reports.rs STATUS_WORDS and the adapter's REPORT_STATUS schema enum are both held to this list.",
+  "status": [
+    "in_progress",
+    "blocked",
+    "failed",
+    "ready_for_review",
+    "ready_to_merge",
+    "handoff"
+  ],
+  "close_modes": [
+    "episode",
+    "instance"
+  ]
+}

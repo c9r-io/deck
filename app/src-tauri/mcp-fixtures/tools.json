@@ -36,6 +36,7 @@
     "deck_worker_reply",
     "deck_worker_report",
     "deck_worker_reports",
+    "deck_worker_reports_ack",
     "deck_worker_send",
     "deck_worker_start",
     "deck_worker_wait"
@@ -57,6 +58,7 @@
     "deck_worker_close",
     "deck_worker_interject",
     "deck_worker_report",
+    "deck_worker_reports_ack",
     "deck_worker_send",
     "deck_worker_start"
   ],

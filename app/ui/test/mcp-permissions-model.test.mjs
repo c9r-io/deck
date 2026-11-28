@@ -3,7 +3,7 @@
 // that mirror the backend's, and the row's summary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_TYPE_MODELS, MAX_WORKER_TYPES, claudeAddCommand, modelLines, codexConfig, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, workerTypeErrorKey, workerTypesProblem } from '../js/mcp-permissions-model.js';
+import { MAX_TYPE_MODELS, MAX_WORKER_TYPES, claudeAddCommand, modelLines, codexConfig, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, workerTypeErrorKey, workerTypesProblem, heldRoot, initialWorktrees, worktreesPayload, worktreesProblem, worktreeErrorKey } from '../js/mcp-permissions-model.js';
 
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', description: 'Write code' };
 
@@ -148,11 +148,43 @@ test('the not-beside choice round-trips; absent means beside the orchestrator ca
 test('a scope round-trips: all projects, a list, or nothing when kept', () => {
   assert.deepEqual(initialScope(null), { all: false, rows: [{ projectId: '', root: '' }] });
   assert.deepEqual(initialScope({ allProjects: true, projects: [] }).all, true);
-  assert.deepEqual(initialScope({ projects: [{ projectId: 'P1', roots: ['/a', '/b'] }] }).rows, [{ projectId: 'P1', root: '/a' }]);
+  // every directory of a project is a row of its own, so saving keeps them all
+  assert.deepEqual(initialScope({ projects: [{ projectId: 'P1', roots: ['/a', '/b'] }] }).rows,
+    [{ projectId: 'P1', root: '/a' }, { projectId: 'P1', root: '/b' }]);
   assert.deepEqual(scopePayload({ allProjects: true, scopes: [] }), { allProjects: true });
   assert.deepEqual(scopePayload({ allProjects: false, scopes: null }), { allProjects: false });
   assert.deepEqual(scopePayload({ allProjects: false, scopes: [{ project: { id: 'P1' }, root: '/a' }] }),
     { allProjects: false, projects: [{ projectId: 'P1', roots: ['/a'] }] });
+  // rows of one project go back as one project with all its directories
+  assert.deepEqual(scopePayload({ allProjects: false, scopes: [{ project: { id: 'P1' }, root: '/a' },
+    { project: { id: 'P2' }, root: '/c' }, { project: { id: 'P1' }, root: '/b' }, { project: { id: 'P1' }, root: '/a' }] }),
+  { allProjects: false, projects: [{ projectId: 'P1', roots: ['/a', '/b'] }, { projectId: 'P2', roots: ['/c'] }] });
+  // a round trip of a three-directory project keeps the three
+  const client = { projects: [{ projectId: 'P1', roots: ['/a', '/b', '/Volumes/X/w'] }] };
+  const rows = initialScope(client).rows;
+  assert.deepEqual(scopePayload({ allProjects: false, scopes: rows.map(r => ({ project: { id: r.projectId }, root: r.root })) }).projects,
+    client.projects);
+  assert.equal(heldRoot(client, 'P1', '/Volumes/X/w'), true);
+  assert.equal(heldRoot(client, 'P2', '/Volumes/X/w'), false);
+  assert.equal(heldRoot(client, 'P1', '/Volumes/X/other'), false);
+});
+
+test('worktree rules round-trip and are checked before a round trip', () => {
+  const client = { worktrees: [{ projectId: 'P1', repo: '/r', parent: '/w' }] };
+  assert.deepEqual(initialWorktrees(client), [{ projectId: 'P1', repo: '/r', parent: '/w' }]);
+  assert.deepEqual(initialWorktrees(null), []);
+  assert.deepEqual(worktreesPayload([{ projectId: 'P1', repo: ' /r ', parent: '/w' }, { projectId: '', repo: '', parent: '' }]),
+    [{ projectId: 'P1', repo: '/r', parent: '/w' }]);
+  assert.equal(worktreesProblem([{ projectId: 'P1', repo: '/r', parent: '/w' }], ['P1']), null);
+  assert.equal(worktreesProblem([{ projectId: 'P1', repo: '/r', parent: '/w' }], null), null);
+  assert.equal(worktreesProblem([{ projectId: 'P2', repo: '/r', parent: '/w' }], ['P1']), 'mcp.worktreeProject');
+  assert.equal(worktreesProblem([{ projectId: '', repo: '/r', parent: '/w' }], null), 'mcp.worktreeProject');
+  assert.equal(worktreesProblem([{ projectId: 'P1', repo: 'r', parent: '/w' }], null), 'mcp.worktreeRepo');
+  assert.equal(worktreesProblem([{ projectId: 'P1', repo: '/r', parent: '' }], null), 'mcp.worktreeParent');
+  assert.equal(worktreesProblem(Array.from({ length: 17 }, () => ({ projectId: 'P1', repo: '/r', parent: '/w' })), null), 'mcp.worktreeList');
+  assert.equal(worktreeErrorKey('Error: mcp-worktree-repo'), 'mcp.worktreeRepo');
+  assert.equal(worktreeErrorKey('Error: mcp-worktree-parent'), 'mcp.worktreeParent');
+  assert.equal(worktreeErrorKey('other'), null);
 });
 
 test('scope rows are checked in order before any directory', () => {
@@ -161,8 +193,10 @@ test('scope rows are checked in order before any directory', () => {
   assert.deepEqual(scopeProblem([{ known: true, projectId: 'p1', root: '' }]), { index: 0, field: 'root', key: 'mcp.rootRequired' });
   assert.deepEqual(scopeProblem([{ known: true, projectId: 'p1', root: '/a' }, { known: true, projectId: 'p2', root: '' }]),
     { index: 1, field: 'root', key: 'mcp.rootRequired' });
-  assert.deepEqual(scopeProblem([{ known: true, projectId: 'p1', root: '/a' }, { known: true, projectId: 'p1', root: '/b' }]),
-    { index: null, field: null, key: 'mcp.projectDuplicate' });
+  // a project may have several directories, each once
+  assert.equal(scopeProblem([{ known: true, projectId: 'p1', root: '/a' }, { known: true, projectId: 'p1', root: '/b' }]), null);
+  assert.deepEqual(scopeProblem([{ known: true, projectId: 'p1', root: '/a' }, { known: true, projectId: 'p1', root: '/a' }]),
+    { index: null, field: null, key: 'mcp.rootDuplicate' });
 });
 
 test('a preview refusal names its own message', () => {

@@ -55,6 +55,8 @@ pub(crate) struct ClientView {
     /// Reaches every project through its default directory.
     pub(super) all_projects: bool,
     pub(super) projects: Vec<ProjectScope>,
+    /// Its linked-worktree rules (`grants::worktree_scope`).
+    pub(super) worktrees: Vec<WorktreeRule>,
     /// Its adapter was last refused for a control-protocol mismatch
     /// (`control::route`): the integration has to be restarted. Absent from
     /// the answer otherwise.
@@ -98,6 +100,7 @@ pub(super) fn status_of(runtime: &Runtime) -> StatusView {
                 rule_column: client.rule_column,
                 all_projects: client.all_projects,
                 projects: client.projects.clone(),
+                worktrees: client.worktrees.clone(),
                 adapter_refused: client.revoked_at.is_none()
                     && emergency.refused_adapters.contains(&client.id),
             })
@@ -399,7 +402,9 @@ pub(crate) fn mcp_client_add(
         rule_column,
         all_projects,
         projects: _,
+        worktrees,
     } = permissions;
+    let worktrees = checked_worktree_rules(&worktrees.unwrap_or_default())?;
     let allow_replies = allow_workers && allow_replies;
     let worker_first_send = allow_workers && worker_first_send;
     let allow_card_edits = allow_cards && allow_card_edits;
@@ -420,6 +425,17 @@ pub(crate) fn mcp_client_add(
     let scopes = validate_new_client_scopes(projects, enforce_projects, |project_id| {
         crate::documents::board_project_exists(project_id)
     })?;
+    // a rule names a project this client reaches
+    if !worktrees.iter().all(|rule| {
+        if all_projects {
+            !enforce_projects
+                || crate::documents::board_project_exists(&rule.project_id).unwrap_or(false)
+        } else {
+            scopes.iter().any(|s| s.project_id == rule.project_id)
+        }
+    }) {
+        return Err(DeckError::new(ErrorKind::Invalid, "mcp-worktree-project"));
+    }
     let client_id = random_id("client_", 16)?;
     let credential = random_id("mcp_", 16)?;
     if runtime.app.is_some() {
@@ -455,6 +471,7 @@ pub(crate) fn mcp_client_add(
             allow_card_edits,
             rule_column,
             lanes: Default::default(),
+            worktrees,
             send_epoch: 0,
         };
         doc.config.clients.push(client.clone());
@@ -475,6 +492,7 @@ pub(crate) fn mcp_client_add(
             allow_card_edits: client.allow_card_edits,
             rule_column: client.rule_column,
             all_projects: client.all_projects,
+            worktrees: client.worktrees.clone(),
             projects: client.projects,
         })
     });
@@ -493,10 +511,37 @@ pub(crate) fn mcp_client_add(
 pub(super) fn validate_new_client_scopes(
     projects: Vec<ProjectScopeInput>,
     enforce_projects: bool,
+    project_exists: impl FnMut(&str) -> Result<bool, DeckError>,
+) -> Result<Vec<ProjectScope>, DeckError> {
+    validate_client_scopes(projects, &[], enforce_projects, project_exists)
+}
+
+/// The scope a client is saved with: every project once (its rows merged,
+/// approved 2026-11-28: a project may have several directories), each root
+/// canonicalized with the root policy and listed once — a symbolic link
+/// and its target are one root. A root the client ALREADY holds for that
+/// project, exactly as stored, is kept as it is when it cannot be resolved
+/// now (an external volume not mounted): saving another choice must not
+/// drop it, and it grants nothing until it resolves again (every use
+/// canonicalizes it). A new root must resolve.
+pub(super) fn validate_client_scopes(
+    projects: Vec<ProjectScopeInput>,
+    kept: &[ProjectScope],
+    enforce_projects: bool,
     mut project_exists: impl FnMut(&str) -> Result<bool, DeckError>,
 ) -> Result<Vec<ProjectScope>, DeckError> {
-    let mut scopes = Vec::new();
+    let mut merged: Vec<ProjectScopeInput> = Vec::new();
     for project in projects {
+        match merged
+            .iter_mut()
+            .find(|p| p.project_id == project.project_id)
+        {
+            Some(existing) => existing.roots.extend(project.roots),
+            None => merged.push(project),
+        }
+    }
+    let mut scopes = Vec::new();
+    for project in merged {
         if !valid_id(&project.project_id)
             || project.roots.is_empty()
             || project.roots.len() > MAX_ROOTS_PER_PROJECT
@@ -506,11 +551,35 @@ pub(super) fn validate_new_client_scopes(
                 "invalid MCP project scope",
             ));
         }
-        let roots = project
-            .roots
-            .into_iter()
-            .map(|root| canonical_project_root(&root))
-            .collect::<Result<Vec<_>, _>>()?;
+        let held = |root: &str| {
+            kept.iter()
+                .any(|k| k.project_id == project.project_id && k.roots.iter().any(|r| r == root))
+        };
+        let mut roots: Vec<String> = Vec::new();
+        for root in &project.roots {
+            let canonical = match canonical_project_root(root) {
+                Ok(canonical) => canonical,
+                Err(error)
+                    if held(root)
+                        && matches!(
+                            error.kind(),
+                            ErrorKind::Missing | ErrorKind::Perm | ErrorKind::Other
+                        ) =>
+                {
+                    root.clone()
+                }
+                Err(error) => return Err(error),
+            };
+            if !roots.contains(&canonical) {
+                roots.push(canonical);
+            }
+        }
+        if roots.len() > MAX_ROOTS_PER_PROJECT {
+            return Err(DeckError::new(
+                ErrorKind::Invalid,
+                "invalid MCP project scope",
+            ));
+        }
         if enforce_projects && !project_exists(&project.project_id)? {
             return Err(DeckError::new(
                 ErrorKind::Missing,
@@ -723,6 +792,40 @@ pub(crate) struct PermissionsInput {
     /// `all_projects` off). Absent, and `all_projects` off, keeps its scope.
     #[serde(default)]
     pub(super) projects: Option<Vec<ProjectScopeInput>>,
+    /// Its linked-worktree rules from now on (`grants::worktree_scope`);
+    /// absent keeps them.
+    #[serde(default)]
+    pub(super) worktrees: Option<Vec<WorktreeRuleInput>>,
+}
+
+/// One linked-worktree rule as the dialog sends it.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WorktreeRuleInput {
+    pub(super) project_id: String,
+    pub(super) repo: String,
+    pub(super) parent: String,
+}
+
+/// The rules as saved: each checked and canonicalized
+/// (`grants::checked_worktree_rule`), repeats dropped, at most
+/// `MAX_WORKTREE_RULES`. Whether each one's project is in the client's
+/// reach is checked under the write.
+pub(super) fn checked_worktree_rules(
+    rules: &[WorktreeRuleInput],
+) -> Result<Vec<WorktreeRule>, DeckError> {
+    if rules.len() > super::grants::MAX_WORKTREE_RULES {
+        return Err(DeckError::new(ErrorKind::Invalid, "mcp-worktree-list"));
+    }
+    let mut out: Vec<WorktreeRule> = Vec::new();
+    for rule in rules {
+        let rule =
+            super::grants::checked_worktree_rule(&rule.project_id, &rule.repo, &rule.parent)?;
+        if !out.contains(&rule) {
+            out.push(rule);
+        }
+    }
+    Ok(out)
 }
 
 #[tauri::command(async)]
@@ -1222,13 +1325,20 @@ pub(super) fn close_admit(
             .iter()
             .any(|o| o.operation_id == operation_id && o.kind == WORKER_CLOSE_KIND)
     })?;
-    let (targets, seen) = if worker_close {
+    let (targets, seen, unsent) = if worker_close {
+        let worker = runtime.read(|doc| {
+            doc.operations
+                .iter()
+                .find(|o| o.operation_id == operation_id)
+                .and_then(|o| super::workers::close_worker(doc, o))
+        })?;
         (
             crate::documents::card_targets(false),
             super::workers::observe_sessions(),
+            worker.and_then(|w| super::workers::unsent_lines(runtime, &w)),
         )
     } else {
-        (None, None)
+        (None, None, None)
     };
     let admission = random_id("close_", 16)?;
     let admission_hash = sha(admission.as_bytes());
@@ -1260,6 +1370,7 @@ pub(super) fn close_admit(
                 &operation,
                 targets.as_ref(),
                 seen.as_ref(),
+                unsent,
             );
             let saved = &mut doc.operations[index];
             saved.updated_at = now_ms();
@@ -1269,9 +1380,17 @@ pub(super) fn close_admit(
                     saved.admission_hash = Some(admission_hash.clone());
                     None
                 }
-                Err(code) => {
+                Err((code, observed)) => {
                     saved.state = "rejected".into();
                     saved.code = Some(code.into());
+                    // what Deck saw when it refused, for the caller's
+                    // `deck_operation_get` (`result.refusal`)
+                    if let Some(Value::Object(plan)) = saved.result.as_mut() {
+                        plan.insert(
+                            "refusal".into(),
+                            super::workers::admission_record(code, observed),
+                        );
+                    }
                     Some(code)
                 }
             });

@@ -91,6 +91,15 @@ pub(super) struct WorkerReportsArgs {
     pub(super) after: Option<u64>,
 }
 
+/// `deck_worker_reports_ack`: the orchestrator card that started `card_id`
+/// acknowledges it received report `sequence`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkerReportsAckArgs {
+    pub(super) card_id: String,
+    pub(super) sequence: u64,
+}
+
 /// `deck_worker_wait`: until one of these cards moves on, or `wait_ms`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,7 +171,21 @@ pub(super) struct WorkerCloseArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) lane_epoch: Option<u64>,
     pub(super) card_id: String,
-    pub(super) after_episode: u64,
+    /// `close_mode: episode` (the default): the episode the close was
+    /// decided on. Serialized as before, so an old request's identity holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) after_episode: Option<u64>,
+    /// `episode` (default) or `instance` (`workers::CloseMode`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) close_mode: Option<String>,
+    /// `close_mode: instance`: the card's `instance` the close was decided
+    /// on, from `deck_worker_list`/`deck_worker_wait`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) instance: Option<String>,
+    /// `close_mode: instance`: the card's `lastLine` the close was decided
+    /// on (absent: no line since the start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) last_line: Option<String>,
 }
 
 /// `deck_worker_send`: one line for one worker card, written after the

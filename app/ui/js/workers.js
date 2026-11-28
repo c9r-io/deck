@@ -20,6 +20,10 @@
 //   that card (`Hold::Human`); this module only reports the fact.
 // - A worker card that reported to its orchestrator (`reportedAt`) says so
 //   on its label, with the time; the report's text never reaches here.
+//   While the newest report waits for that orchestrator's acknowledgment
+//   (`reportPending`, `deck_worker_reports_ack`, mcp/reports.rs) the label
+//   says "new report · not yet received" instead: the newest one only,
+//   received, never read, reviewed or done.
 // - Needs attention shows the same label on a worker card's row and groups
 //   the cards one driver opened (`workerDriver`) for its "Tick those …
 //   opened" button (attention.js).
@@ -96,12 +100,16 @@ export function workerLabel(worker, cards, now = new Date()) {
   const title = orphaned ? 'workers.orphanedTitle' : takenOver ? 'workers.takenOverTitle' : 'workers.drivenTitle';
   /* the card handed Deck a report for its orchestrator (mcp/reports.rs):
      that it did and when, never what it says */
-  const reported = worker.reportedAt ? t('workers.reported', { time: fmtClock(Math.floor(worker.reportedAt / 1000), now) }) : '';
+  /* while its orchestrator has not acknowledged the newest one
+     (`reportPending`, mcp/reports.rs `awaiting_ack`) it says so instead */
+  const pending = worker.reportPending === true && Boolean(worker.reportedAt) && !takenOver;
+  const time = worker.reportedAt ? fmtClock(Math.floor(worker.reportedAt / 1000), now) : '';
+  const reported = !worker.reportedAt ? '' : t(pending ? 'workers.reportPending' : 'workers.reported', { time });
   const titleText = t(title, { name, client: worker.clientName });
   return {
-    takenOver, orphaned,
+    takenOver, orphaned, pending,
     text: reported ? `${t(key, { name })} · ${reported}` : t(key, { name }),
-    title: reported ? `${titleText} ${t('workers.reportedTitle')}` : titleText,
+    title: reported ? `${titleText} ${t(pending ? 'workers.reportPendingTitle' : 'workers.reportedTitle')}` : titleText,
   };
 }
 
@@ -111,7 +119,7 @@ export function workerChip(s) {
   if (!worker) return null;
   const label = workerLabel(worker, store.cards);
   const chip = document.createElement(label.takenOver ? 'button' : 'span');
-  chip.className = 'card-worker' + (label.takenOver ? ' taken' : '');
+  chip.className = 'card-worker' + (label.takenOver ? ' taken' : '') + (label.pending ? ' report-pending' : '');
   chip.textContent = label.text;
   chip.title = label.title;
   if (label.takenOver) {

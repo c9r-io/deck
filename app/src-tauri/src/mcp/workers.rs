@@ -70,10 +70,20 @@
 //!   that started it, and only for it (`opened_by`: the kernel-proven
 //!   calling card is the one recorded at the start; from no card, nothing).
 //!   It is refused while the user holds the card, while its Agent asks the
-//!   user (`needs-input`) and once its episode moved on, and goes as a
-//!   `worker-close` Board intent through the webview's ordinary close as a
-//!   remote one (`mcp.js` `closeWorker`); the admission reads the card again
-//!   (`close_still_admissible`). Its reports stay readable.
+//!   user (`needs-input`), and by its mode (`CloseMode`): once its episode
+//!   moved on (`episode`), or once another program instance, another
+//!   session, a newer accepted line, undelivered lines or an unprovable
+//!   observation stand where the decision was made (`instance`; the
+//!   instance's own turns never refuse it, an ended instance leaves the
+//!   card to close). It goes as a `worker-close` Board intent through the
+//!   webview's ordinary close as a remote one (`mcp.js` `closeWorker`);
+//!   while it is under way the card takes no line (`WORKER_CLOSING`) or
+//!   second close; the admission reads the card again with the same rules
+//!   (`close_still_admissible`, the linearization point) and keeps what it
+//!   saw (`admission_refusal`). Every refusal names its stage. Its reports
+//!   stay readable.
+//! - The views carry what an instance-bound close names: `instance` (the
+//!   program in front of the card's pane, `instance_token`) and `lastLine`.
 //! - Within one client, a worker started from an orchestrator card
 //!   (`origin.rs`) is that card's: only calls from it (and from no card) see
 //!   and drive it, its sequences are that card's lane, and once the card
@@ -187,6 +197,17 @@ pub(super) struct Worker {
     /// (`reports::reply_target`) after the journal retired their records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) lines: Vec<String>,
+    /// The highest report sequence the orchestrator card that started this
+    /// card acknowledged it received (`reports::worker_reports_ack`,
+    /// approved 2026-11-28). `None`: not tracked — no report yet, a record
+    /// whose reports came before acknowledgments existed (nothing is known
+    /// of them), or an unowned card nobody may acknowledge for. A card of an
+    /// orchestrator starts tracking (`Some(0)`) with its first report
+    /// recorded after this build, in that report's write; its orchestrator's
+    /// acknowledgment of an older one starts it too. It never goes back and
+    /// never passes `reported`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) acknowledged: Option<u64>,
 }
 
 /// Line operations a worker record keeps (`Worker.lines`).
@@ -253,6 +274,11 @@ pub(crate) fn note_worker_change() {
     changed.notify_all();
 }
 
+#[cfg(test)]
+pub(super) fn change_count_for_tests() -> u64 {
+    change_count()
+}
+
 fn change_count() -> u64 {
     *change().0.lock_or_recover()
 }
@@ -300,6 +326,7 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
         }
         super::reports::prune(doc);
     }
+    let orchestrator = super::origin::of_operation(operation);
     doc.workers.push(Worker {
         card_id: card.into(),
         client_id: operation.client_id.clone(),
@@ -307,7 +334,10 @@ pub(super) fn record_worker(doc: &mut DiskDoc, operation: &Operation, card: &str
         automation_id: automation,
         created_at: now_ms(),
         held: false,
-        orchestrator: super::origin::of_operation(operation),
+        // tracking starts with the card's first report (`reports.rs`), so a
+        // card that never reports leaves the ledger as it was
+        acknowledged: None,
+        orchestrator,
         reported: 0,
         model: operation
             .result
@@ -557,6 +587,42 @@ pub(super) struct Seen {
     /// generation (`agent_status::CodexSignalTrust`), when one applies:
     /// what `why` says when no state is observed.
     codex: Option<crate::agent_status::CodexSignalTrust>,
+    /// The session's Signal-target pane as the kernel and tmux name it
+    /// (`instance_key`: tmux server, session id, pane process); 0 when the
+    /// session has no single target pane.
+    pane: u64,
+    /// That pane's foreground generation (`agent_status::live_generation`:
+    /// the foreground process and its birth instant) folded with `pane`:
+    /// the program instance in front, the same across every observation
+    /// of its turns and another one after an exit, a re-entry or a new
+    /// session. 0 when it could not be read (proves nothing).
+    instance: u64,
+    /// The foreground is the pane's own shell: no program runs in front.
+    shell: bool,
+}
+
+/// A stable 64-bit key of `parts` (the first 8 bytes of their SHA-256):
+/// the same facts give the same key in every Deck process.
+fn instance_key(parts: &str) -> u64 {
+    let digest = sha(parts.as_bytes());
+    u64::from_str_radix(&digest[..16], 16).unwrap_or(0)
+}
+
+/// The instance token a worker view carries and a close may bind
+/// (`close_mode: instance`): the pane key, then the instance key.
+fn instance_token(seen: &Seen) -> Option<String> {
+    (seen.pane != 0 && seen.instance != 0)
+        .then(|| format!("{:016x}{:016x}", seen.pane, seen.instance))
+}
+
+/// A token back into its pane and instance keys.
+fn parse_instance(token: &str) -> Option<(u64, u64)> {
+    if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let pane = u64::from_str_radix(&token[..16], 16).ok()?;
+    let instance = u64::from_str_radix(&token[16..], 16).ok()?;
+    (pane != 0 && instance != 0).then_some((pane, instance))
 }
 
 /// One pane listing: for each session, whether it is alive and what its
@@ -594,6 +660,7 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
         crate::agent_status::live_generation,
         |_| None,
     );
+    let targets = crate::agent_status::signal_targets(rows);
     let mut seen: HashMap<String, Seen> = rows
         .iter()
         .map(|row| {
@@ -604,10 +671,31 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
                     state: None,
                     episode: 0,
                     codex: evidence.get(&row.session_name).and_then(|e| e.codex),
+                    pane: 0,
+                    instance: 0,
+                    shell: false,
                 },
             )
         })
         .collect();
+    for (session, row) in targets {
+        let Some(entry) = seen.get_mut(&session) else {
+            continue;
+        };
+        let pane = instance_key(&format!(
+            "pane\0{}\0{}\0{}\0{}",
+            row.server_pid, row.session_id, row.pane_id, row.pane_pid
+        ));
+        entry.pane = pane;
+        if let Some(generation) = crate::agent_status::live_generation(row.pane_pid) {
+            let (seconds, micros) = generation.birth();
+            entry.instance = instance_key(&format!(
+                "instance\0{pane:016x}\0{}\0{seconds}\0{micros}",
+                generation.pid()
+            ));
+            entry.shell = generation.pid() == row.pane_pid;
+        }
+    }
     for (session, observation) in agents {
         if current.get(&session).copied().flatten() != Some(true) {
             continue;
@@ -622,19 +710,55 @@ fn seen_in(rows: &[crate::tmux::PaneRow]) -> HashMap<String, Seen> {
 
 #[cfg(test)]
 thread_local! {
+    /// A test's unsent-line count in place of the queue (`unsent_lines`):
+    /// `Some(None)` = the queue cannot be read.
+    pub(super) static UNSENT_FOR_TESTS: std::cell::Cell<Option<Option<usize>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
     /// A test's pane listing in place of tmux: session → (state, episode).
     pub(super) static OBSERVE_FOR_TESTS: std::cell::RefCell<Option<Option<HashMap<String, Seen>>>> =
         const { std::cell::RefCell::new(None) };
 }
 
+/// The pane and instance keys a test's observation carries unless it names
+/// its own (`instance_seen_for_tests`).
+#[cfg(test)]
+pub(super) const TEST_PANE: u64 = 0x1111;
+#[cfg(test)]
+pub(super) const TEST_INSTANCE: u64 = 0x2222;
+
 #[cfg(test)]
 pub(super) fn seen_for_tests(state: Option<&'static str>, episode: u64) -> Seen {
+    instance_seen_for_tests(state, episode, TEST_PANE, TEST_INSTANCE, false)
+}
+
+/// A test's observation with its own pane and instance keys.
+#[cfg(test)]
+pub(super) fn instance_seen_for_tests(
+    state: Option<&'static str>,
+    episode: u64,
+    pane: u64,
+    instance: u64,
+    shell: bool,
+) -> Seen {
     Seen {
         alive: true,
         state,
         episode,
         codex: None,
+        pane,
+        instance,
+        shell,
     }
+}
+
+/// The token a test's observation is read as (`instance_token`).
+#[cfg(test)]
+pub(super) fn token_for_tests(pane: u64, instance: u64) -> String {
+    format!("{pane:016x}{instance:016x}")
 }
 
 #[cfg(test)]
@@ -644,6 +768,9 @@ pub(super) fn codex_seen_for_tests(codex: crate::agent_status::CodexSignalTrust)
         state: None,
         episode: 0,
         codex: Some(codex),
+        pane: TEST_PANE,
+        instance: TEST_INSTANCE,
+        shell: false,
     }
 }
 
@@ -774,6 +901,11 @@ fn view(
         "alive": observed.is_some_and(|o| o.alive),
         "agent": agent,
         "takenOver": row.taken_over,
+        // what a close bound to this agent instance names
+        // (`close_mode: instance`): the program in front of the card's pane
+        // (null when Deck cannot tell) and the newest line accepted for it
+        "instance": observed.as_ref().and_then(instance_token),
+        "lastLine": row.worker.lines.last(),
         "mayInterject": row.may_interject,
         "unsent": unsent,
         "reports": row.reports,
@@ -1418,6 +1550,9 @@ fn queue_line(
                         .ok_or_else(|| not_interjectable(false)),
                     None => own_card(doc, client_id, orchestrator, &args.card_id),
                 };
+                if let Some(open) = open_close(doc, client_id, &args.card_id) {
+                    return Ok(Err(worker_closing(&open.operation_id)));
+                }
                 Ok(worker.map(|w| (w, stale)))
             },
         )
@@ -1496,6 +1631,12 @@ fn queue_line(
                 if opened_by(doc, client_id, caller, &worker.card_id).is_none() {
                     return Ok(Err(not_interjectable(false)));
                 }
+            }
+            // a close of the card is under way: a line accepted now would
+            // be reported as given to an instance about to go (the close
+            // was accepted first, so it decides)
+            if let Some(open) = open_close(doc, client_id, &worker.card_id) {
+                return Ok(Err(worker_closing(&open.operation_id)));
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
             let result = match caller {
@@ -1615,34 +1756,288 @@ fn not_opened_here(from_no_card: bool) -> Value {
 }
 
 fn taken_over_refusal() -> Value {
-    error_value(
-        "WORKER_TAKEN_OVER",
-        "the user took this card over: it is theirs until they hand it back",
-        "Leave it to the user; once they hand it back you may close it.",
-    )
+    close_refusal("worker-taken-over", None, json!(null))
 }
 
 fn needs_you_refusal() -> Value {
-    error_value(
-        "WORKER_NEEDS_YOU",
-        "the card's Agent is asking the local user something: that question is theirs to answer",
-        "Leave the card to the user; you may close it once its turn has ended.",
-    )
+    close_refusal("worker-needs-you", None, json!(null))
 }
 
-fn episode_moved_refusal(current: u64) -> Value {
+/// How a close is bound to what its orchestrator decided on
+/// (`close_mode`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CloseMode {
+    /// The original: the card's attention episode (`after_episode`). Any
+    /// other accepted observation since — the turn ending included —
+    /// refuses it.
+    Episode,
+    /// Approved 2026-11-28: "I am done with THIS agent instance". Bound to
+    /// the program instance in front of the card's pane (`instance`) and to
+    /// the newest line accepted for the card (`last_line`): the instance's
+    /// own turns (working → turn-done, a new episode) do not refuse it;
+    /// another instance (an exit and a new program, a re-entry, a new
+    /// session), a line accepted since the decision, a line still unsent
+    /// or an observation Deck cannot prove do. An instance that ended (a
+    /// shell back in front of the same pane, or its session gone) leaves
+    /// the card to close.
+    Instance,
+}
+
+impl CloseMode {
+    fn word(self) -> &'static str {
+        match self {
+            CloseMode::Episode => "episode",
+            CloseMode::Instance => "instance",
+        }
+    }
+}
+
+/// What an instance-mode close was decided on.
+#[derive(Clone)]
+struct InstanceBinding {
+    pane: u64,
+    instance: u64,
+    last_line: Option<String>,
+}
+
+impl InstanceBinding {
+    fn of_plan(plan: &Value) -> Option<Self> {
+        let (pane, instance) = parse_instance(plan.get("instance")?.as_str()?)?;
+        Some(Self {
+            pane,
+            instance,
+            last_line: plan
+                .get("lastLine")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+}
+
+/// One closed refusal word of a close (lowercase: the operation's code
+/// once accepted; `close_refusal` gives its uppercase tool code), with what
+/// the caller is told and should do.
+fn close_words(code: &str) -> (&'static str, &'static str, &'static str) {
+    match code {
+        "episode-moved" => (
+            "EPISODE_MOVED",
+            "the card's Agent observation is no longer the episode this close was decided on; nothing was closed",
+            "Read the card again (deck_worker_wait or deck_worker_list) and decide on its current state; to close once you are done with this agent whatever its turns do meanwhile, close with close_mode: instance and the card's instance and lastLine.",
+        ),
+        "instance-changed" => (
+            "INSTANCE_CHANGED",
+            "another program instance is in front of the card than the one this close was decided on (the agent was restarted or re-entered, or the session is a new one); nothing was closed",
+            "Read the card again (deck_worker_list) and decide on the instance it runs now; that is a new decision with a new request id.",
+        ),
+        "instance-unknown" => (
+            "INSTANCE_UNKNOWN",
+            "Deck cannot read which program instance is in front of the card's pane right now, so it cannot prove it is the one this close was decided on; nothing was closed",
+            "Read the card again in a moment (deck_worker_list instance) and close with what it says.",
+        ),
+        "observation-unknown" => (
+            "OBSERVATION_UNKNOWN",
+            "the agent is still running and Deck has no observation of it, so it cannot prove the agent is not asking the user something; nothing was closed",
+            "Wait for the agent's next turn to be observed (deck_worker_wait), or close with close_mode: episode and its episode as deck_worker_list shows it.",
+        ),
+        "new-input" => (
+            "NEW_INPUT",
+            "a line was accepted for the card after the one this close was decided on: that is work the decision did not cover; nothing was closed",
+            "Read the card again (deck_worker_list lastLine and sends) and decide whether you are still done with it.",
+        ),
+        "lines-pending" => (
+            "LINES_PENDING",
+            "the card still holds lines that have not been sent; closing now would drop work the decision did not see delivered; nothing was closed",
+            "Wait until its lines are delivered (deck_worker_list sends) and decide again, or close with close_mode: episode to close regardless of them.",
+        ),
+        "worker-needs-you" => (
+            "WORKER_NEEDS_YOU",
+            "the card's Agent is asking the local user something: that question is theirs to answer",
+            "Leave the card to the user; you may close it once its turn has ended.",
+        ),
+        "worker-taken-over" => (
+            "WORKER_TAKEN_OVER",
+            "the user took this card over: it is theirs until they hand it back",
+            "Leave it to the user; once they hand it back you may close it.",
+        ),
+        "client-revoked" => (
+            "PERMISSION_DENIED",
+            "this client may no longer drive worker cards",
+            "Nothing more can be closed; the local user withdrew the choice.",
+        ),
+        "worker-unobserved" => (
+            "WORKER_UNOBSERVED",
+            "Deck could not read the card's terminal when it came to close it",
+            "Read the card again and close with a new request.",
+        ),
+        "close-in-progress" => (
+            "CLOSE_IN_PROGRESS",
+            "a close of this card is already under way; this one would close nothing more",
+            "Follow that close (deck_operation_get with operationId); repeat it with its own request id when its answer was lost.",
+        ),
+        _ => (
+            "WORKER_NOT_FOUND",
+            "the card is no longer a worker card this orchestrator card started",
+            "Read deck_worker_list again; a card already closed needs nothing more.",
+        ),
+    }
+}
+
+/// A refused close as the caller reads it, at the first check (nothing
+/// accepted): the closed code, what Deck observed when it refused, and
+/// what to do. A snapshot: it promises nothing about a later attempt.
+fn close_refusal(code: &str, current_episode: Option<u64>, observed: Value) -> Value {
+    let (upper, message, next) = close_words(code);
+    let mut error = json!({
+        "code": upper,
+        "message": message,
+        "nextAction": next,
+        "stage": "precheck",
+        "accepted": false,
+    });
+    if let Some(episode) = current_episode {
+        error["currentEpisode"] = json!(episode);
+    }
+    if !observed.is_null() {
+        error["observed"] = observed;
+    }
+    json!({"ok": false, "error": error})
+}
+
+/// The refusal an accepted close is rejected with at its admission
+/// (`close_still_admissible`), kept in the operation's result
+/// (`deck_operation_get` `result.refusal`) beside its code.
+fn admission_refusal(code: &str, observed: Value) -> Value {
+    let (upper, message, next) = close_words(code);
+    let mut refusal = json!({
+        "stage": "admission",
+        "accepted": true,
+        "code": upper,
+        "message": message,
+        "nextAction": next,
+        "observed": observed,
+    });
+    if code == "episode-moved" {
+        refusal["currentEpisode"] = observed["episode"].clone();
+    }
+    refusal
+}
+
+/// What Deck observed of a card when it decided on a close: its episode
+/// and state, the instance in front of its pane, its newest accepted line
+/// and its unsent lines (each null when unknown).
+fn observed_view(
+    now: Option<Seen>,
+    listed: bool,
+    worker: Option<&Worker>,
+    unsent: Option<usize>,
+) -> Value {
+    json!({
+        "episode": now.map(|s| s.episode),
+        "state": match now {
+            Some(Seen { state: Some(state), .. }) => state,
+            Some(_) => "unavailable",
+            None if listed => "gone",
+            None => "unknown",
+        },
+        "instance": now.as_ref().and_then(instance_token),
+        "lastLine": worker.and_then(|w| w.lines.last()),
+        "unsent": unsent,
+    })
+}
+
+/// The worker card's lines from this client that are still unsent (pending
+/// or failed rows in the queue): its start's head row and its lines. `None`
+/// when the queue cannot be read.
+pub(super) fn unsent_lines(runtime: &Runtime, worker: &Worker) -> Option<usize> {
+    #[cfg(test)]
+    if let Some(forced) = UNSENT_FOR_TESTS.with(std::cell::Cell::get) {
+        return forced;
+    }
+    let queue = queues(runtime)?;
+    let mut ids = runtime
+        .read(|doc| sends_of(doc, &worker.client_id, &worker.card_id))
+        .ok()?;
+    ids.extend(worker.lines.iter().cloned());
+    ids.push(worker.operation_id.clone());
+    Some(crate::scheduler::worker_rows(&queue.q, &worker.card_id, &worker.client_id, &ids, None).0)
+}
+
+/// Whether an instance-mode close still holds for the card as it is now:
+/// `Err` is the refusal word. `now` is the card's session in a listing that
+/// succeeded (`None`: the session is gone, its instance ended).
+fn instance_verdict(
+    worker: &Worker,
+    bound: &InstanceBinding,
+    now: Option<Seen>,
+    unsent: Option<usize>,
+) -> Result<(), &'static str> {
+    if worker.lines.last() != bound.last_line.as_ref() {
+        return Err("new-input");
+    }
+    match unsent {
+        None => return Err("instance-unknown"),
+        Some(n) if n > 0 => return Err("lines-pending"),
+        Some(_) => {}
+    }
+    let Some(now) = now else {
+        // the session left the listing: the instance ended with it
+        return Ok(());
+    };
+    if now.pane == 0 || now.instance == 0 {
+        return Err("instance-unknown");
+    }
+    if now.pane != bound.pane {
+        return Err("instance-changed");
+    }
+    if now.instance != bound.instance {
+        // a shell back in front of the same pane: the instance ended;
+        // anything else in front is another program
+        return if now.shell {
+            Ok(())
+        } else {
+            Err("instance-changed")
+        };
+    }
+    if !now.shell && now.state.is_none() {
+        return Err("observation-unknown");
+    }
+    Ok(())
+}
+
+/// A line refused because a close of its card was accepted first.
+fn worker_closing(close: &str) -> Value {
     json!({"ok": false, "error": {
-        "code": "EPISODE_MOVED",
-        "message": "the card's Agent observation is no longer the episode this close was decided on; nothing was closed",
-        "nextAction": "Read the card again (deck_worker_wait or deck_worker_list) and decide on its current state.",
-        "currentEpisode": current
+        "code": "WORKER_CLOSING",
+        "message": "a close of this card was accepted before this line; nothing was queued",
+        "nextAction": "Follow the close (deck_operation_get with closeOperationId): once it is rejected the card takes lines again; once committed the card is gone.",
+        "closeOperationId": close,
     }})
+}
+
+/// The worker-close operation still under way for `card` (accepted,
+/// executing or admitted), if any: its card takes no further line or close.
+pub(super) fn open_close<'a>(doc: &'a DiskDoc, client: &str, card: &str) -> Option<&'a Operation> {
+    doc.operations.iter().find(|o| {
+        o.client_id == client
+            && o.kind == WORKER_CLOSE_KIND
+            && matches!(o.state.as_str(), "accepted" | "executing" | "admitted")
+            && o.result
+                .as_ref()
+                .and_then(|r| r.get("cardId"))
+                .and_then(Value::as_str)
+                == Some(card)
+    })
 }
 
 /// The worker card `card` of `client` that orchestrator card `caller`
 /// started (`Worker.orchestrator`, read from the kernel at its start):
 /// never another card's, an unowned one, or any other card.
-fn opened_by<'a>(doc: &'a DiskDoc, client: &str, caller: &str, card: &str) -> Option<&'a Worker> {
+pub(super) fn opened_by<'a>(
+    doc: &'a DiskDoc,
+    client: &str,
+    caller: &str,
+    card: &str,
+) -> Option<&'a Worker> {
     doc.workers.iter().find(|w| {
         w.card_id == card && w.client_id == client && w.orchestrator.as_deref() == Some(caller)
     })
@@ -1650,20 +2045,28 @@ fn opened_by<'a>(doc: &'a DiskDoc, client: &str, caller: &str, card: &str) -> Op
 
 /// Whether a planned close may still go ahead, read again where it is
 /// admitted (`commands::close_admit`, inside the webview's Board
-/// transaction): still this client's choice, still a card the planning
-/// orchestrator card started and nobody took over, its Agent not asking the
-/// user, its episode the one the close was decided on. `Err` is the closed
-/// code the operation is rejected with.
+/// transaction, under the delivery lock): still this client's choice,
+/// still the card the planning orchestrator card started (the same record:
+/// `workerOperationId`) and nobody took over, its Agent not asking the
+/// user, and — by the close's mode — its episode the one decided on, or its
+/// instance and lines the ones decided on (`instance_verdict`). This is
+/// the close's linearization point: what changes before it decides the
+/// outcome; once it admits, the card is closed through the webview's
+/// ordinary close, which may still refuse for the user's own reasons
+/// (shown, a Reminder, a kept scratchpad). `Err` is the closed code the
+/// operation is rejected with and what Deck observed (`admission_refusal`).
 pub(super) fn close_still_admissible(
     doc: &DiskDoc,
     operation: &Operation,
     targets: Option<&HashMap<String, crate::documents::CardTarget>>,
     seen: Option<&HashMap<String, Seen>>,
-) -> Result<(), &'static str> {
-    let plan = operation.result.as_ref().ok_or("worker-close-plan")?;
+    unsent: Option<usize>,
+) -> Result<(), (&'static str, Value)> {
+    let bare = |code| (code, json!(null));
+    let plan = operation.result.as_ref().ok_or(bare("worker-close-plan"))?;
     let text = |key: &str| plan.get(key).and_then(Value::as_str).unwrap_or_default();
     if permitted(doc, &operation.client_id, Choice::Workers).is_err() {
-        return Err("client-revoked");
+        return Err(bare("client-revoked"));
     }
     let worker = opened_by(
         doc,
@@ -1671,24 +2074,38 @@ pub(super) fn close_still_admissible(
         text("orchestratorCardId"),
         text("cardId"),
     )
-    .ok_or("worker-not-found")?;
+    .filter(|w| {
+        plan.get("workerOperationId")
+            .and_then(Value::as_str)
+            .is_none_or(|id| id == w.operation_id)
+    })
+    .ok_or(bare("worker-not-found"))?;
     if super::origin::taken_over(worker, targets) {
-        return Err("worker-taken-over");
+        return Err(bare("worker-taken-over"));
     }
-    let seen = seen.ok_or("worker-unobserved")?;
+    let seen = seen.ok_or(bare("worker-unobserved"))?;
     let now = seen.get(text("session")).copied();
-    if now.map_or(0, |s| s.episode)
+    let observed = || observed_view(now, true, Some(worker), unsent);
+    if text("closeMode") == CloseMode::Instance.word() {
+        let bound = InstanceBinding::of_plan(plan).ok_or(bare("worker-close-plan"))?;
+        instance_verdict(worker, &bound, now, unsent).map_err(|code| (code, observed()))?;
+    } else if now.map_or(0, |s| s.episode)
         != plan
             .get("afterEpisode")
             .and_then(Value::as_u64)
             .unwrap_or(0)
     {
-        return Err("episode-moved");
+        return Err(("episode-moved", observed()));
     }
     if now.and_then(|s| s.state) == Some("needs-input") {
-        return Err("worker-needs-you");
+        return Err(("worker-needs-you", observed()));
     }
     Ok(())
+}
+
+/// The refusal an admission stores in its operation's result.
+pub(super) fn admission_record(code: &str, observed: Value) -> Value {
+    admission_refusal(code, observed)
 }
 
 /// The tmux session an admitted worker close may end (`validate_close_admission`).
@@ -1696,16 +2113,34 @@ pub(super) fn close_session(operation: &Operation) -> Option<&str> {
     operation.result.as_ref()?.get("session")?.as_str()
 }
 
+/// The worker card a worker-close operation names, for its admission.
+pub(super) fn close_worker(doc: &DiskDoc, operation: &Operation) -> Option<Worker> {
+    let plan = operation.result.as_ref()?;
+    let text = |key: &str| plan.get(key).and_then(Value::as_str).unwrap_or_default();
+    opened_by(
+        doc,
+        &operation.client_id,
+        text("orchestratorCardId"),
+        text("cardId"),
+    )
+    .cloned()
+}
+
 /// `deck_worker_close`: the orchestrator card that started a worker card
 /// asks Deck to close it. Refused unless the call comes from that very
 /// card (the kernel's word, `origin.rs`; a caller from no card closes
 /// nothing), the card is on the current Board, the user has not taken it
-/// over, its episode is still the one the client decided on and its Agent
-/// is not asking the user anything (an observation may refuse a close,
-/// never release one). Bound to the client's send sequence exactly as a
-/// start or a line; journaled as a `worker-close` Board intent the
-/// webview's one close commits or refuses (`mcp.js` `closeWorker`: never
-/// while a pane shows the card, with a Reminder or a kept scratchpad).
+/// over and its Agent is not asking the user anything (an observation may
+/// refuse a close, never release one), and the decision still holds by
+/// its mode (`CloseMode`): the episode it named, or the instance and the
+/// lines it named. Bound to the client's send sequence or lane epoch
+/// exactly as a start or a line; journaled as a `worker-close` Board
+/// intent the webview's one close commits or refuses (`mcp.js`
+/// `closeWorker`: never while a pane shows the card, with a Reminder or a
+/// kept scratchpad). From its acceptance until it ends, the card takes no
+/// further line (`WORKER_CLOSING`) and no second close
+/// (`CLOSE_IN_PROGRESS`); its admission decides again with the same rules
+/// (`close_still_admissible`).
 pub(super) fn worker_close(
     runtime: &Runtime,
     client_id: &str,
@@ -1719,6 +2154,47 @@ pub(super) fn worker_close(
             "Use a cardId from deck_worker_list and a fresh request id.",
         ));
     }
+    let mode = match args.close_mode.as_deref() {
+        None | Some("episode") => CloseMode::Episode,
+        Some("instance") => CloseMode::Instance,
+        Some(_) => {
+            return Err(error_value(
+                "INVALID_ARGUMENTS",
+                "close_mode is `episode` or `instance`",
+                "Use close_mode: instance with the card's instance and lastLine, or close_mode: episode (the default) with after_episode.",
+            ))
+        }
+    };
+    let bound = match mode {
+        CloseMode::Episode => {
+            if args.after_episode.is_none() || args.instance.is_some() || args.last_line.is_some() {
+                return Err(error_value(
+                    "INVALID_ARGUMENTS",
+                    "close_mode episode takes after_episode, and neither instance nor last_line",
+                    "Name the card's agent.episode as after_episode, or use close_mode: instance with instance and last_line.",
+                ));
+            }
+            None
+        }
+        CloseMode::Instance => {
+            let parsed = args.instance.as_deref().and_then(parse_instance);
+            if args.after_episode.is_some()
+                || parsed.is_none()
+                || args.last_line.as_deref().is_some_and(|l| !valid_id(l))
+            {
+                return Err(error_value(
+                    "INVALID_ARGUMENTS",
+                    "close_mode instance takes instance (and last_line when the card has one), never after_episode",
+                    "Copy the card's instance and lastLine from deck_worker_list or deck_worker_wait; leave last_line out when lastLine is null. A card whose instance is null cannot be closed this way yet.",
+                ));
+            }
+            parsed.map(|(pane, instance)| InstanceBinding {
+                pane,
+                instance,
+                last_line: args.last_line.clone(),
+            })
+        }
+    };
     let binding = super::admit::Binding::of(args.send_sequence, args.lane_epoch)?;
     let hash = request_hash("deck_worker_close", &args);
     let orchestrator = super::origin::orchestrator();
@@ -1773,9 +2249,27 @@ pub(super) fn worker_close(
         ))
     })?;
     let now = seen.get(&target.session).copied();
-    let current = now.map_or(0, |s| s.episode);
-    if current != args.after_episode {
-        return Err(episode_moved_refusal(current));
+    match &bound {
+        None => {
+            let current = now.map_or(0, |s| s.episode);
+            if Some(current) != args.after_episode {
+                return Err(close_refusal(
+                    "episode-moved",
+                    Some(current),
+                    observed_view(now, true, Some(&worker), None),
+                ));
+            }
+        }
+        Some(bound) => {
+            let unsent = unsent_lines(runtime, &worker);
+            if let Err(code) = instance_verdict(&worker, bound, now, unsent) {
+                return Err(close_refusal(
+                    code,
+                    None,
+                    observed_view(now, true, Some(&worker), unsent),
+                ));
+            }
+        }
     }
     if now.and_then(|s| s.state) == Some("needs-input") {
         return Err(needs_you_refusal());
@@ -1801,23 +2295,52 @@ pub(super) fn worker_close(
                 return Ok(Err(refusal));
             }
             // taken over meanwhile: refused whole
-            match opened_by(doc, client_id, caller, &worker.card_id) {
+            let record = match opened_by(doc, client_id, caller, &worker.card_id) {
                 None => return Ok(Err(not_opened_here(false))),
                 Some(w) if super::origin::taken_over(w, targets.as_ref()) => {
                     return Ok(Err(taken_over_refusal()))
                 }
-                Some(_) => {}
+                Some(w) => w,
+            };
+            // one close of a card at a time: a second would close nothing
+            // more, and its own answer would say less than the first's
+            if let Some(open) = open_close(doc, client_id, &worker.card_id) {
+                let mut refusal = close_refusal("close-in-progress", None, json!(null));
+                refusal["error"]["operationId"] = json!(open.operation_id);
+                return Ok(Err(refusal));
+            }
+            // a line accepted since the check above is work the decision
+            // did not see (instance mode)
+            if let Some(bound) = &bound {
+                if record.lines.last() != bound.last_line.as_ref() {
+                    return Ok(Err(close_refusal(
+                        "new-input",
+                        None,
+                        observed_view(now, true, Some(record), None),
+                    )));
+                }
             }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
+            let mut plan = json!({
+                "cardId": worker.card_id,
+                "session": target.session,
+                "projectId": target.project_id,
+                "title": target.title,
+                "orchestratorCardId": caller,
+                // the record the close is about: a card id is never reused,
+                // and its start operation says which worker it was
+                "workerOperationId": worker.operation_id,
+                "closeMode": mode.word(),
+            });
+            match &bound {
+                None => plan["afterEpisode"] = json!(args.after_episode.unwrap_or(0)),
+                Some(_) => {
+                    plan["instance"] = json!(args.instance);
+                    plan["lastLine"] = json!(args.last_line);
+                }
+            }
             let operation = Operation {
-                result: Some(json!({
-                    "cardId": worker.card_id,
-                    "session": target.session,
-                    "projectId": target.project_id,
-                    "title": target.title,
-                    "afterEpisode": args.after_episode,
-                    "orchestratorCardId": caller,
-                })),
+                result: Some(plan),
                 ..Operation::new(
                     minted.clone(),
                     client_id,
@@ -1837,13 +2360,9 @@ pub(super) fn worker_close(
         Err(answer) => return settled_answer(answer),
     };
     emit_changed(runtime);
-    Ok(receipt(
-        runtime,
-        client_id,
-        orchestrator,
-        binding,
-        &operation,
-    ))
+    let mut view = receipt(runtime, client_id, orchestrator, binding, &operation);
+    view["nextAction"] = json!("Accepted, not closed yet: deck_operation_get with this operationId says committed once the card is gone, or rejected with a code (result.refusal says at which stage and what Deck observed). Until then the card takes no further line or close.");
+    Ok(view)
 }
 
 /* ---------- local commands ---------- */
@@ -1870,6 +2389,10 @@ pub(crate) struct WorkerCardView {
     /// the text never reaches the webview.
     #[serde(skip_serializing_if = "Option::is_none")]
     reported_at: Option<u64>,
+    /// The newest report waits for the orchestrator card that started the
+    /// card to acknowledge it (`reports::awaiting_ack`): the label says so
+    /// until it does. Never a count, never the text.
+    report_pending: bool,
 }
 
 pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckError> {
@@ -1889,6 +2412,8 @@ pub(super) fn workers_ui(runtime: &Runtime) -> Result<Vec<WorkerCardView>, DeckE
                     taken_over: super::origin::taken_over(w, targets.as_ref()),
                     orchestrator_card_id: w.orchestrator.clone(),
                     reported_at: super::reports::reported_at(doc, w),
+                    report_pending: super::reports::awaiting_ack(w)
+                        && !super::origin::taken_over(w, targets.as_ref()),
                 })
             })
             .collect()
@@ -1916,7 +2441,10 @@ pub(super) fn worker_set_held(
         }
         worker.held = held;
         if orphaned && !held {
+            // unowned now: no orchestrator card acknowledges for it, and
+            // what the old one acknowledged is nobody's word any more
             worker.orchestrator = None;
+            worker.acknowledged = None;
         }
         let client = worker.client_id.clone();
         audit(
@@ -2195,28 +2723,67 @@ fn column_not_permitted() -> Value {
 
 /// The project a worker card opens in, decided by its directory alone
 /// (approved 2026-11-23): the caller may run anywhere, so where it runs
-/// decides nothing. The directory must exist; the projects this client
-/// reaches whose directory holds it are the candidates. None:
-/// `PATH_NOT_ACCESSIBLE`. One: that project. Several (nested or shared
-/// directories): `PATH_AMBIGUOUS` with each candidate, never the deepest
-/// one — the project also decides which environment variables the shell
-/// gets, so Deck never picks among them. `project_id` only chooses among
-/// the candidates: a reached project whose directory does not hold `dir`
-/// is `PATH_NOT_ACCESSIBLE` too.
+/// decides nothing. The directory must exist; the candidates are the
+/// projects this client reaches whose roots hold it, and those whose
+/// linked-worktree rule verifies it (`grants::worktree_scope`, approved
+/// 2026-11-28: a worktree of the rule's repository under the rule's
+/// folder; the scope's root is then that worktree). None:
+/// `PATH_NOT_ACCESSIBLE` with a `reason` (`not-found`,
+/// `volume-unavailable`, `not-accessible`, `outside-scope`, or
+/// `worktree-unverified` with the rule's word in `detail`). One: that
+/// project. Several (nested or shared directories, one repository in two
+/// projects' rules): `PATH_AMBIGUOUS` with each candidate, never the
+/// deepest one — the project also decides which environment variables the
+/// shell gets, so Deck never picks among them. `project_id` only chooses
+/// among the candidates: a reached project that is not one is
+/// `PATH_NOT_ACCESSIBLE` too. Never falls back to another directory.
 fn start_project(
     client: &Client,
     dir: &str,
     named: Option<&str>,
 ) -> Result<Result<ProjectScope, Value>, DeckError> {
-    let not_accessible = |message: &str| {
-        Ok(Err(error_value(
-            "PATH_NOT_ACCESSIBLE",
-            message,
-            "Use an existing directory inside one of the projects deck_capabilities authorizedWorkspaces lists, or ask the local Deck user to give this client that project.",
-        )))
+    let refuse = |reason: &str, message: &str, detail: Option<&str>| {
+        let next = match reason {
+            "volume-unavailable" => "The volume that directory is on is not mounted: ask the local user to connect it, then start again. Deck keeps the client's configuration as it is.",
+            "not-found" => "Create the directory first (for a worktree: git worktree add), then start again with the same dir.",
+            "not-accessible" => "Deck cannot read that directory (permissions or an unavailable volume); ask the local user, or use another directory.",
+            "worktree-unverified" => "Deck could not verify that directory as a linked worktree of the repository the local user named for that folder (detail says why). Create worktrees with git worktree add from that repository, or ask the local user to add the directory to the project.",
+            _ => "Use an existing directory inside one of the projects deck_capabilities authorizedWorkspaces lists or one of its worktreeRules, or ask the local Deck user to give this client that project or folder.",
+        };
+        let mut error = json!({
+            "code": "PATH_NOT_ACCESSIBLE",
+            "message": message,
+            "reason": reason,
+            "nextAction": next,
+        });
+        if let Some(detail) = detail {
+            error["detail"] = json!(detail);
+        }
+        Ok(Err(json!({"ok": false, "error": error})))
     };
-    let Some(path) = std::fs::canonicalize(dir).ok().filter(|p| p.is_dir()) else {
-        return not_accessible("that directory does not exist");
+    let path = match std::fs::canonicalize(dir) {
+        Ok(path) if path.is_dir() => path,
+        Ok(_) => return refuse("not-found", "that path is not a directory", None),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return refuse("not-accessible", "Deck may not read that directory", None)
+        }
+        Err(_) => {
+            // `/Volumes/<name>` missing: the disk, not the directory
+            let volume = Path::new(dir)
+                .strip_prefix("/Volumes")
+                .ok()
+                .and_then(|rest| rest.components().next())
+                .map(|name| Path::new("/Volumes").join(name));
+            return if volume.is_some_and(|v| !v.exists()) {
+                refuse(
+                    "volume-unavailable",
+                    "the volume that directory is on is not mounted",
+                    None,
+                )
+            } else {
+                refuse("not-found", "that directory does not exist", None)
+            };
+        }
     };
     let holds = |scope: &ProjectScope| {
         scope.roots.iter().any(|root| {
@@ -2225,18 +2792,39 @@ fn start_project(
                 .is_some_and(|root| path.starts_with(root))
         })
     };
-    if let Some(id) = named {
-        let scope = scoped_project(client, id)?;
-        return if holds(&scope) {
-            Ok(Ok(scope))
-        } else {
-            not_accessible("that directory is not inside the project named")
-        };
+    let (worktrees, refused) = super::grants::worktree_scope(client, &path);
+    let mut candidates: Vec<ProjectScope> = match named {
+        Some(id) => {
+            let scope = scoped_project(client, id)?;
+            [scope].into_iter().filter(holds).collect()
+        }
+        None => client_scopes(client).into_iter().filter(holds).collect(),
+    };
+    for scope in worktrees {
+        if named.is_some_and(|id| id != scope.project_id) {
+            continue;
+        }
+        // a project already held through its own roots stays one candidate
+        if !candidates.iter().any(|c| c.project_id == scope.project_id) {
+            candidates.push(scope);
+        }
     }
-    let mut candidates: Vec<ProjectScope> =
-        client_scopes(client).into_iter().filter(holds).collect();
     match candidates.len() {
-        0 => not_accessible("that directory is not inside any project this client reaches"),
+        0 if refused.is_some() => refuse(
+            "worktree-unverified",
+            "that directory lies in a worktree folder the local user named, but Deck could not verify it as a linked worktree of that repository",
+            refused,
+        ),
+        0 if named.is_some() => refuse(
+            "outside-scope",
+            "that directory is not inside the project named",
+            None,
+        ),
+        0 => refuse(
+            "outside-scope",
+            "that directory is not inside any project this client reaches",
+            None,
+        ),
         1 => Ok(Ok(candidates.remove(0))),
         _ => {
             let names: HashMap<String, String> = crate::documents::board_layout()
@@ -2402,8 +2990,19 @@ pub(super) fn worker_start(
             {
                 return Err(DeckError::new(ErrorKind::Invalid, TYPE_COMMAND_INVALID));
             }
-            let project = &scope;
-            // checked again under the write: the directory still lies inside
+            // decided again under the write, on the client as it is now: a
+            // scope or worktree rule withdrawn meanwhile refuses the start,
+            // and the directory still lies where it was verified
+            let project = match start_project(&client, &args.dir, Some(&scope.project_id))? {
+                Ok(again) if again.project_id == scope.project_id => again,
+                Ok(_) => return Ok(Err(error_value(
+                    "PATH_NOT_ACCESSIBLE",
+                    "that directory no longer belongs to the project it was checked in",
+                    "Read deck_capabilities and start again.",
+                ))),
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let project = &project;
             let dir = canonical_scope(&args.dir, &project.roots)?;
             if let Err(full) = room_for_worker(doc, client_id, orchestrator) {
                 return Ok(Err(full));
@@ -2614,8 +3213,19 @@ pub(super) fn client_permissions(
                 "invalid MCP client scope",
             ));
         }
-        let scopes = super::commands::validate_new_client_scopes(
+        // a root the client holds now is kept as stored while it does not
+        // resolve (an unmounted volume): saving must not drop it
+        let kept = runtime.read(|doc| {
+            doc.config
+                .clients
+                .iter()
+                .find(|c| c.id == client_id)
+                .map(|c| c.projects.clone())
+                .unwrap_or_default()
+        })?;
+        let scopes = super::commands::validate_client_scopes(
             list,
+            &kept,
             runtime.app.is_some(),
             crate::documents::board_project_exists,
         )?;
@@ -2623,6 +3233,11 @@ pub(super) fn client_permissions(
     } else {
         None
     };
+    let rules = permissions
+        .worktrees
+        .as_deref()
+        .map(super::commands::checked_worktree_rules)
+        .transpose()?;
     let withdrew_automations;
     let mut withdrew_drafts = false;
     let mut fenced = Vec::new();
@@ -2642,11 +3257,24 @@ pub(super) fn client_permissions(
             let mut reach_before = reach(client);
             reach_before.extend(held);
             let scope_before = (client.all_projects, scope_key(&client.projects));
+            let rules_before = client.worktrees.clone();
             if let Some((all, scopes)) = &scope {
                 client.all_projects = *all;
                 client.projects = scopes.clone();
             }
-            let scope_changed = scope_before != (client.all_projects, scope_key(&client.projects));
+            // a rule stands only for a project the client reaches: one
+            // named now must be reached, and a project that left the scope
+            // takes its rules with it
+            let reached = reach(client);
+            if let Some(rules) = &rules {
+                if !rules.iter().all(|r| reached.contains(&r.project_id)) {
+                    return Err(DeckError::new(ErrorKind::Invalid, "mcp-worktree-project"));
+                }
+                client.worktrees = rules.clone();
+            }
+            client.worktrees.retain(|r| reached.contains(&r.project_id));
+            let scope_changed = scope_before != (client.all_projects, scope_key(&client.projects))
+                || rules_before != client.worktrees;
             // a client of all projects keeps every project: nothing leaves
             // only a scope change withdraws anything
             let removed: HashSet<String> = if client.all_projects || scope.is_none() {

@@ -191,8 +191,9 @@ evolution; it makes scope expansion deliberate.
   ambiguous). The one other MCP close (approved 2026-11-19): the
   orchestrator card that started a worker card may close that card
   (`deck_worker_close`, `mcp/workers.rs`), proven from the kernel (a
-  caller from no card closes nothing), bound to the episode it saw and
-  re-checked at admission; refused while any pane shows the card, while
+  caller from no card closes nothing), bound to the episode it saw or
+  (approved 2026-11-28, `close_mode: instance`) to the agent instance and
+  newest line it saw, and re-checked at admission; refused while any pane shows the card, while
   the user holds it, while its Agent asks the user (`needs-input`: Signal
   may refuse, never release), with a Reminder or a kept scratchpad; the
   same `provider.close`, never replayed. A paired Connector `task-create` (`connector.js`) may create

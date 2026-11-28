@@ -7,7 +7,10 @@
 //! Authorization roots are canonicalized directories before the UI confirms
 //! them; they scope session creation and structured reads, never an approved
 //! job's cwd, which is any existing directory (`grants::full_local_cwd`).
-//! A client reaches a list of one to 64 projects, each with its roots, or,
+//! A client reaches a list of one to 64 projects, each with its roots (one
+//! or more: the dialog shows and saves every one, a root it already holds
+//! that does not resolve now is kept as stored, `commands::
+//! validate_client_scopes`), or,
 //! with the user's choice `all_projects`, every project of the current
 //! Board, those made later too, each through its own default directory
 //! read and canonicalized at each use (`grants::scoped_project`; one
@@ -17,6 +20,18 @@
 //! the client had there with it (`grants::withdraw_projects`). A ledger
 //! holding a client of all projects is written at
 //! `STATE_VERSION_ALL_PROJECTS` (sticky).
+//! Linked-worktree rules (approved 2026-11-28, `Client.worktrees`,
+//! `grants::worktree_scope`): for one project the client reaches (either
+//! mode), the user names a repository's main checkout and the folder its
+//! worktrees are made in. A directory there that Deck verifies, from Git's
+//! own files read in-process (bounded, no `git`, no spawn), to be a linked
+//! worktree OF that repository — the worktree's `.git` file and the
+//! repository's `worktrees/<id>/{gitdir,commondir}` naming each other —
+//! scopes worker starts and managed-session creation in that project
+//! (`grants::project_cwd`, `workers::start_project`); the folder alone
+//! grants nothing, structured reads stay on the roots. Checked again at
+//! each use, revoked with the scope; a ledger holding one is written at
+//! `STATE_VERSION_WORKTREES` (sticky).
 //! Jobs run under `host-terminal-env-v1` (`ENVIRONMENT_PROFILE`): the Deck
 //! session environment minus Deck's control-plane coordinates, applied by
 //! the runner; a grant stored under a legacy profile loads as history and
@@ -205,7 +220,13 @@
 //! card it answers; `deck_worker_reports` (and a wait's `include_reports`)
 //! reads it under `allow_replies`. A report is durable data at rest, never
 //! a send or authority; it ends a wait its orchestrator makes for it and
-//! nothing else (`reports.rs`).
+//! nothing else (`reports.rs`). The orchestrator card that started the
+//! card may acknowledge it received one report by its sequence
+//! (`deck_worker_reports_ack`, approved 2026-11-28): a monotone mark on the
+//! worker record (`Worker.acknowledged`) that the card's label reads
+//! ("new report · not yet received"); it wakes no wait and authorizes
+//! nothing. A ledger holding a `handoff` status or that mark is written at
+//! `STATE_VERSION_REPORT_ACKS` (sticky).
 //! `deck_worker_send` is bound to the client's `send_sequence` exactly as a
 //! trigger is to its own — or, for several requests of one lane at once, to
 //! the lane's epoch with a tombstone per accepted request (`admit.rs`, the
@@ -262,13 +283,23 @@
 //! `deck_worker_close` (part of the worker choice) closes ONE worker card
 //! for the orchestrator card that started it, proven from the kernel
 //! (`origin.rs`; a caller from no card closes nothing, an unowned card is
-//! nobody's to close), bound to the client's send sequence and to the
-//! episode it decided on, refused while the user holds the card or its
-//! Agent asks the user, and journaled as a `worker-close` Board intent the
-//! webview closes through `provider.close` as a remote close (never while
-//! a pane shows it, with a Reminder or a kept scratchpad); its admission
-//! (`commands::close_admit`) decides again on the card as it is then and
-//! records a refusal with its closed code.
+//! nobody's to close), bound to the client's send sequence or lane epoch
+//! and to what it decided on — the episode (`close_mode: episode`, the
+//! original) or, approved 2026-11-28, the agent instance and the newest
+//! line (`close_mode: instance`: the program in front of the card's pane
+//! by tmux server, session, pane and foreground generation, which the
+//! instance's own turns keep and an exit, re-entry or new session change;
+//! `workers::instance_verdict`) — refused while the user holds the card or
+//! its Agent asks the user, and journaled as a `worker-close` Board intent
+//! the webview closes through `provider.close` as a remote close (never
+//! while a pane shows it, with a Reminder or a kept scratchpad). From
+//! acceptance until it ends the card takes no line (`WORKER_CLOSING`) and
+//! no second close (`CLOSE_IN_PROGRESS`). Its admission
+//! (`commands::close_admit`, under the delivery lock: the linearization
+//! point) decides again on the card as it is then with the same rules and
+//! records a refusal with its closed code and what it observed
+//! (`result.refusal`). Neither mode, nor the plan, survives a restart: an
+//! accepted close becomes ambiguous as every operation does.
 //! Withdrawing `allow_workers`, revoking the client or disabling MCP takes
 //! the key out under `storage::settings_fence`. Capacity is the user's one
 //! number in Settings › MCP (`Config::worker_capacity`, default 16, 1 to
@@ -547,8 +578,17 @@ const STATE_VERSION_REPORT_FIELDS: u32 = 20;
 /// epoch (`admit::uses_lane_epochs`): a v20 build would not know the
 /// tombstones that keep retired requests from running again.
 const STATE_VERSION_LANE_EPOCHS: u32 = 21;
+/// The sticky version a ledger takes once a worker report says `handoff`
+/// or a worker record tracks its orchestrator's acknowledgment
+/// (`reports::uses_report_acks`): a v21 build would call the status
+/// damaged and refuse the member.
+const STATE_VERSION_REPORT_ACKS: u32 = 22;
+/// The sticky version a ledger takes once a client holds a linked-worktree
+/// rule (`grants::uses_worktree_rules`): a v22 build would refuse the member,
+/// and must never start a card in a directory it cannot verify.
+const STATE_VERSION_WORKTREES: u32 = 23;
 /// The newest version this build reads and writes.
-const STATE_VERSION_LATEST: u32 = STATE_VERSION_LANE_EPOCHS;
+const STATE_VERSION_LATEST: u32 = STATE_VERSION_WORKTREES;
 const CONTROL_PROTOCOL: u32 = 5;
 const DECK_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DECK_BUILD: Option<&str> = match option_env!("DECK_BUILD_SHA") {

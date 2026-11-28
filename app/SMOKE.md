@@ -511,6 +511,32 @@ not exist there, so the runner wrote Deck's entry naming a link
 helper — Deck recognizes its entry by that path — and removed the file and
 the run's trusted folder after).
 
+## Closing a worker that reported (WKWebView mode `worker-close`)
+
+Round 2 of 2026-11-28 end to end in the real window: the `workers` report
+fixture (`worker-hooks.json` with Deck's Claude Code hooks to this carrier,
+`enableAllProjectMcpServers`, `mcp__deck__deck_worker_report` and
+`Bash(python3 phase1.py:*)` allowed; `work/phase1.py`, a 40 s foreground
+program). The page turns MCP on, authorizes one client with one Claude
+worker type, replies and the first-send choice, opens ONE plain-shell card
+"Orch C" and reports `close-armed`. The runner writes `work/.mcp.json`
+(this instance's debug adapter, the client's credential on an inherited
+descriptor) and types `scripts/mcp-close-e2e.py` INTO that card's pane.
+The client checks the real `tools/list` (40 tools, the status `enum` with
+`handoff`, `close_mode`), starts one worker whose first step is
+`deck_worker_report` (status `handoff`) and whose second is the program,
+waits ONCE (`until: report`, inline reports) and decides on what that wait
+showed (the agent still working: its episode, instance and last line),
+acknowledges the report by its sequence (`deck_worker_reports_ack`), waits
+for the worker's own turn to end, then closes: the close bound to the
+episode of its decision is refused (`EPISODE_MOVED`, `stage: precheck`),
+the close bound to the instance of the same decision is accepted and ends
+`committed`, and its exact replay is the same operation. The page checks
+`close-card`, `close-label` (b=3: the label said the report waits, then no
+longer) and `close-closed`, closes "Orch C" and reports `done` b=6. Judge
+with `scripts/smoke-verdict <data> worker-close` and the client's PASS
+line.
+
 ## Interjected worker lines (WKWebView mode `worker-interject`)
 
 `deck_worker_interject` end to end in the real window (approved

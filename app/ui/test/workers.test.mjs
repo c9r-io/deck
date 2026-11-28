@@ -133,3 +133,27 @@ test('a worker card that reported says so on its label, with the time and never 
   assert.match(workerLabel({ ...worker, takenOver: true }, cards, now).text, /reported/);
   assert.doesNotMatch(workerLabel({ ...worker, reportedAt: undefined }, cards, now).text, /reported/);
 });
+
+test('a report its orchestrator has not acknowledged says so until it is, then the plain label is back', async () => {
+  setLocale('en');
+  const { workerLabel } = await import('../js/workers.js');
+  const { fmtClock } = await import('../js/scheduler-model.js');
+  const now = new Date(2026, 10, 28, 15, 0);
+  const at = new Date(2026, 10, 28, 14, 5).getTime();
+  const worker = { cardId: 'W1', clientName: 'Orchestrator', takenOver: false, orchestratorCardId: 'OA', reportedAt: at, reportPending: true };
+  const cards = [{ id: 'OA', title: 'Orch A' }, { id: 'W1', title: 'Fix' }];
+  const time = fmtClock(Math.floor(at / 1000), now);
+  const pending = workerLabel(worker, cards, now);
+  assert.equal(pending.pending, true);
+  assert.equal(pending.text, `${t('workers.driven', { name: 'Orch A' })} · ${t('workers.reportPending', { time })}`);
+  assert.ok(pending.title.endsWith(t('workers.reportPendingTitle')));
+  // acknowledged: "reported" again
+  const acked = workerLabel({ ...worker, reportPending: false }, cards, now);
+  assert.equal(acked.pending, false);
+  assert.equal(acked.text, `${t('workers.driven', { name: 'Orch A' })} · ${t('workers.reported', { time })}`);
+  // an untracked record (no field) and a card the user holds never say "not yet received"
+  assert.equal(workerLabel({ ...worker, reportPending: undefined }, cards, now).pending, false);
+  assert.equal(workerLabel({ ...worker, takenOver: true }, cards, now).pending, false);
+  // the orchestrator card gone: the user's card, no pending label
+  assert.equal(workerLabel(worker, [{ id: 'W1', title: 'Fix' }], now).pending, false);
+});

@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- A project can have several directories for an MCP client: Permissions…
+  shows every one (a row each) and saves them all; changing another choice
+  no longer drops the extra ones, and a directory on a disk that is not
+  connected stays in the list and works again once it is back.
+- Linked Git worktrees: in the same dialog, name a project's repository and
+  the folder you make its worktrees in. An orchestrator can then start a
+  worker card (or a managed session) directly in any worktree of that
+  repository there, including ones created later, in the right project and
+  with that project's environment; Deck verifies each one from the
+  repository's own files and runs no `git`. Anything else in the folder is
+  refused with the reason.
+- Worker reports may say `status: "handoff"`; the tool schema now lists the
+  status words as a real enum.
+- `deck_worker_close close_mode: "instance"`: an orchestrator that is done
+  with a worker closes it even if the worker ends its turn right after
+  reporting (the cause of the repeated EPISODE_MOVED). Every refused close
+  now says at which stage, what Deck saw and what to do; a line sent to a
+  card whose close is under way is refused instead of being lost.
+- A worker card shows "new report · not yet received" until the
+  orchestrator that started it acknowledges the newest report
+  (`deck_worker_reports_ack`).
+- The MCP ledger moves to version 23 once it holds one of these; an older
+  Deck then refuses it untouched (MCP unavailable there until updated).
+
 ## 0.8.45 — 2026-11-28 (Nightly)
 
 - Usage quota for each agent account. Turn on Settings › Agents &

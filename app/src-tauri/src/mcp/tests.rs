@@ -331,6 +331,7 @@ fn client_record(root: &Path) -> Client {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
+        worktrees: Vec::new(),
         send_epoch: 0,
     }
 }
@@ -869,6 +870,7 @@ fn authorization_is_client_project_session_and_control_scoped() {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
+        worktrees: Vec::new(),
         send_epoch: 0,
     });
     let disabled = match client(&doc, "client_a") {
@@ -1726,6 +1728,7 @@ fn command_surface_exercises_local_authorization_and_board_reconciliation() {
                 reported: 0,
                 model: None,
                 lines: Vec::new(),
+                acknowledged: None,
             });
             doc.mention_marks.push(MentionMark {
                 key: "C1/1.000001".into(),
@@ -2230,6 +2233,7 @@ fn validation_and_error_mapping_cover_rejected_boundaries() {
         rule_column: false,
         all_projects: false,
         lanes: Default::default(),
+        worktrees: Vec::new(),
         send_epoch: 0,
     });
     assert!(validate_doc(&invalid).is_err());
@@ -5984,6 +5988,7 @@ fn set_permissions(runtime: &Runtime, automations: bool, workers: bool, replies:
             rule_column: false,
             all_projects: false,
             projects: None,
+            worktrees: None,
         },
     )
     .unwrap();
@@ -6137,6 +6142,7 @@ fn worker_types_start_worker_cards_through_a_board_intent() {
             rule_column: false,
             all_projects: false,
             projects: None,
+            worktrees: None,
         };
     assert!(client_permissions(
         &runtime,
@@ -6659,6 +6665,7 @@ fn a_worker_card_closes_only_for_the_orchestrator_card_that_started_it() {
         reported: 0,
         model: None,
         lines: Vec::new(),
+        acknowledged: None,
     };
     runtime
         .write(|doc| {
@@ -6844,6 +6851,7 @@ fn no_permissions(allow_create: bool) -> super::commands::PermissionsInput {
         rule_column: false,
         all_projects: false,
         projects: None,
+        worktrees: None,
     }
 }
 
@@ -7548,6 +7556,7 @@ fn orchestrator_cards_group_their_workers_within_one_client() {
     let permissions = |rule_column: bool| super::commands::PermissionsInput {
         all_projects: false,
         projects: None,
+        worktrees: None,
         allow_create: false,
         allow_automations: true,
         allow_workers: true,
@@ -7861,6 +7870,7 @@ fn a_client_reaches_listed_or_all_projects_through_their_own_directories() {
                 reported: 0,
                 model: None,
                 lines: Vec::new(),
+                acknowledged: None,
             });
             Ok(())
         })
@@ -8081,6 +8091,7 @@ fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
         reported: 0,
         model: None,
         lines: Vec::new(),
+        acknowledged: None,
     };
     runtime
         .write(|doc| {
@@ -8138,9 +8149,11 @@ fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
         )["sequence"],
         1
     );
+    // a report of an orchestrator's card starts tracking its acknowledgment
+    // (`Worker.acknowledged`), which a v21 reader would refuse
     assert_eq!(
         runtime.read(|doc| doc.version).unwrap(),
-        STATE_VERSION_REPORTS
+        STATE_VERSION_REPORT_ACKS
     );
     assert_eq!(
         runtime.read(|doc| doc.reports[0].text.clone()).unwrap(),
@@ -8271,7 +8284,7 @@ fn a_worker_card_reports_one_way_to_the_orchestrator_that_started_it() {
     assert_eq!(left, ["W2"]);
     assert_eq!(
         runtime.read(|doc| doc.version).unwrap(),
-        STATE_VERSION_REPORTS,
+        STATE_VERSION_REPORT_ACKS,
         "sticky"
     );
     drop(root);
@@ -8304,6 +8317,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     reported: 0,
                     model: None,
                     lines: Vec::new(),
+        acknowledged: None,
                 });
             }
             Ok(())
@@ -8365,6 +8379,7 @@ fn worker_capacity_is_per_orchestrator_card_within_a_client_bound() {
                     reported: 0,
                     model: None,
                     lines: Vec::new(),
+        acknowledged: None,
                 });
             }
             Ok(())
@@ -8425,6 +8440,7 @@ fn a_chosen_worker_capacity_sets_every_worker_bound() {
                     reported: 0,
                     model: None,
                     lines: Vec::new(),
+        acknowledged: None,
                 });
             }
             Ok(())
@@ -8527,6 +8543,7 @@ fn orchestrators_mark_mentions_for_the_user_and_never_dismiss_them() {
                     reported: 0,
                     model: None,
                     lines: Vec::new(),
+                    acknowledged: None,
                 });
                 Ok(())
             })
@@ -9136,6 +9153,7 @@ fn only_the_orchestrator_card_that_started_a_worker_may_interject() {
         reported: 0,
         model: None,
         lines: Vec::new(),
+        acknowledged: None,
     };
     runtime
         .write(|doc| {
@@ -9343,6 +9361,7 @@ fn an_interject_binding_stands_while_its_orchestrator_card_drives_the_card() {
                 reported: 0,
                 model: None,
                 lines: Vec::new(),
+                acknowledged: None,
             });
             Ok(())
         })
@@ -9439,6 +9458,7 @@ fn independent_worker_requests_of_one_lane_go_at_once_under_lane_epoch() {
         reported: 0,
         model: None,
         lines: Vec::new(),
+        acknowledged: None,
     };
     runtime
         .write(|doc| {
@@ -9619,6 +9639,7 @@ fn a_worker_report_carries_structured_claims_and_ends_a_report_wait() {
         reported: 0,
         model: None,
         lines,
+        acknowledged: None,
     };
     runtime
         .write(|doc| {
@@ -9699,7 +9720,7 @@ fn a_worker_report_carries_structured_claims_and_ends_a_report_wait() {
     );
     assert_eq!(
         runtime.read(|doc| doc.version).unwrap(),
-        STATE_VERSION_REPORT_FIELDS
+        STATE_VERSION_REPORT_ACKS
     );
 
     // content-free views carry no claim; reading needs the reply choice
@@ -9796,5 +9817,862 @@ fn a_worker_report_carries_structured_claims_and_ends_a_report_wait() {
     );
     assert_eq!(gone["reason"], "gone", "{gone}");
     OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/* ---------- round 2 (2026-11-28): close modes, report acknowledgment,
+handoff, linked-worktree rules ---------- */
+
+/// A test worker record of client_a started by `by`.
+fn round2_worker(id: &str, by: Option<&str>) -> Worker {
+    Worker {
+        card_id: id.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{id}"),
+        automation_id: "claude".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: by.map(str::to_owned),
+        reported: 0,
+        model: None,
+        lines: Vec::new(),
+        acknowledged: None,
+    }
+}
+
+fn round2_workers_on(replies: bool) -> super::commands::PermissionsInput {
+    super::commands::PermissionsInput {
+        allow_workers: true,
+        allow_replies: replies,
+        worker_types: vec![WorkerType {
+            name: "claude".into(),
+            cmd: "claude".into(),
+            description: "Write code".into(),
+            models: Vec::new(),
+        }],
+        ..Default::default()
+    }
+}
+
+fn round2_state(runtime: &Runtime, id: &str) -> (String, Option<String>, Value) {
+    runtime
+        .read(|doc| {
+            doc.operations
+                .iter()
+                .find(|o| o.operation_id == id)
+                .map(|o| {
+                    (
+                        o.state.clone(),
+                        o.code.clone(),
+                        o.result.clone().unwrap_or(json!(null)),
+                    )
+                })
+        })
+        .unwrap()
+        .unwrap()
+}
+
+/// The field report (C1), made deterministic: a worker reports while its
+/// turn still runs, the orchestrator's report wait returns, it decides to
+/// close on the episode it saw, and the worker's turn then ends. The
+/// episode-bound close is refused — at its first check or, as here, at
+/// its admission, which now says what it saw — while the instance-bound
+/// close (`close_mode: instance`) of the same decision goes through: the
+/// agent's own turn ending is not a reason to refuse.
+#[test]
+fn a_close_bound_to_its_instance_survives_the_workers_own_turn_ending() {
+    let (runtime, _runner, root) = fixture("close-instance", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    client_permissions(&runtime, "client_a", round2_workers_on(true)).unwrap();
+    let card = |id: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": "claude", "dir": "/tmp", "projectId": "P1", "columnId": "C1"});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("OA"), card("WA"), card("WB")]}),
+        true,
+    );
+    runtime
+        .write(|doc| {
+            doc.workers.extend([
+                round2_worker("WA", Some("OA")),
+                round2_worker("WB", Some("OA")),
+            ]);
+            Ok(())
+        })
+        .unwrap();
+    type Listed<'a> = (&'a str, Option<&'static str>, u64, u64, u64, bool);
+    let observe = |entries: &[Listed]| {
+        let map: HashMap<String, Seen> = entries
+            .iter()
+            .map(|(session, state, episode, pane, instance, shell)| {
+                (
+                    (*session).to_owned(),
+                    instance_seen_for_tests(*state, *episode, *pane, *instance, *shell),
+                )
+            })
+            .collect();
+        OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(map)));
+    };
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(0))));
+    let call = |tool: &str, args: Value| {
+        let _as = super::origin::enter_as(Some("OA"));
+        route(&runtime, request(tool, args))
+    };
+    let epoch = || {
+        call("deck_worker_list", json!({}))["laneEpoch"]
+            .as_u64()
+            .unwrap()
+    };
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+    let token = token_for_tests(0x11, 0x21);
+    // the worker reports mid-turn: working, episode 5, instance 0x21
+    observe(&[
+        ("deck-wa", Some("working"), 5, 0x11, 0x21, false),
+        ("deck-wb", Some("turn-done"), 9, 0x12, 0x31, false),
+    ]);
+    {
+        let _as = super::origin::enter_as(Some("WA"));
+        let report = route(
+            &runtime,
+            request(
+                "deck_worker_report",
+                json!({"text": "done", "fields": {"status": "handoff"}}),
+            ),
+        );
+        assert_eq!(report["recorded"], true, "{report}");
+    }
+    let listed = call("deck_worker_list", json!({}));
+    let wa = listed["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["cardId"] == "WA")
+        .unwrap()
+        .clone();
+    assert_eq!(wa["instance"], token, "{wa}");
+    assert!(wa["lastLine"].is_null());
+    assert_eq!(wa["agent"]["episode"], 5);
+    let lane = epoch();
+
+    // the episode-bound close of that decision: accepted, then the turn
+    // ends before its admission — refused there, and the refusal says what
+    // Deck saw and at which stage
+    let by_episode = call(
+        "deck_worker_close",
+        json!({"request_id": "c-ep", "lane_epoch": lane, "card_id": "WA", "after_episode": 5}),
+    );
+    assert_eq!(by_episode["state"], "accepted", "{by_episode}");
+    assert_eq!(by_episode["result"]["closeMode"], "episode");
+    let ep_op = by_episode["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &ep_op).unwrap();
+    observe(&[
+        ("deck-wa", Some("turn-done"), 6, 0x11, 0x21, false),
+        ("deck-wb", Some("turn-done"), 9, 0x12, 0x31, false),
+    ]);
+    assert!(close_admit(&runtime, &ep_op).is_err());
+    let (state, code_now, result) = round2_state(&runtime, &ep_op);
+    assert_eq!(
+        (state.as_str(), code_now.as_deref()),
+        ("rejected", Some("episode-moved"))
+    );
+    let refusal = &result["refusal"];
+    assert_eq!(refusal["stage"], "admission", "{result}");
+    assert_eq!(refusal["accepted"], true);
+    assert_eq!(refusal["code"], "EPISODE_MOVED");
+    assert_eq!(refusal["currentEpisode"], 6);
+    assert_eq!(refusal["observed"]["state"], "turn-done");
+    assert_eq!(refusal["observed"]["instance"], token);
+    // the same request again is the same rejected operation, never a new close
+    let again = call(
+        "deck_worker_close",
+        json!({"request_id": "c-ep", "lane_epoch": lane, "card_id": "WA", "after_episode": 5}),
+    );
+    assert_eq!(again["operationId"], ep_op, "{again}");
+    assert_eq!(again["state"], "rejected");
+    // and the precheck form of the same race says its stage too
+    let pre = call(
+        "deck_worker_close",
+        json!({"request_id": "c-ep2", "lane_epoch": lane, "card_id": "WA", "after_episode": 5}),
+    );
+    assert_eq!(code(&pre), "EPISODE_MOVED");
+    assert_eq!(pre["error"]["stage"], "precheck");
+    assert_eq!(pre["error"]["accepted"], false);
+    assert_eq!(pre["error"]["currentEpisode"], 6);
+
+    // the instance-bound close of the same decision: the turn ending does
+    // not refuse it
+    observe(&[
+        ("deck-wa", Some("working"), 7, 0x11, 0x21, false),
+        ("deck-wb", Some("turn-done"), 9, 0x12, 0x31, false),
+    ]);
+    let by_instance = call(
+        "deck_worker_close",
+        json!({"request_id": "c-in", "lane_epoch": lane, "card_id": "WA", "close_mode": "instance", "instance": token}),
+    );
+    assert_eq!(by_instance["state"], "accepted", "{by_instance}");
+    assert_eq!(by_instance["result"]["closeMode"], "instance");
+    assert_eq!(by_instance["result"]["instance"], token);
+    assert_eq!(by_instance["result"]["workerOperationId"], "op_WA");
+    let in_op = by_instance["operationId"].as_str().unwrap().to_owned();
+    // while it is under way the card takes no second close and no line
+    let second = call(
+        "deck_worker_close",
+        json!({"request_id": "c-in2", "lane_epoch": lane, "card_id": "WA", "close_mode": "instance", "instance": token}),
+    );
+    assert_eq!(code(&second), "CLOSE_IN_PROGRESS", "{second}");
+    assert_eq!(second["error"]["operationId"], in_op);
+    let line = call(
+        "deck_worker_send",
+        json!({"request_id": "l-1", "lane_epoch": lane, "card_id": "WA", "after_episode": 7, "text": "more"}),
+    );
+    assert_eq!(code(&line), "WORKER_CLOSING", "{line}");
+    assert_eq!(line["error"]["closeOperationId"], in_op);
+    claim(&runtime, &in_op).unwrap();
+    observe(&[
+        ("deck-wa", Some("turn-done"), 8, 0x11, 0x21, false),
+        ("deck-wb", Some("turn-done"), 9, 0x12, 0x31, false),
+    ]);
+    let admission = close_admit(&runtime, &in_op).unwrap().admission;
+    assert!(
+        validate_close_admission_with(&runtime, Some(&admission), &["deck-wa".to_owned()]).is_ok()
+    );
+    complete(&runtime, in_op.clone(), "committed".into(), None, None).unwrap();
+    assert_eq!(round2_state(&runtime, &in_op).0, "committed");
+    // the exact request replayed after the answer was lost: the same operation
+    let replay = call(
+        "deck_worker_close",
+        json!({"request_id": "c-in", "lane_epoch": lane, "card_id": "WA", "close_mode": "instance", "instance": token}),
+    );
+    assert_eq!(replay["operationId"], in_op);
+    assert_eq!(replay["state"], "committed");
+    // the same id with another decision is a conflict, never a new close
+    let changed = call(
+        "deck_worker_close",
+        json!({"request_id": "c-in", "lane_epoch": lane, "card_id": "WA", "after_episode": 8}),
+    );
+    assert_eq!(code(&changed), "REQUEST_ID_CONFLICT", "{changed}");
+
+    // the conditions the instance mode still refuses on, card WB
+    let tb = token_for_tests(0x12, 0x31);
+    let close_b = |id: &str, extra: Value| {
+        let mut args = json!({"request_id": id, "lane_epoch": lane, "card_id": "WB", "close_mode": "instance", "instance": tb});
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        call("deck_worker_close", args)
+    };
+    // shape: never with after_episode; a token out of shape; an unknown mode
+    assert_eq!(
+        code(&close_b("s1", json!({"after_episode": 9}))),
+        "INVALID_ARGUMENTS"
+    );
+    assert_eq!(
+        code(&close_b("s2", json!({"instance": "zz"}))),
+        "INVALID_ARGUMENTS"
+    );
+    assert_eq!(
+        code(&call(
+            "deck_worker_close",
+            json!({"request_id": "s3", "lane_epoch": lane, "card_id": "WB", "close_mode": "force"})
+        )),
+        "INVALID_ARGUMENTS"
+    );
+    assert_eq!(
+        code(&call(
+            "deck_worker_close",
+            json!({"request_id": "s4", "lane_epoch": lane, "card_id": "WB"})
+        )),
+        "INVALID_ARGUMENTS"
+    );
+    // another program in front (a re-entry, a restarted agent)
+    observe(&[("deck-wb", Some("turn-done"), 10, 0x12, 0x32, false)]);
+    let other = close_b("i1", json!({}));
+    assert_eq!(code(&other), "INSTANCE_CHANGED", "{other}");
+    assert_eq!(other["error"]["stage"], "precheck");
+    assert_eq!(
+        other["error"]["observed"]["instance"],
+        token_for_tests(0x12, 0x32)
+    );
+    // another session (a rebuilt one) in the same name
+    observe(&[("deck-wb", Some("turn-done"), 10, 0x13, 0x31, false)]);
+    assert_eq!(code(&close_b("i2", json!({}))), "INSTANCE_CHANGED");
+    // nothing Deck can read in front, or a live agent with no observation
+    observe(&[("deck-wb", Some("turn-done"), 10, 0x12, 0, false)]);
+    assert_eq!(code(&close_b("i3", json!({}))), "INSTANCE_UNKNOWN");
+    observe(&[("deck-wb", None, 0, 0x12, 0x31, false)]);
+    assert_eq!(code(&close_b("i4", json!({}))), "OBSERVATION_UNKNOWN");
+    // its agent asks the user
+    observe(&[("deck-wb", Some("needs-input"), 11, 0x12, 0x31, false)]);
+    assert_eq!(code(&close_b("i5", json!({}))), "WORKER_NEEDS_YOU");
+    // lines not yet delivered, or a queue Deck cannot read
+    observe(&[("deck-wb", Some("turn-done"), 12, 0x12, 0x31, false)]);
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(1))));
+    assert_eq!(code(&close_b("i6", json!({}))), "LINES_PENDING");
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(None)));
+    assert_eq!(code(&close_b("i7", json!({}))), "INSTANCE_UNKNOWN");
+    UNSENT_FOR_TESTS.with(|cell| cell.set(Some(Some(0))));
+    // a line accepted for the card since the decision: refused first, and
+    // at admission when it came after the acceptance
+    runtime
+        .write(|doc| {
+            doc.workers
+                .iter_mut()
+                .find(|w| w.card_id == "WB")
+                .unwrap()
+                .lines
+                .push("op_line1".into());
+            Ok(())
+        })
+        .unwrap();
+    let stale_line = close_b("i8", json!({}));
+    assert_eq!(code(&stale_line), "NEW_INPUT", "{stale_line}");
+    assert_eq!(stale_line["error"]["observed"]["lastLine"], "op_line1");
+    let named = close_b("i9", json!({"last_line": "op_line1"}));
+    assert_eq!(named["state"], "accepted", "{named}");
+    let named_op = named["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &named_op).unwrap();
+    runtime
+        .write(|doc| {
+            doc.workers
+                .iter_mut()
+                .find(|w| w.card_id == "WB")
+                .unwrap()
+                .lines
+                .push("op_line2".into());
+            Ok(())
+        })
+        .unwrap();
+    assert!(close_admit(&runtime, &named_op).is_err());
+    let (_, why, result) = round2_state(&runtime, &named_op);
+    assert_eq!(why.as_deref(), Some("new-input"));
+    assert_eq!(result["refusal"]["observed"]["lastLine"], "op_line2");
+    // after a rejected close the card takes lines and closes again
+    let after = close_b("i10", json!({"last_line": "op_line2"}));
+    assert_eq!(after["state"], "accepted", "{after}");
+    let after_op = after["operationId"].as_str().unwrap().to_owned();
+    claim(&runtime, &after_op).unwrap();
+    // the agent exited and a shell is back in front of the same pane: the
+    // instance ended, the card closes
+    observe(&[("deck-wb", None, 0, 0x12, 0x41, true)]);
+    assert!(close_admit(&runtime, &after_op).is_ok());
+    // a restart never replays a close: it is ambiguous, and nothing binds it
+    // to whatever runs there afterwards
+    let reopened = load(&runtime.path).unwrap();
+    assert_eq!(reopened.workers.len(), 2);
+    UNSENT_FOR_TESTS.with(|cell| cell.set(None));
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// `handoff` (B) and report acknowledgment (D): the status word is taken,
+/// kept across a reload and read back as written; an unknown word names
+/// the field and the allowed words. The orchestrator card that started a
+/// worker acknowledges the sequence of a report it was given; nobody else
+/// can, a future sequence or 0 is refused, an older one changes nothing,
+/// a retry of the same report starts nothing new, and an acknowledgment
+/// wakes no wait.
+#[test]
+fn reports_say_handoff_and_their_orchestrator_acknowledges_each_by_sequence() {
+    let (runtime, _runner, root) = fixture("report-acks", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    client_permissions(&runtime, "client_a", round2_workers_on(true)).unwrap();
+    let card = |id: &str| json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id, "cmd": "claude", "dir": "/tmp"});
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [card("OA"), card("OB"), card("RS"), card("RA1"), card("RA2")]}),
+        true,
+    );
+    let mut old = round2_worker("RA2", Some("OA"));
+    old.reported = 3; // reports from before acknowledgments: nothing known
+    runtime
+        .write(|doc| {
+            doc.workers.extend([
+                round2_worker("RS", Some("OA")),
+                round2_worker("RA1", Some("OA")),
+                old.clone(),
+            ]);
+            Ok(())
+        })
+        .unwrap();
+    let call = |from: Option<&str>, tool: &str, args: Value| {
+        let _as = super::origin::enter_as(from);
+        route(&runtime, request(tool, args))
+    };
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+    let summary = |card: &str| {
+        call(Some("OA"), "deck_worker_list", json!({}))["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["cardId"] == card)
+            .unwrap()["reports"]
+            .clone()
+    };
+    let pending_ui = |card: &str| {
+        let views = serde_json::to_value(workers_ui(&runtime).unwrap()).unwrap();
+        views
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["cardId"] == card)
+            .unwrap()["reportPending"]
+            .clone()
+    };
+    // every status word, handoff among them (six reports: the per-card
+    // minute's worth), and none at all on another card
+    for (i, word) in super::reports::STATUS_WORDS.iter().enumerate() {
+        let out = call(
+            Some("RS"),
+            "deck_worker_report",
+            json!({"text": format!("r{i}"), "fields": {"status": word}}),
+        );
+        assert_eq!(out["recorded"], true, "{word}: {out}");
+    }
+    let bad = call(
+        Some("RA1"),
+        "deck_worker_report",
+        json!({"text": "x", "fields": {"status": "done"}}),
+    );
+    assert_eq!(code(&bad), "INVALID_ARGUMENTS");
+    assert_eq!(bad["error"]["field"], "fields.status");
+    assert_eq!(bad["error"]["allowed"], json!(super::reports::STATUS_WORDS));
+    assert!(bad["error"]["nextAction"]
+        .as_str()
+        .unwrap()
+        .contains("handoff"));
+    // the shared list the adapter's schema enum is held to
+    let fixture_words = mcp_fixture!("report-status.json");
+    assert_eq!(fixture_words["status"], json!(super::reports::STATUS_WORDS));
+    let read = call(Some("OA"), "deck_worker_reports", json!({"card_id": "RS"}));
+    let kept = read["reports"].as_array().unwrap();
+    assert!(
+        kept.iter().any(|r| r["fields"]["status"] == "handoff"),
+        "{read}"
+    );
+    for text in ["a", "b", "plain"] {
+        assert_eq!(
+            call(Some("RA1"), "deck_worker_report", json!({"text": text}))["recorded"],
+            true
+        );
+    }
+    let latest = call(Some("OA"), "deck_worker_reports", json!({"card_id": "RA1"}))["latest"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(latest, 3);
+    let s = summary("RA1");
+    assert_eq!(
+        (s["acknowledged"].clone(), s["awaitingAck"].clone()),
+        (json!(0), json!(true)),
+        "{s}"
+    );
+    assert_eq!(pending_ui("RA1"), true);
+    // only the orchestrator card that started it acknowledges
+    let ack = |from: Option<&str>, card: &str, sequence: u64| {
+        call(
+            from,
+            "deck_worker_reports_ack",
+            json!({"card_id": card, "sequence": sequence}),
+        )
+    };
+    assert_eq!(code(&ack(None, "RA1", latest)), "WORKER_NOT_FOUND");
+    assert_eq!(code(&ack(Some("OB"), "RA1", latest)), "WORKER_NOT_FOUND");
+    assert_eq!(code(&ack(Some("RA1"), "RA1", latest)), "WORKER_NOT_FOUND");
+    assert_eq!(code(&ack(Some("OA"), "RA1", 0)), "INVALID_ARGUMENTS");
+    let future = ack(Some("OA"), "RA1", latest + 1);
+    assert_eq!(code(&future), "REPORT_NOT_FOUND", "{future}");
+    // the one it names, never more; an older one changes nothing; no wait wakes
+    let mark = super::workers::change_count_for_tests();
+    let first = ack(Some("OA"), "RA1", 2);
+    assert_eq!(
+        (first["acknowledged"].clone(), first["awaitingAck"].clone()),
+        (json!(2), json!(true)),
+        "{first}"
+    );
+    let full = ack(Some("OA"), "RA1", latest);
+    assert_eq!(
+        (full["acknowledged"].clone(), full["awaitingAck"].clone()),
+        (json!(latest), json!(false))
+    );
+    assert_eq!(
+        ack(Some("OA"), "RA1", 2)["acknowledged"],
+        latest,
+        "never back"
+    );
+    assert_eq!(
+        ack(Some("OA"), "RA1", latest)["acknowledged"],
+        latest,
+        "a lost answer: the same again"
+    );
+    assert_eq!(
+        super::workers::change_count_for_tests(),
+        mark,
+        "an acknowledgment wakes no wait"
+    );
+    assert_eq!(pending_ui("RA1"), false);
+    // a retry of the newest report is not a new one
+    let retry = call(Some("RA1"), "deck_worker_report", json!({"text": "plain"}));
+    assert_eq!(retry["recorded"], false, "{retry}");
+    assert_eq!(summary("RA1")["awaitingAck"], false);
+    // a new report waits again
+    assert_eq!(
+        call(Some("RA1"), "deck_worker_report", json!({"text": "next"}))["sequence"],
+        latest + 1
+    );
+    assert_eq!(summary("RA1")["awaitingAck"], true);
+    assert_eq!(pending_ui("RA1"), true);
+    // an old record says nothing until its first new report starts tracking
+    let s2 = summary("RA2");
+    assert!(s2["acknowledged"].is_null(), "{s2}");
+    assert_eq!(s2["awaitingAck"], false);
+    assert_eq!(
+        call(Some("RA2"), "deck_worker_report", json!({"text": "new"}))["sequence"],
+        4
+    );
+    let s2 = summary("RA2");
+    assert_eq!(
+        (s2["acknowledged"].clone(), s2["awaitingAck"].clone()),
+        (json!(0), json!(true))
+    );
+    // without the replies choice nothing is acknowledged
+    client_permissions(&runtime, "client_a", round2_workers_on(false)).unwrap();
+    assert_eq!(code(&ack(Some("OA"), "RA2", 4)), "PERMISSION_DENIED");
+    // the ledger takes the version, and a reload keeps handoff and the marks
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_REPORT_ACKS
+    );
+    let reloaded = load(&runtime.path).unwrap();
+    assert!(reloaded
+        .reports
+        .iter()
+        .any(|r| r.fields.as_ref().and_then(|f| f.status.as_deref()) == Some("handoff")));
+    let w1 = reloaded
+        .workers
+        .iter()
+        .find(|w| w.card_id == "RA1")
+        .unwrap();
+    assert_eq!((w1.acknowledged, w1.reported), (Some(latest), latest + 1));
+    drop(root);
+}
+
+/// A ledger a newer Deck wrote is refused as that, before its members are
+/// read, and left as it is.
+#[test]
+fn a_ledger_from_a_newer_deck_is_refused_by_its_version_untouched() {
+    let root = test_root("newer-ledger");
+    let path = root.join("mcp.json");
+    let body = format!(
+        "{{\"version\": {}, \"somethingNew\": true}}",
+        STATE_VERSION_LATEST + 1
+    );
+    std::fs::write(&path, &body).unwrap();
+    let error = load(&path).err().expect("refused");
+    assert!(error.to_string().contains("newer Deck"), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+    drop(root);
+}
+
+/// Git's layout for a linked worktree, written by hand (no git runs):
+/// `repo/.git/worktrees/<id>/{gitdir,commondir}` and `<worktree>/.git`.
+fn fake_worktree(repo: &Path, id: &str, at: &Path) {
+    let admin = repo.join(".git/worktrees").join(id);
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::create_dir_all(at).unwrap();
+    std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", at.join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(at.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+}
+
+/// The verification itself (`grants::verify_linked_worktree`): both ways,
+/// from the repository's own files; a clone, a submodule, a one-way
+/// pointer, another repository's worktree and a plain directory are each
+/// refused with their word.
+#[test]
+fn a_linked_worktree_is_verified_both_ways_from_the_repositorys_own_files() {
+    let root = test_root("worktree-verify");
+    let base = std::fs::canonicalize(&*root).unwrap();
+    let repo = base.join("repo");
+    let other = base.join("other");
+    let parent = base.join("trees");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    std::fs::create_dir_all(&parent).unwrap();
+    fake_worktree(&repo, "w1", &parent.join("w1"));
+    std::fs::create_dir_all(parent.join("w1/sub/deeper")).unwrap();
+    fake_worktree(&other, "o1", &parent.join("o1"));
+    // a clone of its own
+    std::fs::create_dir_all(parent.join("clone/.git")).unwrap();
+    // a submodule's pointer into modules/
+    std::fs::create_dir_all(repo.join(".git/modules/sub")).unwrap();
+    std::fs::create_dir_all(parent.join("submod")).unwrap();
+    std::fs::write(
+        parent.join("submod/.git"),
+        format!("gitdir: {}\n", repo.join(".git/modules/sub").display()),
+    )
+    .unwrap();
+    // a one-way pointer at w1's metadata, which names w1 back, not this
+    std::fs::create_dir_all(parent.join("fake")).unwrap();
+    std::fs::write(
+        parent.join("fake/.git"),
+        format!("gitdir: {}\n", repo.join(".git/worktrees/w1").display()),
+    )
+    .unwrap();
+    std::fs::create_dir_all(parent.join("plain")).unwrap();
+    let verify =
+        |dir: &str| super::grants::verify_linked_worktree(&repo, &parent, &parent.join(dir));
+    assert_eq!(verify("w1"), Ok(parent.join("w1")));
+    assert_eq!(verify("w1/sub/deeper"), Ok(parent.join("w1")));
+    assert_eq!(verify("o1"), Err("other-repository"));
+    assert_eq!(verify("clone"), Err("separate-repository"));
+    assert_eq!(verify("submod"), Err("other-repository"));
+    assert_eq!(verify("fake"), Err("not-registered"));
+    assert_eq!(verify("plain"), Err("not-a-worktree"));
+    assert_eq!(
+        super::grants::verify_linked_worktree(&repo, &parent, &parent),
+        Err("not-a-worktree")
+    );
+    // a relative pointer, as `git worktree add --relative-paths` writes it
+    let rel = parent.join("w2");
+    std::fs::create_dir_all(&rel).unwrap();
+    let admin = repo.join(".git/worktrees/w2");
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+    std::fs::write(admin.join("gitdir"), "../../../../trees/w2/.git\n").unwrap();
+    std::fs::write(rel.join(".git"), "gitdir: ../../repo/.git/worktrees/w2\n").unwrap();
+    assert_eq!(verify("w2"), Ok(rel.clone()));
+    // a pointer file too long to be Git's
+    std::fs::create_dir_all(parent.join("huge")).unwrap();
+    std::fs::write(parent.join("huge/.git"), "x".repeat(5000)).unwrap();
+    assert_eq!(verify("huge"), Err("unreadable-metadata"));
+    for word in [
+        "not-a-worktree",
+        "separate-repository",
+        "other-repository",
+        "not-registered",
+        "unreadable-metadata",
+    ] {
+        assert!(super::grants::WORKTREE_REASONS.contains(&word));
+    }
+    drop(root);
+}
+
+/// A rule (A): a client of all projects or of a list keeps the worktree
+/// folder of one project; a worktree created later under it starts a
+/// worker card in that project directly, with that directory; a
+/// subdirectory too. An unverifiable one says why, one repository in two
+/// projects' rules is ambiguous until `project_id` names one, a withdrawn
+/// rule grants nothing, and a project may have several directories that
+/// a save keeps (a missing one it already held stays as stored).
+#[test]
+fn a_worktree_rule_lets_later_worktrees_start_worker_cards_in_their_project() {
+    let (runtime, _runner, root) = fixture("worktree-start", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let base = std::fs::canonicalize(&*root).unwrap();
+    let repo = base.join("repo");
+    let parent = base.join("trees");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(&parent).unwrap();
+    let repo_s = repo.display().to_string();
+    let other_dir = base.join("elsewhere");
+    std::fs::create_dir_all(&other_dir).unwrap();
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| {
+        *cell.borrow_mut() = Some(vec![
+            ("PG".into(), repo_s.clone()),
+            ("PH".into(), other_dir.display().to_string()),
+        ])
+    });
+    let column = |id: &str| json!([{"id": format!("C{id}"), "name": "Doing"}]);
+    crate::documents::test_door::commit(
+        json!({"projects": [
+            {"id": "PG", "name": "Game", "columns": column("PG")},
+            {"id": "PH", "name": "Other", "columns": column("PH")}
+        ], "cards": [
+            {"id": "OG", "session": "deck-og", "title": "Orch", "cmd": "", "dir": repo_s, "projectId": "PG", "columnId": "CPG"}
+        ]}),
+        true,
+    );
+    let rule = |project: &str| super::commands::WorktreeRuleInput {
+        project_id: project.into(),
+        repo: repo_s.clone(),
+        parent: parent.display().to_string(),
+    };
+    let save = |all: bool,
+                projects: Option<Vec<super::commands::ProjectScopeInput>>,
+                rules: Option<Vec<super::commands::WorktreeRuleInput>>| {
+        client_permissions(
+            &runtime,
+            "client_a",
+            super::commands::PermissionsInput {
+                all_projects: all,
+                projects,
+                worktrees: rules,
+                ..round2_workers_on(true)
+            },
+        )
+    };
+    save(true, None, Some(vec![rule("PG")])).unwrap();
+    assert_eq!(
+        runtime.read(|doc| doc.version).unwrap(),
+        STATE_VERSION_WORKTREES
+    );
+    let call = |tool: &str, args: Value| {
+        let _as = super::origin::enter_as(Some("OG"));
+        route(&runtime, request(tool, args))
+    };
+    let caps = call("deck_capabilities", json!({}));
+    assert_eq!(caps["worktreeRules"][0]["projectId"], "PG", "{caps}");
+    let epoch = || {
+        call("deck_worker_list", json!({}))["laneEpoch"]
+            .as_u64()
+            .unwrap()
+    };
+    let start = |id: &str, dir: &Path, project: Option<&str>| {
+        let mut args = json!({"request_id": id, "lane_epoch": epoch(), "text": "go", "dir": dir.display().to_string()});
+        if let Some(project) = project {
+            args["project_id"] = json!(project);
+        }
+        call("deck_worker_start", args)
+    };
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+    // a worktree made after the rule was saved, and a folder inside it
+    fake_worktree(&repo, "dev45", &parent.join("dev45"));
+    std::fs::create_dir_all(parent.join("dev45/Assets")).unwrap();
+    let started = start("w-1", &parent.join("dev45"), None);
+    assert_eq!(started["state"], "accepted", "{started}");
+    assert_eq!(started["result"]["projectId"], "PG");
+    assert_eq!(
+        started["result"]["dir"],
+        parent.join("dev45").display().to_string()
+    );
+    let inside = start("w-2", &parent.join("dev45/Assets"), None);
+    assert_eq!(
+        inside["result"]["dir"],
+        parent.join("dev45/Assets").display().to_string(),
+        "{inside}"
+    );
+    // the main checkout as before
+    assert_eq!(start("w-3", &repo, None)["result"]["projectId"], "PG");
+    // not one of the repository's worktrees: said why, never the main checkout instead
+    std::fs::create_dir_all(parent.join("clone/.git")).unwrap();
+    let clone = start("w-4", &parent.join("clone"), None);
+    assert_eq!(code(&clone), "PATH_NOT_ACCESSIBLE", "{clone}");
+    assert_eq!(clone["error"]["reason"], "worktree-unverified");
+    assert_eq!(clone["error"]["detail"], "separate-repository");
+    let missing = start("w-5", &parent.join("nope"), None);
+    assert_eq!(missing["error"]["reason"], "not-found", "{missing}");
+    let volume = start(
+        "w-6",
+        Path::new("/Volumes/deck-test-no-such-volume/w"),
+        None,
+    );
+    assert_eq!(volume["error"]["reason"], "volume-unavailable", "{volume}");
+    let outside = start("w-7", Path::new("/"), None);
+    assert_eq!(outside["error"]["reason"], "outside-scope", "{outside}");
+    // one repository in two projects' rules: ambiguous until project_id names one
+    save(true, None, Some(vec![rule("PG"), rule("PH")])).unwrap();
+    let both = start("w-8", &parent.join("dev45"), None);
+    assert_eq!(code(&both), "PATH_AMBIGUOUS", "{both}");
+    assert_eq!(both["error"]["projects"].as_array().unwrap().len(), 2);
+    let named = start("w-9", &parent.join("dev45"), Some("PH"));
+    assert_eq!(named["result"]["projectId"], "PH", "{named}");
+    // a project_id only chooses among the candidates
+    save(true, None, Some(vec![rule("PG")])).unwrap();
+    assert_eq!(
+        code(&start("w-10", &parent.join("dev45"), Some("PH"))),
+        "PATH_NOT_ACCESSIBLE"
+    );
+    // withdrawn: nothing there any more
+    save(true, None, Some(Vec::new())).unwrap();
+    let gone = start("w-11", &parent.join("dev45"), None);
+    assert_eq!(gone["error"]["reason"], "outside-scope", "{gone}");
+
+    // a list of projects: PG with two directories; a rule for a project the
+    // list does not reach is refused; a project leaving takes its rules
+    let second = base.join("second");
+    std::fs::create_dir_all(&second).unwrap();
+    let scope = |roots: Vec<String>| {
+        vec![super::commands::ProjectScopeInput {
+            project_id: "PG".into(),
+            roots,
+        }]
+    };
+    let unreached = save(
+        false,
+        Some(scope(vec![repo_s.clone()])),
+        Some(vec![rule("PH")]),
+    );
+    assert!(unreached
+        .unwrap_err()
+        .to_string()
+        .contains("mcp-worktree-project"));
+    save(
+        false,
+        Some(scope(vec![
+            repo_s.clone(),
+            second.display().to_string(),
+            repo_s.clone(),
+        ])),
+        Some(vec![rule("PG")]),
+    )
+    .unwrap();
+    let saved = runtime.read(|doc| doc.config.clients[0].clone()).unwrap();
+    assert_eq!(
+        saved.projects[0].roots,
+        vec![repo_s.clone(), second.display().to_string()],
+        "deduplicated, both kept"
+    );
+    assert_eq!(saved.worktrees.len(), 1);
+    assert_eq!(
+        start("w-12", &parent.join("dev45"), None)["result"]["projectId"],
+        "PG"
+    );
+    // editing another choice keeps both directories and the rule
+    client_permissions(
+        &runtime,
+        "client_a",
+        super::commands::PermissionsInput {
+            allow_cards: true,
+            ..round2_workers_on(true)
+        },
+    )
+    .unwrap();
+    let kept = runtime.read(|doc| doc.config.clients[0].clone()).unwrap();
+    assert_eq!(kept.projects[0].roots.len(), 2);
+    assert_eq!(kept.worktrees.len(), 1);
+    // a held directory that is gone now (an unmounted disk) is kept as stored;
+    // a new one that does not resolve is refused
+    std::fs::remove_dir(&second).unwrap();
+    save(
+        false,
+        Some(scope(vec![repo_s.clone(), second.display().to_string()])),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        runtime
+            .read(|doc| doc.config.clients[0].projects[0].roots.len())
+            .unwrap(),
+        2
+    );
+    assert!(save(
+        false,
+        Some(scope(vec![
+            repo_s.clone(),
+            base.join("never").display().to_string()
+        ])),
+        None
+    )
+    .is_err());
+    // the project leaves the list: its rule leaves with it
+    let ph = vec![super::commands::ProjectScopeInput {
+        project_id: "PH".into(),
+        roots: vec![other_dir.display().to_string()],
+    }];
+    save(false, Some(ph), None).unwrap();
+    assert!(runtime
+        .read(|doc| doc.config.clients[0].worktrees.is_empty())
+        .unwrap());
+    super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
     drop(root);
 }

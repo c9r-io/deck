@@ -27,6 +27,15 @@
 //   or Codex's TOML (`claudeAddCommand`, `codexConfig`).
 // - The scope rows are checked here before any directory is (`scopeProblem`),
 //   and a directory preview's refusal names its message (`previewErrorKey`).
+//   A project may have several directories: one row each, all shown and
+//   all saved (`initialScope`, `scopePayload`); a directory the client
+//   already holds that does not resolve now (an unmounted volume) is kept
+//   as stored (`heldRoot`; the backend `validate_client_scopes`).
+// - Linked-worktree rules (`initialWorktrees`, `worktreesPayload`,
+//   `worktreesProblem`): a project, its repository's main checkout and the
+//   folder its worktrees are made in. Only directories Deck verifies as
+//   worktrees of THAT repository open cards there; the folder alone grants
+//   nothing (mcp/grants.rs `verify_linked_worktree`).
 // - The default list offers a Claude type (`--permission-mode auto`) and a
 //   Codex type (`--no-daemon --yolo`), so driving worker cards needs no
 //   further configuration.
@@ -185,20 +194,79 @@ export function permissionSummary(client) {
   return keys;
 }
 
-/* a client's project scope as the dialog starts: all projects, or its rows
-   (project id and its first directory); a new client starts with one empty
-   row */
+/* a client's project scope as the dialog starts: all projects, or one row
+   per directory of each project (a project may have several, approved
+   2026-11-28; every one is shown, so saving keeps them all); a new client
+   starts with one empty row */
 export function initialScope(client) {
-  const rows = (client?.projects || []).map(p => ({ projectId: String(p.projectId || ''), root: String(p.roots?.[0] || '') }));
+  const rows = (client?.projects || []).flatMap(p => {
+    const roots = Array.isArray(p.roots) && p.roots.length ? p.roots : [''];
+    return roots.map(root => ({ projectId: String(p.projectId || ''), root: String(root || '') }));
+  });
   return { all: client?.allProjects === true, rows: rows.length ? rows : [{ projectId: '', root: '' }] };
 }
 
+/* whether a row's directory is one the client already holds for that
+   project, exactly as stored: such a row is kept when its directory does
+   not resolve now (an unmounted volume) instead of blocking the save */
+export function heldRoot(client, projectId, root) {
+  return (client?.projects || []).some(p => p.projectId === projectId && (p.roots || []).includes(root));
+}
+
 /* the scope as the backend takes it beside the permissions: all projects,
-   a list of projects, or (an edit that kept it) nothing */
+   a list of projects (each once, with all of its rows' directories), or
+   (an edit that kept it) nothing */
 export function scopePayload({ allProjects, scopes }) {
   if (allProjects === true) return { allProjects: true };
   if (!Array.isArray(scopes)) return { allProjects: false };
-  return { allProjects: false, projects: scopes.map(s => ({ projectId: s.project.id, roots: [s.root] })) };
+  const projects = [];
+  for (const s of scopes) {
+    const entry = projects.find(p => p.projectId === s.project.id);
+    if (entry) { if (!entry.roots.includes(s.root)) entry.roots.push(s.root); }
+    else projects.push({ projectId: s.project.id, roots: [s.root] });
+  }
+  return { allProjects: false, projects };
+}
+
+/* ---------- linked-worktree rules (mcp/grants.rs `worktree_scope`) ---------- */
+
+export const MAX_WORKTREE_RULES = 16;
+
+/* the rules as the dialog starts: the client's own (editing) or none */
+export function initialWorktrees(client) {
+  return (Array.isArray(client?.worktrees) ? client.worktrees : [])
+    .map(r => ({ projectId: String(r.projectId || ''), repo: String(r.repo || ''), parent: String(r.parent || '') }));
+}
+
+/* the rules as the backend takes them: complete rows only, trimmed */
+export function worktreesPayload(rows) {
+  return (rows || []).map(r => ({ projectId: String(r.projectId || ''), repo: String(r.repo || '').trim(), parent: String(r.parent || '').trim() }))
+    .filter(r => r.projectId || r.repo || r.parent);
+}
+
+/* the first thing wrong with the rule rows, as an i18n key, or null: a
+   row without its project, repository or folder, a project the scope does
+   not reach (`reachable` ids; null = every project), too many rows */
+export function worktreesProblem(rows, reachable) {
+  const list = worktreesPayload(rows);
+  if (list.length > MAX_WORKTREE_RULES) return 'mcp.worktreeList';
+  for (const r of list) {
+    if (!r.projectId) return 'mcp.worktreeProject';
+    if (!r.repo.startsWith('/')) return 'mcp.worktreeRepo';
+    if (!r.parent.startsWith('/')) return 'mcp.worktreeParent';
+    if (reachable && !reachable.includes(r.projectId)) return 'mcp.worktreeProject';
+  }
+  return null;
+}
+
+/* the backend's closed refusal word for a rule, as an i18n key */
+export function worktreeErrorKey(error) {
+  const text = String(error);
+  if (text.includes('mcp-worktree-repo')) return 'mcp.worktreeRepo';
+  if (text.includes('mcp-worktree-parent')) return 'mcp.worktreeParent';
+  if (text.includes('mcp-worktree-project')) return 'mcp.worktreeProject';
+  if (text.includes('mcp-worktree-list')) return 'mcp.worktreeList';
+  return null;
 }
 
 /* one shell word: as is when plain, else single-quoted */
@@ -221,15 +289,16 @@ export function codexConfig(adapterPath, clientId) {
 
 /* the first thing wrong with the scope rows before any directory is
    checked, or null: a row without a known project, a row without a
-   directory, then a project named twice. `index` is the row (null for a
+   directory, then one directory named twice for one project (a project may
+   have several rows, one per directory). `index` is the row (null for a
    duplicate), `field` the input to focus. */
 export function scopeProblem(rows) {
   for (const [index, row] of rows.entries()) {
     if (!row.known) return { index, field: 'project', key: 'mcp.projectRequired' };
     if (!row.root) return { index, field: 'root', key: 'mcp.rootRequired' };
   }
-  const ids = rows.map(row => row.projectId);
-  if (new Set(ids).size !== ids.length) return { index: null, field: null, key: 'mcp.projectDuplicate' };
+  const pairs = rows.map(row => `${row.projectId}\u0000${row.root}`);
+  if (new Set(pairs).size !== pairs.length) return { index: null, field: null, key: 'mcp.rootDuplicate' };
   return null;
 }
 

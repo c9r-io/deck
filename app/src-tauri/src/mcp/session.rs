@@ -77,6 +77,9 @@ pub(super) fn capabilities(
                 "structuredProjectRead": true,
                 "reliableJobExitTracking": true,
                 "authorizedWorkspaces": client_scopes(client),
+                // linked-worktree rules: a verified worktree of `repo` under
+                // `parent` opens cards in `projectId` (`grants::worktree_scope`)
+                "worktreeRules": client.worktrees,
                 // every project of the Board, those made later too, each
                 // through its default directory (`grants::scoped_project`)
                 "allProjects": client.all_projects,
@@ -205,7 +208,7 @@ pub(super) fn session_create(
             }
             let client = permitted(doc, client_id, Choice::Create)?;
             let project = scoped_project(client, &args.project_id)?;
-            let cwd = canonical_scope(&args.cwd, &project.roots)?;
+            let cwd = super::grants::project_cwd(client, &project, &args.cwd)?;
             let operation_id = random_id("op_", 16)?;
             let card_id = random_id("M", 16)?;
             let session_id = random_id("mcp_", 16)?;

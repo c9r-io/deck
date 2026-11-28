@@ -149,7 +149,7 @@ test('MCP authorization requires an explicit project and shows its directory', a
   assert.deepEqual(await pending, {
     name: 'ChatGPT', allProjects: false,
     scopes: [{ project: { id: 'P2', name: 'No directory', dir: '' }, root: '/Users/test/explicit' }],
-    permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false, workerTypes: [] },
+    permissions: { allowCreate: false, allowAutomations: false, allowWorkers: false, allowReplies: false, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false, workerTypes: [], worktrees: [] },
   });
   assert.equal(modal.style.display, 'none');
   assert.equal(name.oninput, null);
@@ -2241,7 +2241,7 @@ test('an MCP client row opens its permissions in the one dialog and saves them a
   assert.equal(call[1].clientId, 'client_live');
   assert.deepEqual(call[1].permissions, { allowCreate: false, allowAutomations: true, allowWorkers: true, allowReplies: true, workerFirstSend: false, allowDrafts: false, allowMentions: false, allowCards: false, allowCardEdits: false, ruleColumn: false,
     workerTypes: [{ name: 'claude', cmd: 'claude --permission-mode auto', description: 'Write code, edit files, run tests' },
-      { name: 'codex', cmd: 'codex --no-daemon --yolo', description: 'Computer use (operating desktop apps and browsers), image generation, independent implementation, a second opinion' }], allProjects: false });
+      { name: 'codex', cmd: 'codex --no-daemon --yolo', description: 'Computer use (operating desktop apps and browsers), image generation, independent implementation, a second opinion' }], worktrees: [], allProjects: false });
   row = fakeDocument.getElementById('set-mcp-clients').children[0];
   assert.match(row.children[0].children[1].textContent, /automations delegated · drives its worker cards/);
   // a Codex type without --no-daemon is refused in the dialog, nothing is saved

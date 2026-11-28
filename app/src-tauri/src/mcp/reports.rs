@@ -5,7 +5,9 @@
 //! # Contract
 //! - `deck_worker_report` takes a text and, optionally (approved
 //!   2026-11-28), `fields` — the worker's own structured claims: `status`
-//!   (one of `STATUS_WORDS`), `branch`, `commit` (a full 40- or
+//!   (one of `STATUS_WORDS`, an `enum` in the adapter's schema, both held
+//!   to `mcp-fixtures/report-status.json`; `handoff` since 2026-11-28),
+//!   `branch`, `commit` (a full 40- or
 //!   64-character hash, stored lowercase), `report_path`, `task_ref` (the
 //!   agent's own label for its task) — an `in_reply_to` naming the Deck
 //!   operation of a start or line OF THIS CARD that the report answers
@@ -56,12 +58,26 @@
 //!   worker record (`prune`); a card that closed keeps its reports while
 //!   the record stays.
 //! - The webview learns only that a card reported and when
-//!   (`WorkerCardView.reported_at`), never the text or a field.
+//!   (`WorkerCardView.reported_at`), never the text or a field, and whether
+//!   the newest report still waits for its orchestrator's acknowledgment
+//!   (`report_pending`).
+//! - Acknowledgment (`deck_worker_reports_ack`, approved 2026-11-28): the
+//!   orchestrator card that started the card (the kernel's word; never a
+//!   caller from no card, another orchestrator or the worker) says it
+//!   received report `sequence`, one it was given (1..=`reported`). The
+//!   record keeps the highest (`Worker.acknowledged`, monotone, never past
+//!   `reported`); `None` means not tracked — no report yet, reports from
+//!   before this build, an unowned card — and a card of an orchestrator
+//!   starts tracking in the write of its first new report. Reading never
+//!   acknowledges, a duplicate report starts nothing, an acknowledgment
+//!   wakes no wait; it is receipt, never review. A hand-back that makes the
+//!   card unowned drops it; `prune` takes it with the record.
 //! - A ledger holding a report is written at `STATE_VERSION_REPORTS`
 //!   (sticky); one holding a report with fields, a reply target or a
 //!   request id, or a worker record's lines, at
 //!   `STATE_VERSION_REPORT_FIELDS`, so an older Deck refuses it instead of
-//!   dropping them.
+//!   dropping them; one with a `handoff` status or an acknowledgment mark
+//!   at `STATE_VERSION_REPORT_ACKS`.
 
 use super::*;
 use tauri::Emitter;
@@ -75,13 +91,21 @@ pub(super) const MAX_TOTAL_BYTES: usize =
 const REPORTS_PER_MINUTE: usize = 6;
 
 /// The words a worker may state its work is in: its claim, never Deck's.
-pub(super) const STATUS_WORDS: [&str; 5] = [
+/// `handoff` (approved 2026-11-28): the worker hands this stage's material
+/// to its orchestrator, who decides what follows; it says nothing about the
+/// worker's process and grants nothing (`ready_for_review`: a result to
+/// review). Held equal to `mcp-fixtures/report-status.json`, which the
+/// adapter's schema `enum` is held to as well.
+pub(super) const STATUS_WORDS: [&str; 6] = [
     "in_progress",
     "blocked",
     "failed",
     "ready_for_review",
     "ready_to_merge",
+    "handoff",
 ];
+/// The status word an older Deck (a v21 reader) does not know.
+const NEWER_STATUS_WORDS: [&str; 1] = ["handoff"];
 const MAX_BRANCH_BYTES: usize = 255;
 const MAX_PATH_BYTES: usize = 1024;
 const MAX_TASK_REF_BYTES: usize = 128;
@@ -154,6 +178,19 @@ pub(super) fn uses_reports(doc: &DiskDoc) -> bool {
     !doc.reports.is_empty() || doc.workers.iter().any(|w| w.reported > 0)
 }
 
+/// Whether the ledger holds anything a v21 reader would misread: a report
+/// status it does not know (it would call the ledger damaged), or a worker
+/// record that tracks which report its orchestrator acknowledged
+/// (`Worker.acknowledged`, an unknown member there).
+pub(super) fn uses_report_acks(doc: &DiskDoc) -> bool {
+    doc.reports.iter().any(|r| {
+        r.fields
+            .as_ref()
+            .and_then(|f| f.status.as_deref())
+            .is_some_and(|s| NEWER_STATUS_WORDS.contains(&s))
+    }) || doc.workers.iter().any(|w| w.acknowledged.is_some())
+}
+
 /// Whether the ledger holds anything a v19 reader would refuse to parse.
 pub(super) fn uses_report_fields(doc: &DiskDoc) -> bool {
     doc.reports.iter().any(|r| {
@@ -222,6 +259,10 @@ pub(super) fn valid_reports(doc: &DiskDoc) -> bool {
                 .as_deref()
                 .is_none_or(|d| Path::new(d).is_absolute() && d.len() <= MAX_PATH_BYTES)
     }) && doc.reports.iter().map(Report::size).sum::<usize>() <= MAX_TOTAL_BYTES
+        && doc
+            .workers
+            .iter()
+            .all(|w| w.acknowledged.is_none_or(|a| a <= w.reported))
 }
 
 /// Reports whose worker record is gone leave with it. Called wherever
@@ -250,7 +291,18 @@ pub(super) fn summary(doc: &DiskDoc, worker: &super::workers::Worker) -> Value {
         "latest": worker.reported,
         "firstKept": kept.first().map(|r| r.sequence),
         "at": kept.last().map(|r| r.at),
+        // the highest sequence its orchestrator acknowledged (null: not
+        // tracked), and whether the newest is past it: never a count
+        "acknowledged": worker.acknowledged,
+        "awaitingAck": awaiting_ack(worker),
     })
+}
+
+/// Whether the card's newest report waits for its orchestrator's
+/// acknowledgment: tracked, and newer than what was acknowledged. An
+/// untracked record (`None`) says nothing either way.
+pub(super) fn awaiting_ack(worker: &super::workers::Worker) -> bool {
+    worker.acknowledged.is_some_and(|a| worker.reported > a)
 }
 
 /// One kept report as a reader with `allow_replies` sees it.
@@ -383,15 +435,19 @@ pub(super) fn worker_report(
     let fields = match args.fields.as_ref().map(valid_fields).transpose() {
         Ok(fields) => fields.filter(|f| !f.is_empty()),
         Err(field) => {
-            return Err(json!({"ok": false, "error": {
+            let mut error = json!({
                 "code": "INVALID_ARGUMENTS",
                 "message": "a report field is out of shape or bounds; nothing was recorded",
                 "field": field,
                 "nextAction": format!(
-                    "status is one of {}; commit is a full 40- or 64-character hash; branch has no spaces (at most 255 bytes); report_path at most 1024 bytes; task_ref at most 128; no control characters.",
+                    "status is one of {} (or left out); commit is a full 40- or 64-character hash; branch has no spaces (at most 255 bytes); report_path at most 1024 bytes; task_ref at most 128; no control characters. Send the report again with the field fixed.",
                     STATUS_WORDS.join(", ")
                 ),
-            }}));
+            });
+            if field == "fields.status" {
+                error["allowed"] = json!(STATUS_WORDS);
+            }
+            return Err(json!({"ok": false, "error": error}));
         }
     };
     if args.in_reply_to.as_deref().is_some_and(|id| !valid_id(id))
@@ -460,6 +516,13 @@ pub(super) fn worker_report(
             }
             let sequence = doc.workers[index].reported + 1;
             doc.workers[index].reported = sequence;
+            // a record from before acknowledgments starts tracking with
+            // its first new report, which is then the one waiting
+            if doc.workers[index].acknowledged.is_none()
+                && doc.workers[index].orchestrator.is_some()
+            {
+                doc.workers[index].acknowledged = Some(0);
+            }
             doc.reports.push(Report {
                 card_id: card.clone(),
                 client_id: client_id.into(),
@@ -573,4 +636,103 @@ pub(super) fn worker_reports(
         })
         .map_err(map_error)?
         .map_err(map_error)?
+}
+
+/// `deck_worker_reports_ack` (approved 2026-11-28): the orchestrator card
+/// that started a worker card says it received that card's report
+/// `sequence` — the one it names, taken from a report text it was given
+/// (`deck_worker_reports`, a wait's inline `reports`), never the summary's
+/// `latest`. Only that card may say so (`workers::opened_by`, the kernel's
+/// word; a caller from no card, another orchestrator card and the worker
+/// itself acknowledge nothing), with the replies choice that reading the
+/// text needed. The record keeps the highest sequence acknowledged, so a
+/// repeat or an older one changes nothing and a lost answer may be sent
+/// again; 0 and a sequence the card was never given are refused, one that
+/// left the kept window is taken (it was given). It acknowledges THAT
+/// report, never the ones before it, and is a metadata write only: no
+/// sequence moves, no line, card or wait is touched — the webview hears of
+/// it, no `deck_worker_wait` does.
+pub(super) fn worker_reports_ack(
+    runtime: &Runtime,
+    client_id: &str,
+    arguments: Value,
+) -> Result<Value, Value> {
+    let args: WorkerReportsAckArgs = parse(arguments)?;
+    if !valid_id(&args.card_id) || args.sequence == 0 {
+        return Err(error_value(
+            "INVALID_ARGUMENTS",
+            "card id is out of shape or the sequence is 0",
+            "Name a cardId from deck_worker_list and the sequence of a report you were given (reports[].sequence).",
+        ));
+    }
+    let not_yours = |from_no_card: bool| {
+        error_value(
+            "WORKER_NOT_FOUND",
+            if from_no_card {
+                "this call comes from no Deck card: only the orchestrator card that started a worker card acknowledges its reports"
+            } else {
+                "that card is not a worker card this orchestrator card started"
+            },
+            "Acknowledge only reports of cards you started from this Deck card (deck_worker_list).",
+        )
+    };
+    let Some(caller) = super::origin::orchestrator() else {
+        return Err(not_yours(true));
+    };
+    let answer = runtime
+        .write(|doc| -> Result<Result<(Value, bool), Value>, DeckError> {
+            let client = permitted(doc, client_id, Choice::Workers)?;
+            if !client.allow_replies {
+                return Err(DeckError::new(
+                    ErrorKind::Perm,
+                    "client may not read worker replies",
+                ));
+            }
+            let Some(index) = doc.workers.iter().position(|w| {
+                w.card_id == args.card_id
+                    && w.client_id == client_id
+                    && w.orchestrator.as_deref() == Some(caller.as_str())
+            }) else {
+                return Ok(Err(not_yours(false)));
+            };
+            let worker = &doc.workers[index];
+            if args.sequence > worker.reported {
+                return Ok(Err(json!({"ok": false, "error": {
+                    "code": "REPORT_NOT_FOUND",
+                    "message": "this card was never given a report with that sequence",
+                    "nextAction": "Acknowledge the sequence of a report you were given (reports[].sequence); nothing changed.",
+                    "latest": worker.reported,
+                }})));
+            }
+            let before = worker.acknowledged.unwrap_or(0);
+            let after = before.max(args.sequence);
+            let changed = worker.acknowledged != Some(after);
+            doc.workers[index].acknowledged = Some(after);
+            let worker = &doc.workers[index];
+            let first_kept = of_card(doc, worker).next().map(|r| r.sequence);
+            let view = json!({
+                "ok": true,
+                "cardId": worker.card_id,
+                "sequence": args.sequence,
+                "acknowledged": after,
+                "latest": worker.reported,
+                "firstKept": first_kept,
+                "awaitingAck": awaiting_ack(worker),
+                "nextAction": if awaiting_ack(worker) {
+                    "A newer report than the one acknowledged is waiting: read it (deck_worker_reports after this sequence), then acknowledge its sequence."
+                } else {
+                    "Acknowledged: the card no longer shows a report waiting for you. This says you received it, nothing more."
+                },
+            });
+            Ok(Ok((view, changed)))
+        })
+        .map_err(map_error)??;
+    let (view, changed) = answer;
+    if changed {
+        // the card's label only: no wait wakes for an acknowledgment
+        if let Some(app) = runtime.app.as_ref() {
+            let _ = app.emit("mcp-workers-changed", ());
+        }
+    }
+    Ok(view)
 }

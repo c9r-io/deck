@@ -1083,6 +1083,17 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "worker-close": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "close-armed": {},
+        "close-card": {},
+        "close-label": {},
+        "close-closed": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "reentry-shapes": {
       "terminal": "done",
       "checks": {

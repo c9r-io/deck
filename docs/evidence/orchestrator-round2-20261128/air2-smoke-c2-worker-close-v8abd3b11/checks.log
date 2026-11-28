@@ -1,0 +1,10 @@
+1795847736 [ui] smoke-check workers-client a=1 b=0
+1795847736 [ui] smoke-check close-armed a=1 b=0
+1795847740 [ui] smoke-check close-card a=1 b=0
+1795847766 [agent-status] claude-code working s=sess-0ddd6 target=1 v=2 e=1
+1795847777 [mcp] refused deck_worker_reports_ack code=REPORT_NOT_FOUND relation=-
+1795847816 [agent-status] claude-code turn-done s=sess-0ddd6 target=1 v=2 e=2
+1795847816 [mcp] refused deck_worker_close code=EPISODE_MOVED relation=-
+1795847816 [ui] smoke-check close-label a=1 b=3
+1795847816 [ui] smoke-check close-closed a=1 b=0
+1795847861 [ui] smoke-check done a=1 b=6

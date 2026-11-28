@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false, closing = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -851,6 +851,50 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     for (const value of [worker, orch]) await provider.close(value.id);
     await report('done', !failed, 1, 5);
   };
+  /* `worker-close` (round 2, 2026-11-28): one client with one Claude worker
+     type (the fixture's hooks, the project's MCP server enabled and the
+     report tool allowed) and the first-send choice, replies on, and ONE
+     plain-shell orchestrator card "Orch C". After `close-armed` the runner
+     types scripts/mcp-close-e2e.py IN that card's pane. The page reads the
+     worker card's label as the person's Board does (`mcp_workers_ui`): it
+     says the report waits for the orchestrator, then no longer once that
+     acknowledged it (`close-label` b: 1 pending seen, 2 cleared); the card
+     leaves the Board by the orchestrator's instance-bound close
+     (`close-closed`). It closes "Orch C" (`done` b=6). */
+  const closeRun = async ({ project, work, fixture }) => {
+    await inv('mcp_enable');
+    const cmd = `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
+    const client = await inv('mcp_client_add', { name: 'orchestrator', projects: [{ projectId: project.id, roots: [work] }],
+      permissions: { allowCreate: false, allowAutomations: false, allowWorkers: true, allowReplies: true,
+        workerTypes: [{ name: 'claude', cmd, description: 'Write code' }], workerFirstSend: true } });
+    const listed = await until(async () => {
+      const status = await inv('mcp_status');
+      return status.enabled && status.socketReady
+        && status.clients.some(value => value.id === client.id && value.allowWorkers) ? status : null;
+    }, 15_000, 250);
+    await report('workers-client', !!listed);
+    const orch = (await provider.createStarted({ projectId: project.id, columnId: project.columns[0].id,
+      title: 'Orch C', dir: work, cmd: '' }, { requireCreated: true })).card;
+    await report('close-armed', !!orch?.session);
+    const worker = await until(() => workerCards()[0] || null, 600_000, 1000);
+    await report('close-card', !!worker && worker.cmd === cmd && worker.dir === work);
+    if (!worker) throw new Error('no worker card');
+    const seen = { pending: false, cleared: false };
+    const gone = await until(async () => {
+      const views = await inv('mcp_workers_ui').catch(() => []);
+      const view = (views || []).find(value => value.cardId === worker.id);
+      if (view?.reportPending === true && view.reportedAt) seen.pending = true;
+      if (seen.pending && view && view.reportedAt && view.reportPending === false) seen.cleared = true;
+      return provider.get(worker.id) ? null : true;
+    }, 1_500_000, 500);
+    await report('close-label', seen.pending && seen.cleared, 1, (seen.pending ? 1 : 0) + (seen.cleared ? 2 : 0));
+    await report('close-closed', !!gone);
+    /* the client still checks the replay and writes its evidence in that
+       card: closing it at once would hang it up */
+    await pause(45_000);
+    await provider.close(orch.id);
+    await report('done', !failed, 1, 6);
+  };
   let first = null;
   try {
     if (store.cards.length) throw new Error('nonempty isolated board');
@@ -859,9 +903,9 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        Codex, and part B is not run: `done` then reports b=2) */
     const scenario = drafting ? 'drafts' : mentioning ? 'mentions' : orchestrating ? 'orchestrators'
       : projecting ? 'projects' : carding ? 'cards' : noting ? 'notes' : agyTrusting ? 'agy-trust'
-        : accounting ? 'account' : capacity ? 'capacity' : interjecting ? 'interject'
+        : accounting ? 'account' : capacity ? 'capacity' : interjecting ? 'interject' : closing ? 'close'
           : await inv('smoke_native_scenario').catch(() => '');
-    if (!['live', 'codex', 'types', 'account', 'capacity', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes', 'interject'].includes(scenario)) throw new Error('scenario');
+    if (!['live', 'codex', 'types', 'account', 'capacity', 'agy-trust', 'drafts', 'mentions', 'orchestrators', 'projects', 'cards', 'notes', 'interject', 'close'].includes(scenario)) throw new Error('scenario');
     const codex = scenario === 'codex';
     /* `types`: no template and no rule; the client carries one Claude worker
        type and the first-send choice, and the scripted client starts the
@@ -890,6 +934,7 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     if (scenario === 'notes') { await notesRun({ project, column, work, fixture }); return; }
     if (scenario === 'agy-trust') { await agyTrustRun({ project, work }); return; }
     if (scenario === 'interject') { await interjectRun({ project, work, fixture }); return; }
+    if (scenario === 'close') { await closeRun({ project, work, fixture }); return; }
     if (scenario === 'projects') {
       await projectsRun({ work, cmd: 'claude --setting-sources project', fixture });
       return;

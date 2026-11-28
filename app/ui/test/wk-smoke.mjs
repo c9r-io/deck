@@ -3552,6 +3552,14 @@ export async function verifyWorkerInterject() {
   await runWorkersSmoke({ interjecting: true });
 }
 
+// A worker that reports and then ends its turn is closed by its
+// orchestrator's instance-bound close; its label says the report waits
+// until acknowledged (workers-smoke.mjs, scenario `close`).
+export async function verifyWorkerClose() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ closing: true });
+}
+
 // A Claude worker type under a second config folder (a second account):
 // the `types` run with `CLAUDE_CONFIG_DIR=<folder> claude …`
 // (workers-smoke.mjs, scenario `account`).

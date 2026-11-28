@@ -1,0 +1,114 @@
+{
+  "run": "v926bc22e",
+  "root": "/private/tmp/deck-verify-v926bc22e",
+  "socket": "/private/tmp/deck-verify-v926bc22e/t/tmux-501/deck-smoke-v926bc22e",
+  "mode": "worker-close",
+  "head": "6de23a0a",
+  "dirty": [
+    "M CHANGELOG.md",
+    " M CLAUDE.md",
+    " M app/SMOKE.md",
+    " M app/run.sh",
+    " M app/src-tauri/mcp-adapter/src/main.rs",
+    " M app/src-tauri/mcp-adapter/tests/stdio.rs",
+    " M app/src-tauri/mcp-fixtures/tools.json",
+    " M app/src-tauri/src/diagnostics.rs",
+    " M app/src-tauri/src/main.rs",
+    " M app/src-tauri/src/mcp/admission_tests.rs",
+    " M app/src-tauri/src/mcp/cards/tests.rs",
+    " M app/src-tauri/src/mcp/commands.rs",
+    " M app/src-tauri/src/mcp/control.rs",
+    " M app/src-tauri/src/mcp/grants.rs",
+    " M app/src-tauri/src/mcp/mod.rs",
+    " M app/src-tauri/src/mcp/reports.rs",
+    " M app/src-tauri/src/mcp/session.rs",
+    " M app/src-tauri/src/mcp/state.rs",
+    " M app/src-tauri/src/mcp/tests.rs",
+    " M app/src-tauri/src/mcp/wire.rs",
+    " M app/src-tauri/src/mcp/workers.rs",
+    " M app/ui/js/extension-mcp.js",
+    " M app/ui/js/i18n/de.js",
+    " M app/ui/js/i18n/en.js",
+    " M app/ui/js/i18n/es.js",
+    " M app/ui/js/i18n/ja.js",
+    " M app/ui/js/i18n/ko.js",
+    " M app/ui/js/i18n/zh-Hans.js",
+    " M app/ui/js/mcp-permissions-model.js",
+    " M app/ui/js/workers.js",
+    " M app/ui/style.css",
+    " M app/ui/test/dom.test.mjs",
+    " M app/ui/test/fixtures/smoke-manifest.json",
+    " M app/ui/test/mcp-permissions-model.test.mjs",
+    " M app/ui/test/smoke-manifest.test.mjs",
+    " M app/ui/test/wk-smoke.mjs",
+    " M app/ui/test/workers-smoke.mjs",
+    " M app/ui/test/workers.test.mjs",
+    " M docs/mcp.md",
+    " M scripts/mcp-agent-e2e.py",
+    " M scripts/mcp-cards-e2e.py",
+    "?? app/src-tauri/mcp-fixtures/report-status.json",
+    "?? docs/evidence/orchestrator-round2-20261128/",
+    "?? research_notes/",
+    "?? scripts/mcp-close-e2e.py"
+  ],
+  "binMtime": "2026-11-28 14:51:06",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "150",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "Brave Browser",
+  "claudeAuth": true,
+  "version": "0.8.45",
+  "trustAdded": "add True",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-v926bc22e/experiment.json"
+  ],
+  "caffeinatePid": "72366",
+  "appPid": "72372",
+  "registerApp": [
+    0,
+    "registered process pid 72372 started Sat Nov 28 14:51:33 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 72407 started Sat Nov 28 14:51:34 2026"
+  ],
+  "operator": {
+    "panesAtArmed": [
+      "deck-orch-c-xba6 %0 zsh"
+    ],
+    "clientTypedAt": 0.9,
+    "evidence": "",
+    "orchPane": "",
+    "ledger": "22 [('W4b33d444432eae40fd8673ad14de3371', 1, 1)] [('worker-close', 'committed', None)]"
+  },
+  "seconds": 1503,
+  "finished": false,
+  "verdict": "FAIL (exit 1)",
+  "verdictDetail": [
+    "smoke-verdict worker-close: FAIL (5/6 expected checkpoints, 6 lines)",
+    "  FAIL close-label: a=0"
+  ],
+  "checksOfInterest": [
+    "smoke-check workers-client a=1 b=0\n",
+    "smoke-check close-armed a=1 b=0\n",
+    "smoke-check close-card a=1 b=0\n",
+    "smoke-check close-label a=0 b=3\n",
+    "smoke-check close-closed a=1 b=0\n",
+    "smoke-check done a=1 b=6\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 72372 started Sat Nov 28 14:51:33 2026: running\ntmux-server pid 72407 started Sat Nov 28 14:51:34 2026 socket /private/tmp/deck-verify-v926bc22e/t/tmux-501/deck-smoke-v926bc22e: running"
+  ],
+  "cleanup": [
+    0,
+    "process pid 72372 started Sat Nov 28 14:51:33 2026: running\ntmux-server pid 72407 started Sat Nov 28 14:51:34 2026 socket /private/tmp/deck-verify-v926bc22e/t/tmux-501/deck-smoke-v926bc22e: running\nstopped tmux-server pid 72407\nstopped process pid 72372"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 2400",
+  "rootTrashed": true,
+  "trustRemoved": "remove False",
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

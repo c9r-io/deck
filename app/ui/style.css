@@ -868,6 +868,11 @@ html[data-effective-theme="light"] #input-source-icon { background: var(--panel)
    space between types that it puts between a type's own lines */
 #mcp-perm-types { display: flex; flex-direction: column; gap: var(--sp-12); }
 #mcp-perm-type-add { align-self: flex-start; }
+/* the linked-worktree rules (extension-mcp.js): project, repository,
+   worktree folder, remove */
+.mcp-worktrees { margin: 0 0 var(--sp-16); }
+#mcp-auth-box .mcp-worktree-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.5fr) auto; gap: var(--sp-6); align-items: center; }
+#mcp-auth-box .mcp-worktree-row input { font-family: var(--mono); font-size: var(--fs-11); }
 /* a project's environment variables: name, a write-only value, remove */
 #pdf-env { display: flex; flex-direction: column; gap: var(--sp-6); margin-bottom: var(--sp-8); }
 .pdf-env-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: var(--sp-6); align-items: center; }
@@ -1597,6 +1602,8 @@ html.font-scale-large .tmux-lifecycle-actions { align-items: flex-start; flex-wr
 }
 .card-status .card-reminder + .card-worker { margin-left: var(--sp-6); }
 .card-status .card-worker.taken { color: var(--attn); border-color: var(--attn-border); cursor: pointer; }
+/* its newest report waits for the orchestrator's acknowledgment */
+.card-status .card-worker.report-pending { color: var(--accent); border-color: var(--accent-dim); }
 .card-status .card-worker.taken:hover, .card-status .card-worker.taken:focus-visible { color: var(--text); border-color: var(--border); }
 .card.attention .card-status { color: var(--attn); }
 @media (max-width: 1050px) {

@@ -239,6 +239,7 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("notes-mcp", "m.verifyNotesMcp()"),
     ("agy-trust", "m.verifyAgyTrust()"),
     ("worker-interject", "m.verifyWorkerInterject()"),
+    ("worker-close", "m.verifyWorkerClose()"),
     ("workers-account", "m.verifyWorkersAccount()"),
     ("workers-capacity", "m.verifyWorkersCapacity()"),
     ("orchestrators", "m.verifyOrchestrators()"),

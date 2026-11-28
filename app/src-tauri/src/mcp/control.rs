@@ -10,7 +10,7 @@ use super::*;
 /// added there without listing the tool here (and in
 /// `mcp-fixtures/tools.json`) is unreachable; the tests hold this list equal
 /// to the fixture and check that every member routes.
-pub(super) const CONTROL_TOOLS: [&str; 39] = [
+pub(super) const CONTROL_TOOLS: [&str; 40] = [
     "deck_automation_list",
     "deck_automation_trigger",
     "deck_capabilities",
@@ -32,6 +32,7 @@ pub(super) const CONTROL_TOOLS: [&str; 39] = [
     "deck_worker_reply",
     "deck_worker_report",
     "deck_worker_reports",
+    "deck_worker_reports_ack",
     "deck_worker_send",
     "deck_worker_interject",
     "deck_worker_start",
@@ -214,6 +215,9 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
             "deck_worker_reply" => worker_reply(runtime, &request.client_id, request.arguments),
             "deck_worker_report" => worker_report(runtime, &request.client_id, request.arguments),
             "deck_worker_reports" => worker_reports(runtime, &request.client_id, request.arguments),
+            "deck_worker_reports_ack" => {
+                worker_reports_ack(runtime, &request.client_id, request.arguments)
+            }
             "deck_worker_send" => worker_send(runtime, &request.client_id, request.arguments),
             "deck_worker_interject" => {
                 worker_interject(runtime, &request.client_id, request.arguments)
@@ -270,6 +274,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 | "deck_worker_start"
                 | "deck_worker_close"
                 | "deck_worker_report"
+                | "deck_worker_reports_ack"
                 | "deck_config_propose"
                 | "deck_mention_handoff"
                 | "deck_mention_mark"
@@ -296,6 +301,7 @@ pub(super) fn route(runtime: &Runtime, request: WireRequest) -> Value {
                 "deck_worker_interject",
                 "deck_worker_close",
                 "deck_worker_report",
+                "deck_worker_reports_ack",
                 "deck_worker_wait",
             ]
             .into_iter()

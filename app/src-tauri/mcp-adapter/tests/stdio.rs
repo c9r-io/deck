@@ -147,7 +147,30 @@ fn initializes_lists_and_calls_over_stdio_without_stdout_noise() {
     input.flush().unwrap();
     let listed = read_response(&mut output, 2);
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 39);
+    assert_eq!(tools.len(), 40);
+    // the report status is a machine-readable enum in what a client
+    // discovers, handoff included (mcp-fixtures/report-status.json)
+    let report = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_worker_report")
+        .unwrap()
+        .to_string();
+    assert!(
+        report.contains(r#""enum":["in_progress","blocked","failed","ready_for_review","ready_to_merge","handoff"]"#),
+        "{report}"
+    );
+    let close = tools
+        .iter()
+        .find(|tool| tool["name"] == "deck_worker_close")
+        .unwrap()
+        .to_string();
+    assert!(
+        close.contains(r#""enum":["episode","instance"]"#),
+        "{close}"
+    );
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "deck_worker_reports_ack"));
     let listed_names = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
