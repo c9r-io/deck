@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.47 — 2026-11-29 (Nightly)
 
 - Interjecting into a worker that is ending its turn: a line can now be
   bound to the worker's agent instance and the newest line you saw

@@ -1,6 +1,6 @@
 [package]
 name = "deck-mcp"
-version = "0.8.46"
+version = "0.8.47"
 edition = "2021"
 license = "MIT"
 
