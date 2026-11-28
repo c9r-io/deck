@@ -1174,6 +1174,7 @@ const dictionary = {
   'queue.stage.agyTrust': '已暂停 · agy 正在询问是否信任这个文件夹。打开卡片在 agy 里回答；选择信任后，这一步会自动发送',
   'queue.stage.piHandover': '等待 Pi · Pi 的扩展连上、当前这一轮结束后，这一步会通过 Deck 的扩展交给 Pi',
   'queue.stage.agyWorking': '等待 agy · agy 正在工作，而它向你提问时不会告诉 Deck，所以这一步要等 agy 结束这一轮才发送。如果 agy 在卡片里等你回答，请在那里回答',
+  'queue.stage.instanceGone': '未发送 · 这一步是写给这张卡当时运行的 Agent 的，那个 Agent 已经不在这里运行了。Deck 不会把它发给现在运行的程序；请删掉它，或者重新写一次',
   'queue.stage.human': '等待中 · 你已接管这张卡片；交还后才会发送，也可以手动立即发送',
   'queue.history.approved': "已批准的第 {step} 步",
   'queue.history.approvedMessage': "已批准的第 {step} 步（含 Slack 消息内容）",

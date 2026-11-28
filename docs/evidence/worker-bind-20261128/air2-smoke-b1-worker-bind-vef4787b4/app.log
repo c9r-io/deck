@@ -1,0 +1,28 @@
+1795877458 [tmux] using the bundled sidecar
+1795877458 [notify] boot not-determined
+1795877458 [notify] configured not-determined
+1795877458 [evt] ping emitted ok=true
+1795877458 [ui] ping-recv
+1795877458 [extensions] services started (1)
+1795877460 [agent-hooks] worker replies unchanged (release-only)
+1795877460 [ui] smoke-check workers-client a=1 b=0
+1795877460 [start] created sess-b6af0 gate=39ms create=10ms cmd=0ms total=49ms restored=false
+1795877460 [ui] smoke-check interject-armed a=1 b=0
+1795877461 [tmux-control] read channel connected
+1795877464 [start] created sess-0d452 gate=55ms create=11ms cmd=8ms total=74ms restored=false
+1795877464 [ui] smoke-check interject-card a=1 b=0
+1795877484 [queue] first-send stabilization started for sess-0d452
+1795877490 [queue] first-send stabilization finished for sess-0d452 (6380ms)
+1795877491 [queue] sent to sess-0d452 (222B, mode at, approved delegated step, first send without readiness confirmation)
+1795877491 [agent-status] codex working s=sess-0d452 target=1 v=2 e=1
+1795877516 [agent-status] codex turn-done s=sess-0d452 target=1 v=2 e=2
+1795877516 [mcp] deck_worker_interject refused s=sess-0d452 code=EPISODE_MOVED state=turn-done e=2
+1795877516 [mcp] refused deck_worker_interject code=EPISODE_MOVED relation=-
+1795877557 [queue] sent to sess-0d452 (109B, mode chain, approved delegated step)
+1795877557 [agent-status] codex working s=sess-0d452 target=1 v=2 e=3
+1795877560 [mcp] refused deck_worker_interject code=LAST_LINE_MOVED relation=-
+1795877561 [agent-status] codex turn-done s=sess-0d452 target=1 v=2 e=4
+1795877563 [ui] smoke-check bind-closed a=1 b=0
+1795877563 [ui] smoke-check done a=1 b=5
+1795877577 [poll] webview poll idle (no Board poll reached the backend for 10s); bells observed on the scheduler tick
+1795877577 [tmux-control] query reset (tmux)

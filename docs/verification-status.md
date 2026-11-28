@@ -7,7 +7,14 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
-## 关闭保护一致、排队行精确查询/取消、报告接收状态（2026-11-28）
+## 插话绑定到 Agent 实例：`bind_mode: instance`（2026-11-28）
+
+- 现场：生产 app.log 中，Codex 卡在 e=65 与 e=87 之间只有一次 `turn-done`，其余编号被其他卡用掉；没有发现重复、乱序或子 Agent 事件。插话被拒是因为工人报告之后自己 Stop 推进了 episode（`docs/evidence/worker-bind-20261128/README.md`）。
+- 门禁（本机，隔离 HOME/TMPDIR）：`cargo fmt`、clippy（CI 形式）通过；`cargo test --workspace` 1613 项通过，3 项 `agent_reentry` 测试在并行负载下失败，单独重跑 101/101 通过；`deck-mcp` 测试通过；`scripts/ui-tests` 1072/1072 通过；`check-js-syntax`、`check.mjs` 通过。新增测试：instance 模式在 Stop 之后仍被接受，换实例、shell、session 消失、lastLine 移动、参数形状错误都被拒，重放早于前置条件，旧请求 hash 不变；8 线程并发同一 lastLine 只成功一个；`instance-gone` 保持；粘贴前拒绝且不重试；不为它启动 session；queue.json v15 是 sticky 的。CI 形式的 llvm-cov 本地未跑。
+- 原生（air2，debug 载体，Codex 0.169.0）：WK 模式 `worker-bind` b2 页面 PASS 5/5，客户端 PASS 13/13（报告唤醒 → 工人 Stop → episode 模式 `EPISODE_MOVED queued:false` → instance 模式被接受 → `deck_operation_get` delivered → 工人执行 → 旧 lastLine `LAST_LINE_MOVED` → 按实例关闭）。b1 页面 PASS，客户端证据丢失（runner 缺陷，已修）。
+- 未执行：排队后换实例、paste 与 Enter 之间换实例、re-entry 后发送，这些只在单元测试中覆盖；Codex 多 Agent 未实测；Claude 编排者的真实闭环未重跑（episode 默认路径代码未改）。
+
+
 
 所有关闭模式共用一套检查（`workers::shared_verdict`）：前台程序须是决定时那个、正在运行的程序须有 Agent 观察（`OBSERVATION_UNKNOWN`，`after_episode: 0` 不能绕过）、本卡没有排队/发送中/结果不明/已接受未入队的行；新增 `close_mode: gone` 清理 session 已不存在的卡（session 重现即 `SESSION_PRESENT`）。工人行以队列行为准（不再被最近 8 条历史挤出），每卡上限在加行的队列事务里判定；`deck_operation_get` 给出 `delivery`；新工具 `deck_worker_cancel`；报告 `receiptState`。
 

@@ -197,7 +197,7 @@ authentication, Origin/Host validation, and deployment review.
 | `deck_card_note` | Leave, revise or withdraw one note for the user in the scratchpad of the card the call comes from (proved from the kernel; `NOT_IN_A_CARD` otherwise): `request_id`, `key` (the client's own; the same key revises the note while it is open), `title` (one line, at most 120 characters), `text` (at most 8 KiB), `acted` (the Agent already went ahead with its recommendation), or `withdraw: true` with the key alone. `NOTE_HANDLED` once the user handled that key, `CAPACITY_EXCEEDED` past 32 open notes on the card, `RATE_LIMITED` past 12 a minute. Returns an operation (`deck_operation_get`): `committed`, or `rejected` with `note-handled`, `note-capacity`, `note-conflict` or `card-missing`. Any locally authorized client; no separate choice. |
 | `deck_card_notes` | The caller's own notes in the card the call comes from: `key`, `title`, `acted`, `state` (`open` or `handled`), `updatedAt`. Never the user's notes or another client's. |
 | `deck_quota_snapshot` | Read only, no arguments. The usage windows of every agent account (Claude Code, Codex, agy) Deck observed in this run, also with no card under it now; see "Account quota". Needs the client's separate **Read the account quota summary** choice (`mayReadQuota`), nothing else; `PERMISSION_DENIED` without it, the worker choice included. |
-| `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) and bound to `send_sequence` (one request at a time) or `lane_epoch` (several at once; see "Several requests at once"). Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over, and for agy never while agy works (`agy-working`). |
+| `deck_worker_send` | Queue one line for one worker card, written after an episode (`EPISODE_MOVED` when the card moved on) or bound to the agent instance and `lastLine` it saw (`bind_mode: instance`; `INSTANCE_CHANGED`, `LAST_LINE_MOVED`; see "Binding a line to the instance") and bound to `send_sequence` (one request at a time) or `lane_epoch` (several at once; see "Several requests at once"). Deck types it only when its readiness holds allow, never while the agent asks for input or the user has taken the card over, and for agy never while agy works (`agy-working`). |
 | `deck_worker_interject` | Send one line to a worker card the calling orchestrator card started, without waiting for the card to fall quiet (the same arguments as `deck_worker_send`; see "Interjecting" under Worker cards). `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `INTERJECT_UNSUPPORTED` for an agy worker, `INVALID_ARGUMENTS` for text with a control character other than newline and tab. Every other hold, the minute between two lines, the sequence, rate and unsent bound are `deck_worker_send`'s. Part of **Drive worker cards**. |
 | `deck_worker_close` | Close one worker card the calling orchestrator card started (`card_id`, `request_id`, `send_sequence` or `lane_epoch`), bound by `close_mode`: `episode` (default, `after_episode`: `EPISODE_MOVED` once it moved on, its own turn ending included), `instance` (`instance` and `last_line` from `deck_worker_list`: the agent's own turns do not refuse it; `INSTANCE_CHANGED` and `NEW_INPUT` do; an instance that ended leaves the card to close) or `gone` (`last_line` only, for a card whose `liveness` is `gone` — its session ended, e.g. across a Deck restart, and `instance` is null: no earlier token needed; `SESSION_PRESENT` the moment the session exists again, never a close of what runs there then). Every mode stands on the same shared checks, at the precheck and again at the admission: `OBSERVATION_UNKNOWN` while a program runs in front and Deck has no Agent observation of it (after a Deck restart with the agent still running — `after_episode: 0` does not pass it; wait for its next observed turn, or leave the card to you), `INSTANCE_CHANGED` when another program or session than the one decided on is in front, `INSTANCE_UNKNOWN`, `LINES_PENDING` while a line of the client's is queued, being sent, uncertain or accepted and not yet queued (cancel a queued one with `deck_worker_cancel`), `LINES_UNKNOWN`. Also `WORKER_NOT_FOUND` for any other card and for every card when the call comes from no Deck card, `WORKER_TAKEN_OVER` while you hold it, `WORKER_NEEDS_YOU` while its agent asks you something, `CLOSE_IN_PROGRESS` while another close of it is under way; each refusal says `stage: precheck`, `accepted: false` and what Deck `observed`. An operation to poll: `committed` once the card is gone, or `rejected` with `card-shown` (a pane shows it), `reminder-protected`, `card-kept` (a kept scratchpad), or the refusals above in lower case when the card changed before the close ran, with `result.refusal` (`stage: admission`, `code`, `observed`, `nextAction`). From acceptance until it ends, a line for the card is `WORKER_CLOSING`. There is no force close of an agent Deck cannot observe. Part of **Drive worker cards**; 30 a minute together with lines. |
 | `deck_worker_cancel` | Cancel ONE line of a worker card the client drives that still waits in its queue (`request_id` of the cancel itself, `card_id`, `operation_id` of the line from `deck_worker_send`/`deck_worker_interject` or `sends`). Decided in the queue's own transaction under the lock the send's firing intent takes: `result.outcome` `canceled` (it will never be sent) or `already-canceled` (`committed`), or `rejected` with `ALREADY_DELIVERED` (nothing taken back), `LINE_SENDING` (being typed now), `DELIVERY_UNCERTAIN` (you resolve it; never resent), `LINE_EDITED_BY_USER`, `LINE_NOT_FOUND`; `delivery` says where the line stands. `CANCEL_NOT_SAVED`: nothing changed. A lost answer is repeated with the same `request_id` (the queue answers again). `WORKER_TAKEN_OVER` while you hold the card. Cancels that line only, never the card or its other lines. Part of **Drive worker cards**. |
@@ -493,6 +493,34 @@ be dropped and its Enter would approve the command. It goes once agy ends
 its turn; if agy waits for your answer in the card, answer it there. After
 a Deck restart, a later line into an agy waits for agy's next turn (or your
 send-now); only a new card's first line takes the worker first-send choice.
+
+**Binding a line to the instance.** The episode a line is written after
+is Deck's one observation counter for every card (`agent.episode`), not a
+count of the card's turns: a jump from 65 to 87 can be a single `turn-done`
+while other cards drew the numbers between. A worker's report does not end
+its turn either, so a line written right after a report is refused with
+`EPISODE_MOVED` as soon as the worker's own Stop arrives. That refusal
+queued nothing (`"queued": false`, `stage`, `afterEpisode`,
+`currentEpisode`, `currentState`). For the usual mid-task adjustment,
+send the line with `bind_mode: "instance"`, the card's `instance` and its
+`lastLine` (`null` when it is null) from `deck_worker_list` or
+`deck_worker_wait`, and no `after_episode`. The agent's own turns, Stop
+included, do not refuse it. It is refused, with nothing queued, when
+another program is in front of the card (`INSTANCE_CHANGED`, with
+`currentInstance` and `agentRunning`) or when Deck accepted another line
+for the card after that `lastLine` (`LAST_LINE_MOVED`, with
+`currentLastLine`; of two lines written after the same `lastLine`, only one
+is accepted). Once accepted, the line goes only to that agent instance. If
+the instance exits, is replaced, re-entered or its session is rebuilt, the
+line waits at stage `instance-gone`: it is never sent to the new program,
+by Deck or by the user's send-now or retry, and its session is never
+started for it. Cancel it, read the card and decide anew. The instance is
+the target, never readiness. `needs-input`, your takeover, the first-send
+gate, Codex trust and the minute between lines still apply. Keep the
+default episode binding when the line only makes sense for the exact
+state you read. After any refusal, decide anew with a new `request_id`. A
+lost or timed-out answer is not a refusal: repeat that request unchanged,
+or read `deck_operation_get`. Both modes work for `deck_worker_send` too.
 
 **Interjecting.** `deck_worker_interject` (same arguments as
 `deck_worker_send`) sends a line WITHOUT waiting for the card to fall

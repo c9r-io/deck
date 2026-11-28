@@ -628,6 +628,29 @@ worker-interject` and the client's PASS line. The runner and the round's
 evidence live outside the repository (`docs/evidence/interject-20261127/`
 indexes them).
 
+## Worker lines bound to the instance (WKWebView mode `worker-bind`)
+
+The `worker-interject` page with a Codex worker type (`codex --no-daemon
+--dangerously-bypass-hook-trust` under the run's own `CODEX_HOME`: Deck's
+four Signal hooks only, approvals never, no sandbox) and ONE plain-shell
+orchestrator card "Orch I" (`interject-armed`, `interject-card`). The
+operator types `scripts/mcp-bind-e2e.py` into that card's pane. The client
+checks that tools/list carries `bind_mode` on `deck_worker_interject` and
+`deck_worker_send`. It starts the worker on the fixture's `python3
+report.py`, which hands Deck the worker's report from the worker's own
+shell and then waits 20 s. `deck_worker_wait until: report` wakes the
+client while the worker still works, and the client keeps that wake's
+episode, `instance` and `lastLine`. Once the worker's own turn has ended,
+the episode-bound interjection is `EPISODE_MOVED` with `queued: false`. The
+instance-bound one is accepted without another read, its replay is the same
+operation, and `deck_operation_get` follows it to `delivered`. The worker
+then creates the file the line names. The old `lastLine` is then refused
+with `LAST_LINE_MOVED`. Finally the client closes the worker with
+`close_mode: instance`. The page waits for that close (`bind-closed`),
+closes "Orch I" and reports `done`. Judge with `scripts/smoke-verdict
+<data> worker-bind` and the client's PASS line. The runner and evidence are
+in `docs/evidence/worker-bind-20261128/`.
+
 ## Interjected lines into a Pi worker (WKWebView mode `pi-interject`)
 
 `scripts/pi-live-verify.py --mode pi-interject --runtime npm|standalone

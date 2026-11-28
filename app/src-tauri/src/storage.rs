@@ -122,8 +122,25 @@ use std::sync::Mutex;
 // notification rule or switch (settings.json) and the queue origins it
 // admits (a row's or a delivery's authority or override with the local
 // trigger word).
+// v15 protects a worker line bound to an agent instance (queue only).
 // Ordinary documents keep v1; upgrades are sticky.
-pub const SCHEMA_VERSION: u64 = 14;
+pub const SCHEMA_VERSION: u64 = 15;
+
+// v15: a worker line bound to an agent instance
+// (`scheduler::QueueItem.worker_target`, `bind_mode: instance`). A v14
+// reader ignores the binding and would send the line to whatever program
+// runs in the pane, a new agent or a shell; refuse the file untouched.
+fn uses_worker_target(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(o) => {
+            o.get("worker_target")
+                .is_some_and(serde_json::Value::is_object)
+                || o.values().any(uses_worker_target)
+        }
+        serde_json::Value::Array(a) => a.iter().any(uses_worker_target),
+        _ => false,
+    }
+}
 
 // v14: local notifications (`local_notify.rs`). A v13 reader's settings
 // validation refuses the unknown source word — in a rule or as
@@ -904,9 +921,9 @@ fn save_checked_locked(
     // reaching here with a broken envelope means the file was never loaded
     // (or was replaced behind our back) — refuse rather than destroy it.
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let feature_version = if matches!(name.as_ref(), "queue.json" | "settings.json")
-        && uses_local_source(&data)
-    {
+    let feature_version = if name == "queue.json" && uses_worker_target(&data) {
+        15
+    } else if matches!(name.as_ref(), "queue.json" | "settings.json") && uses_local_source(&data) {
         14
     } else if name == "queue.json" && uses_worker_interject(&data) {
         13
@@ -2611,6 +2628,36 @@ mod agent_trigger_version_tests {
         save_typed::<serde_json::Value>(&p, &board("agent").to_string()).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert!(raw["schema_version"].as_u64().unwrap() < 12);
+    }
+
+    /// v15 on queue.json only while a row (or an in-flight snapshot)
+    /// carries a worker line's instance binding; sticky; a v14 reader
+    /// refuses it instead of sending the line to whatever runs in the pane.
+    #[test]
+    fn a_worker_line_bound_to_an_instance_upgrades_the_queue_to_sticky_v15() {
+        let dir = TestDir::new("worker-target-version");
+        let p = dir.join("queue.json");
+        let plain = serde_json::json!({"items":[{"id":"q1","worker_target":null}]});
+        let used = serde_json::json!({"pending":[{"snapshot":{"id":"q1","worker_target":{"server_pid":1,"session_id":"$1","pane_id":"%1","pane_pid":2,"pid":3,"start_seconds":4,"start_micros":5}}}]});
+        save_typed::<serde_json::Value>(&p, &plain.to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 15);
+        save_typed::<serde_json::Value>(&p, &used.to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 15);
+        assert!(
+            envelope_payload_for(&raw, 14).is_err(),
+            "a v14 reader refuses it"
+        );
+        save_typed::<serde_json::Value>(&p, &plain.to_string()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 15, "sticky");
+        // never settings.json or deck.json
+        let other = dir.join("settings.json");
+        save_typed::<serde_json::Value>(&other, &used.to_string()).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&other).unwrap()).unwrap();
+        assert!(raw["schema_version"].as_u64().unwrap() < 15);
     }
 
     /// v14 on settings.json (a local rule, or the local switch in any

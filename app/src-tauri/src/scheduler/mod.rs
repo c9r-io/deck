@@ -333,6 +333,85 @@ pub(crate) struct QueueItem {
     /// older Deck refuses the file instead of sending it as an ordinary line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     interject: Option<Interject>,
+    /// A worker line bound to the agent instance its client chose
+    /// (`bind_mode: instance`, `mcp/workers.rs` `queue_line`): the pane and
+    /// the foreground generation the client decided on. Every send of the
+    /// row, automatic or the user's send-now, retry or recovery, goes only
+    /// to that exact instance (`WorkerTarget::stands`, checked before the
+    /// paste and again before the Enter); a row whose instance ended, was
+    /// replaced or cannot be proven is never sent to whatever runs there
+    /// now, and its session is never started again for it. Never rebound.
+    /// queue.json takes sticky v15 while any row carries it
+    /// (`storage::uses_worker_target`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worker_target: Option<WorkerTarget>,
+}
+
+/// The exact agent instance a worker line is bound to: the tmux pane
+/// (server, session, pane and its process) and the foreground process
+/// generation (leader pid and birth instant) in front of it when the client
+/// decided. Kernel and tmux facts only, never a name, a cwd or a turn id.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkerTarget {
+    pub(crate) server_pid: u32,
+    pub(crate) session_id: String,
+    pub(crate) pane_id: String,
+    pub(crate) pane_pid: u32,
+    pub(crate) pid: u32,
+    pub(crate) start_seconds: u64,
+    pub(crate) start_micros: u32,
+}
+
+impl WorkerTarget {
+    /// Whether `pane` (the identity the paste compares atomically) is this
+    /// target's pane and `live` (its foreground generation read now) is
+    /// this target's instance. `None` for either proves nothing: false.
+    pub(crate) fn matches(
+        &self,
+        pane: Option<&crate::context::PaneIdentity>,
+        live: Option<&crate::agent_status::ForegroundGeneration>,
+    ) -> bool {
+        pane.is_some_and(|p| {
+            p.server_pid == self.server_pid
+                && p.session_id == self.session_id
+                && p.pane_id == self.pane_id
+                && p.pane_pid == self.pane_pid
+        }) && live.is_some_and(|g| {
+            g.pid() == self.pid && g.birth() == (self.start_seconds, self.start_micros)
+        })
+    }
+
+    /// `matches` against the foreground generation the kernel shows now.
+    pub(crate) fn stands(&self, pane: Option<&crate::context::PaneIdentity>) -> bool {
+        #[cfg(test)]
+        if let Some(forced) = TARGET_STANDS_FOR_TESTS.with(std::cell::Cell::get) {
+            return forced;
+        }
+        self.matches(
+            pane,
+            crate::agent_status::live_generation(self.pane_pid).as_ref(),
+        )
+    }
+
+    /// The instance alone, read now (no pane identity to compare yet): the
+    /// queue's own admission of the row (`ops::worker_queue_add`).
+    pub(crate) fn instance_stands(&self) -> bool {
+        #[cfg(test)]
+        if let Some(forced) = TARGET_STANDS_FOR_TESTS.with(std::cell::Cell::get) {
+            return forced;
+        }
+        crate::agent_status::live_generation(self.pane_pid).is_some_and(|g| {
+            g.pid() == self.pid && g.birth() == (self.start_seconds, self.start_micros)
+        })
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's answer in place of the kernel (`WorkerTarget::stands`).
+    pub(crate) static TARGET_STANDS_FOR_TESTS: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// What an interjected line rests on beyond the client's delegation: the

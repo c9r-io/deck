@@ -155,6 +155,15 @@
 //!   (`delivery::send_one_guarded`), and the Enter after its paste is
 //!   refused when the agent asked the user meanwhile (`delivery::fire_item`).
 //!   Signal still only holds: nothing here releases a row on a word.
+//! - Instance-bound worker lines (`QueueItem.worker_target`, a worker line
+//!   sent with `bind_mode: instance`): before every other hold, a row whose
+//!   instance (the pane's foreground generation the client chose, read from
+//!   the kernel now) is not in front holds at `Hold::InstanceGone`, an
+//!   absent session included — never started for it, never rebound. It is
+//!   a target proof only: readiness, authority and every hold above still
+//!   apply to a row whose instance stands. Send-now, retry and a recovered
+//!   row are held to it at the paste (`delivery::fire_item`), and its Enter
+//!   is refused if the instance changed during the paste.
 //!
 //! Owner rows keep the quiet-only rule (plus the holds above). Manual
 //! send-now (`select_for_request`) is the user acting while looking at the
@@ -427,6 +436,12 @@ pub(crate) enum Hold {
     /// paste would be dropped into and the Enter would answer. It goes once
     /// agy ends its turn (`turn-done`). No override lifts it.
     AgyWorking,
+    /// a worker line bound to an agent instance (`QueueItem.worker_target`)
+    /// whose instance is no longer in front of its pane (plan stage
+    /// `instance-gone`): it ended, was replaced, or cannot be read. Never
+    /// lifted, never rebound; send-now refuses it too (`fire_item`). The
+    /// client cancels it and decides anew for whatever runs there now.
+    InstanceGone,
 }
 
 /// The recognized interactive agent a row is configured for, if any.
@@ -521,6 +536,15 @@ pub(crate) fn relies_on_readiness_override(i: &QueueItem, seen: Option<&Observed
 
 /// `hold_reason`, with the first-send readiness override honored or not.
 fn hold_reason_with(i: &QueueItem, seen: Option<&Observed>, honor_override: bool) -> Option<Hold> {
+    // a line bound to an instance: only that instance takes it, read from
+    // the kernel now, whatever the session's observation says (an absent
+    // session included: it is never started again for this line)
+    if i.worker_target
+        .as_ref()
+        .is_some_and(|t| !t.instance_stands())
+    {
+        return Some(Hold::InstanceGone);
+    }
     let agent = seen.and_then(|o| o.agent);
     if agent == Some(agent_status::NEEDS_INPUT) {
         return Some(Hold::NeedsInput);

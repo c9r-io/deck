@@ -1,0 +1,1 @@
+smoke-verdict worker-bind: PASS (5/5 expected checkpoints, 5 lines)

@@ -209,8 +209,47 @@ pub(super) struct WorkerSendArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) lane_epoch: Option<u64>,
     pub(super) card_id: String,
-    pub(super) after_episode: u64,
+    /// `bind_mode: episode` (the default): the card's attention episode the
+    /// line was written after. Absent in `bind_mode: instance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) after_episode: Option<u64>,
     pub(super) text: String,
+    /// What the line is bound to (`mcp/workers.rs` `queue_line`): omitted
+    /// or `episode`, the observation snapshot (`after_episode`); `instance`,
+    /// the agent instance (`instance`) and the newest line Deck accepted for
+    /// the card (`last_line`, null when it has none). Omitted fields leave
+    /// the request's hash as it was before the choice existed; `episode` is
+    /// hashed as omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) bind_mode: Option<BindMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) instance: Option<String>,
+    /// `Some(None)`: the client said `null` (the card has no line yet);
+    /// `None`: the field was left out, which the instance mode refuses.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) last_line: Option<Option<String>>,
+}
+
+/// What a worker line is bound to (`WorkerSendArgs.bind_mode`).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BindMode {
+    Episode,
+    Instance,
+}
+
+/// A field that was given, `null` included (`Some(None)`), apart from one
+/// left out (`None`, the serde default).
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]

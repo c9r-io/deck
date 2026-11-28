@@ -56,6 +56,20 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
         ErrorKind::Other,
         "delivery identity is missing",
     ))?;
+    // a line bound to an agent instance (`QueueItem.worker_target`) goes
+    // only to that instance: the pane the paste compares atomically must be
+    // its pane and its foreground generation, read now, its instance. Every
+    // path reaches here (automatic, send-now, retry, a recovered row), so
+    // none can hand the line to another program. Not atomic with the paste
+    // (the kernel holds no lock for Deck); the Enter looks once more.
+    let instance_gone = || {
+        item.worker_target
+            .as_ref()
+            .is_some_and(|t| !t.stands(Some(pane)))
+    };
+    if instance_gone() {
+        return Err(DeckError::new(ErrorKind::ContextChanged, INSTANCE_GONE));
+    }
     if pi_handover(item) {
         return hand_to_pi(item, pane);
     }
@@ -63,7 +77,7 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     // on one more look at the agent's own word, so an agent that asked the
     // user during the paste gets no Enter (it would answer the question);
     // the line then stays for the user, like any refused Enter
-    let asks = || pane_asks_now(item);
+    let asks = || pane_asks_now(item) || instance_gone();
     // agy asks without a word: its Enter waits on one more look at agy's
     // own word too, so a turn agy started on its own between the paste and
     // the Enter (background work ending) gets no Enter — it may be showing
@@ -74,6 +88,10 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
         request.enter_refused_when = Some(&agy_busy);
     } else if interject_row(item) {
         request.enter_refused_when = Some(&asks);
+    } else if item.worker_target.is_some() {
+        // a queued line bound to an instance: an instance that changed
+        // during the paste gets no Enter (the line stays, uncertain)
+        request.enter_refused_when = Some(&instance_gone);
     }
     let result = crate::prompt_delivery::deliver(request)?;
     if result == crate::prompt_delivery::LiteralOutcome::EnterRefused {
@@ -85,6 +103,12 @@ pub(crate) fn fire_item(item: &QueueItem) -> Result<(), DeckError> {
     }
     Ok(())
 }
+
+/// The error a line bound to an agent instance fails with when that
+/// instance is not the one in front of its pane (`fire_item`): nothing was
+/// pasted, and the row is not retried (`send_one_guarded`).
+pub(crate) const INSTANCE_GONE: &str =
+    "the agent instance this line is bound to no longer runs in the card's pane; nothing was sent";
 
 /// Whether the agent of the pane `item` is bound to has asked the user
 /// something, as the Signal store holds it at this instant
@@ -320,6 +344,15 @@ pub(crate) fn prepare_context_with(
     }
     if (ops.exists)(item) {
         return Prepared::Probe((ops.probe)(item, None));
+    }
+    // a line bound to an agent instance: that instance went with its
+    // session, so nothing is started for the line (a new agent is never
+    // its target)
+    if item.worker_target.is_some() {
+        return Prepared::Probe(ProbeResult::blocked(
+            ContextStatus::SessionReplaced,
+            ContextCode::SessionMissing,
+        ));
     }
     // A session that appeared between the existence check and start_session's
     // idempotent inner check is probed like any other live one.
@@ -599,6 +632,7 @@ pub(crate) fn finalize_delivery(
                     readiness_override: None,
                     channel_first_send: None,
                     interject: None,
+                    worker_target: item.worker_target.clone(),
                 });
             }
         }
@@ -1133,6 +1167,14 @@ fn send_one_guarded(
                 };
             }
             note_failed(&mut q, &item.id, &delivery, e.message());
+            // a line whose instance is gone is not retried: no later attempt
+            // can reach that instance (the user's retry tries it once more)
+            if e.message() == INSTANCE_GONE {
+                if let Some(it) = q.items.iter_mut().find(|i| i.id == item.id) {
+                    it.attempts = it.attempts.max(MAX_ATTEMPTS);
+                    it.last_error = Some("instance-gone".into());
+                }
+            }
             let gave_up = q.items.iter().any(|i| i.id == item.id && item_dead(i));
             let cancelled = is_cancelled(&q, &item.session);
             if let Err(pe) = persist(&q) {

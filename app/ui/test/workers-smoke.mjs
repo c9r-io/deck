@@ -27,7 +27,7 @@
 //      sends each at least one line. The page counts them.
 // No hook word and no event is synthesized: the Signal comes from the real
 // Claude Code in each card.
-export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false, closing = false, worktreeSwitch = false, worktreeRelaunch = false, recovering = false, recoveryRelaunch = false } = {}) {
+export async function runWorkersSmoke({ drafting = false, mentioning = false, orchestrating = false, projecting = false, carding = false, noting = false, agyTrusting = false, accounting = false, capacity = false, interjecting = false, binding = false, closing = false, worktreeSwitch = false, worktreeRelaunch = false, recovering = false, recoveryRelaunch = false } = {}) {
   const { openPermissions, pause, setPermission, until } = await import('./smoke-mcp-helpers.mjs');
   const { $, ctx, inv, store } = await import('../js/state.js');
   const { provider, panes } = await import('../js/board.js');
@@ -798,6 +798,12 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
        `codex --no-daemon` under the CODEX_HOME the runner made for the run
        (Deck's Signal hooks only, which that home has not reviewed: hence
        the hook-trust bypass; tool approvals stay on-request) */
+    /* `worker-bind` (2026-11-28): the client is scripts/mcp-bind-e2e.py — a
+       report wakes it, the worker's own Stop follows, an episode-bound
+       interjection is refused and an instance-bound one is delivered; it
+       closes the worker itself (close_mode instance), and the page waits
+       for that */
+    const bind = binding;
     const codex = (await inv('smoke_native_scenario').catch(() => '')) === 'codex';
     const cmd = codex ? 'codex --no-daemon --dangerously-bypass-hook-trust'
       : `claude --setting-sources project --permission-mode acceptEdits --settings ${fixture}/worker-hooks.json`;
@@ -816,6 +822,16 @@ export async function runWorkersSmoke({ drafting = false, mentioning = false, or
     const worker = await until(() => workerCards()[0] || null, 600_000, 1000);
     await report('interject-card', !!worker && worker.cmd === cmd && worker.dir === work);
     if (!worker) throw new Error('no worker card');
+    if (bind) {
+      const closed = await until(() => workerCards().length === 0 || null, 1_500_000, 1000);
+      await report('bind-closed', !!closed);
+      /* the client writes its evidence after the close answers: give it
+         time before its card (and so the client) goes */
+      await pause(30_000);
+      await provider.close(orch.id);
+      await report('done', !failed, 1, 5);
+      return;
+    }
     /* the client's two later lines, as the queue holds them: a queued one
        and an interjected one, both delegated */
     const rows = s => s.mine.filter(item => item.authority?.class === 'delegated' && item.mode === 'chain');

@@ -1,5 +1,5 @@
 {
-  "_comment": "The words a worker report's fields.status may carry: mcp/reports.rs STATUS_WORDS and the adapter's REPORT_STATUS schema enum are both held to this list.",
+  "_comment": "The words a worker report's fields.status may carry: mcp/reports.rs STATUS_WORDS and the adapter's REPORT_STATUS schema enum are both held to this list; close_modes and bind_modes likewise hold the adapter's close_mode and bind_mode enums and the backend's CloseMode and BindMode.",
   "status": [
     "in_progress",
     "blocked",
@@ -12,5 +12,9 @@
     "episode",
     "instance",
     "gone"
+  ],
+  "bind_modes": [
+    "episode",
+    "instance"
   ]
 }

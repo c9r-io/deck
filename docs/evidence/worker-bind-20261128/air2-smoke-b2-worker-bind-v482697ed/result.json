@@ -1,0 +1,111 @@
+{
+  "run": "v482697ed",
+  "root": "/private/tmp/deck-verify-v482697ed",
+  "socket": "/private/tmp/deck-verify-v482697ed/t/tmux-501/deck-smoke-v482697ed",
+  "mode": "worker-bind",
+  "head": "c6aa524e",
+  "dirty": [
+    "M CHANGELOG.md",
+    " M CLAUDE.md",
+    " M app/SMOKE.md",
+    " M app/run.sh",
+    " M app/src-tauri/mcp-adapter/src/main.rs",
+    " M app/src-tauri/mcp-fixtures/report-status.json",
+    " M app/src-tauri/src/diagnostics.rs",
+    " M app/src-tauri/src/main.rs",
+    " M app/src-tauri/src/mcp/tests.rs",
+    " M app/src-tauri/src/mcp/wire.rs",
+    " M app/src-tauri/src/mcp/workers.rs",
+    " M app/src-tauri/src/scheduler/delivery.rs",
+    " M app/src-tauri/src/scheduler/mod.rs",
+    " M app/src-tauri/src/scheduler/ops.rs",
+    " M app/src-tauri/src/scheduler/review.rs",
+    " M app/src-tauri/src/scheduler/select.rs",
+    " M app/src-tauri/src/scheduler/tests.rs",
+    " M app/src-tauri/src/storage.rs",
+    " M app/ui/js/i18n/de.js",
+    " M app/ui/js/i18n/en.js",
+    " M app/ui/js/i18n/es.js",
+    " M app/ui/js/i18n/ja.js",
+    " M app/ui/js/i18n/ko.js",
+    " M app/ui/js/i18n/zh-Hans.js",
+    " M app/ui/js/queue-review.js",
+    " M app/ui/test/fixtures/smoke-manifest.json",
+    " M app/ui/test/smoke-manifest.test.mjs",
+    " M app/ui/test/wk-smoke.mjs",
+    " M app/ui/test/workers-smoke.mjs",
+    " M docs/mcp.md",
+    "?? docs/evidence/worker-bind-20261128/",
+    "?? research_notes/",
+    "?? scripts/mcp-bind-e2e.py"
+  ],
+  "binMtime": "2026-11-29 00:04:49",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "3",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "访达",
+  "version": "0.8.46",
+  "codexVersion": "codex-cli 0.169.0",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-v482697ed/experiment.json"
+  ],
+  "caffeinatePid": "9983",
+  "appPid": "9997",
+  "registerApp": [
+    0,
+    "registered process pid 9997 started Sun Nov 29 00:21:26 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 10019 started Sun Nov 29 00:21:28 2026"
+  ],
+  "operator": {
+    "panesAtArmed": [
+      "deck-orch-i-tya6 %0 zsh"
+    ],
+    "clientTypedAt": 0.9,
+    "evidence": "{\n \"startedAt\": 1795879295,\n \"tag\": \"v482697ed\",\n \"steps\": [\n  {\n   \"name\": \"initialize\",\n   \"ok\": true,\n   \"at\": 0.0\n  },\n  {\n   \"name\": \"tools-list-bind-mode\",\n   \"ok\": true,\n   \"at\": 0.0,\n   \"count\": 42,\n   \"modes\": \"{\\\"deck_worker_interject\\\": [\\\"episode\\\", \\\"instance\\\"], \\\"deck_worker_send\\\": [\\\"episode\\\", \\\"instance\\\"]}\"\n  },\n  {\n   \"name\": \"caller-is-a-card\",\n   \"ok\": true,\n   \"at\": 0.0\n  }\n ],\n \"failures\": []\n}",
+    "orchPane": "(⎈|BINARY-N/A:N/A)➜  work python3 /private/tmp/deck-verify-v482697ed/scripts/mcp\n-bind-e2e.py --adapter /private/tmp/deck-verify-v482697ed/deck-smoke.app/Content\ns/MacOS/deck-mcp --socket /private/tmp/deck-verify-v482697ed/run/data/mcp-contro\nl.sock --client-id client_5f9a3ee716ad11132738a050528d9fa1 --credential-file /pr\nivate/tmp/deck-verify-v482697ed/run/data/evidence/mcp-credential-client_5f9a3ee7\n16ad11132738a050528d9fa1 --evidence /private/tmp/deck-verify-v482697ed/run/data/\nevidence/bind --tag v482697ed\nok   initialize \nok   tools-list-bind-mode count=42 modes={\"deck_worker_interject\": [\"episode\", \"instance\"], \"deck_worker_send\": [\"episode\", \"instance\"]}\nok   caller-is-a-card \n"
+  },
+  "seconds": 130,
+  "finished": true,
+  "verdict": "PASS",
+  "verdictDetail": [
+    "smoke-verdict worker-bind: PASS (5/5 expected checkpoints, 5 lines)"
+  ],
+  "checksOfInterest": [
+    "smoke-check workers-client a=1 b=0\n",
+    "smoke-check interject-armed a=1 b=0\n",
+    "smoke-check interject-card a=1 b=0\n",
+    "smoke-check bind-closed a=1 b=0\n",
+    "smoke-check done a=1 b=5\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 9997 started Sun Nov 29 00:21:26 2026: running\ntmux-server pid 10019 started Sun Nov 29 00:21:28 2026 socket /private/tmp/deck-verify-v482697ed/t/tmux-501/deck-smoke-v482697ed: running"
+  ],
+  "cleanup": [
+    0,
+    "process pid 9997 started Sun Nov 29 00:21:26 2026: running\ntmux-server pid 10019 started Sun Nov 29 00:21:28 2026 socket /private/tmp/deck-verify-v482697ed/t/tmux-501/deck-smoke-v482697ed: running\nstopped tmux-server pid 10019\nstopped process pid 9997"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 2400",
+  "signalTimeline": [
+    "1795879315 [queue] first-send stabilization started for sess-b3e66",
+    "1795879321 [queue] first-send stabilization finished for sess-b3e66 (6462ms)",
+    "1795879322 [queue] sent to sess-b3e66 (222B, mode at, approved delegated step, first send without readiness confirmation)",
+    "1795879322 [agent-status] codex working s=sess-b3e66 target=1 v=2 e=1",
+    "1795879347 [agent-status] codex turn-done s=sess-b3e66 target=1 v=2 e=2",
+    "1795879347 [mcp] deck_worker_interject refused s=sess-b3e66 code=EPISODE_MOVED state=turn-done e=2",
+    "1795879347 [mcp] refused deck_worker_interject code=EPISODE_MOVED relation=-",
+    "1795879388 [queue] sent to sess-b3e66 (109B, mode chain, approved delegated step)",
+    "1795879388 [agent-status] codex working s=sess-b3e66 target=1 v=2 e=3",
+    "1795879391 [mcp] refused deck_worker_interject code=LAST_LINE_MOVED relation=-",
+    "1795879392 [agent-status] codex turn-done s=sess-b3e66 target=1 v=2 e=4"
+  ],
+  "codexAuthRemoved": "removed",
+  "rootTrashed": true,
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

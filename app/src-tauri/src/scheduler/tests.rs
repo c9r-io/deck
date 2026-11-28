@@ -53,6 +53,7 @@ fn qi(id: &str, mode: &str) -> QueueItem {
         readiness_override: None,
         channel_first_send: None,
         interject: None,
+        worker_target: None,
     }
 }
 
@@ -680,6 +681,7 @@ fn add_validation_rejects_bad_combinations() {
         channel_first_send: None,
         channel_first_send_granted: None,
         interject: None,
+        worker_target: None,
     };
     assert!(validate_add(&base()).is_ok());
     let mut a = base();
@@ -792,6 +794,7 @@ fn add_validation_covers_quiet_and_start() {
         channel_first_send: None,
         channel_first_send_granted: None,
         interject: None,
+        worker_target: None,
     };
     let mut a = base();
     a.quiet_secs = Some(MIN_QUIET_SECS);
@@ -2005,6 +2008,7 @@ fn add_args(session: &str, text: &str) -> QueueAddArgs {
         channel_first_send: None,
         channel_first_send_granted: None,
         interject: None,
+        worker_target: None,
     }
 }
 
@@ -6167,6 +6171,7 @@ fn the_override_rides_the_external_head_row_only() {
         channel_first_send: None,
         channel_first_send_granted: None,
         interject: None,
+        worker_target: None,
     };
     assert!(validate_add(&args).is_ok());
     let mut ordinary = qs(vec![]);
@@ -11929,4 +11934,148 @@ fn the_worker_line_bound_holds_under_concurrent_admission() {
         )
         .is_err());
     }
+}
+
+fn bound_target() -> WorkerTarget {
+    WorkerTarget {
+        server_pid: 10,
+        session_id: "$1".into(),
+        pane_id: "%1".into(),
+        pane_pid: 20,
+        pid: 30,
+        start_seconds: 40,
+        start_micros: 50,
+    }
+}
+
+fn bound_row(id: &str) -> QueueItem {
+    let mut row = due_at(id, "s");
+    row.worker_target = Some(bound_target());
+    row
+}
+
+/// A worker line bound to an agent instance (`QueueItem.worker_target`):
+/// while that instance is in front of its pane the row is selected like
+/// any other; once it is not, the row holds at `instance-gone` whatever
+/// the session's observation says, an absent session included.
+#[test]
+fn a_line_bound_to_a_gone_instance_holds_at_instance_gone() {
+    let q = qs(vec![bound_row("a")]);
+    TARGET_STANDS_FOR_TESTS.with(|c| c.set(Some(true)));
+    assert_eq!(ids(&select_due(&q, NOW, 720, &seen(NOW - 400))), ["a"]);
+    TARGET_STANDS_FOR_TESTS.with(|c| c.set(Some(false)));
+    assert!(select_due(&q, NOW, 720, &seen(NOW - 400)).is_empty());
+    assert_eq!(
+        hold_reason(&q.items[0], None),
+        Some(Hold::InstanceGone),
+        "an absent session holds it too: it is never started for this line"
+    );
+    assert_eq!(stage_of(&q, "a", &seen(NOW - 400)), "instance-gone");
+    TARGET_STANDS_FOR_TESTS.with(|c| c.set(None));
+}
+
+/// The target compares the pane the paste is bound to and the foreground
+/// generation read now, field by field; nothing read proves nothing.
+#[test]
+fn a_worker_target_matches_only_its_own_pane_and_generation() {
+    let t = bound_target();
+    let pane = crate::context::PaneIdentity {
+        server_pid: 10,
+        session_id: "$1".into(),
+        window_id: "@1".into(),
+        pane_id: "%1".into(),
+        pane_pid: 20,
+    };
+    let generation = crate::agent_status::ForegroundGeneration::of(30, (40, 50));
+    assert!(t.matches(Some(&pane), Some(&generation)));
+    assert!(!t.matches(None, Some(&generation)));
+    assert!(!t.matches(Some(&pane), None));
+    let mut other = pane.clone();
+    other.pane_pid = 21; // the session or pane was rebuilt
+    assert!(!t.matches(Some(&other), Some(&generation)));
+    let mut other = pane.clone();
+    other.server_pid = 11; // another tmux server
+    assert!(!t.matches(Some(&other), Some(&generation)));
+    // another program in front, the same pid reused, or a re-entry
+    for g in [
+        crate::agent_status::ForegroundGeneration::of(31, (40, 50)),
+        crate::agent_status::ForegroundGeneration::of(30, (41, 50)),
+        crate::agent_status::ForegroundGeneration::of(30, (40, 51)),
+    ] {
+        assert!(!t.matches(Some(&pane), Some(&g)));
+    }
+}
+
+/// `fire_item` is every send's last step (automatic, send-now, a retry or
+/// a recovered row): a bound line whose instance is not in front is never
+/// pasted, and its failure is final — no backoff retry can reach that
+/// instance again.
+#[test]
+fn a_bound_line_is_never_pasted_into_another_instance() {
+    let mut row = bound_row("a");
+    row.binding = Some(crate::context::PaneIdentity {
+        server_pid: 10,
+        session_id: "$1".into(),
+        window_id: "@1".into(),
+        pane_id: "%1".into(),
+        pane_pid: 20,
+    });
+    row.delivery = Some("d1".into());
+    TARGET_STANDS_FOR_TESTS.with(|c| c.set(Some(false)));
+    let refused = fire_item(&row).unwrap_err();
+    assert_eq!(refused.message(), INSTANCE_GONE);
+    TARGET_STANDS_FOR_TESTS.with(|c| c.set(None));
+    // the instance leaves between the selection and the paste
+    let qm = Mutex::new(qs(vec![bound_row("a")]));
+    TARGET_STANDS_FOR_TESTS.with(|c| c.set(Some(true)));
+    let res = send_test(
+        &qm,
+        &AtomicBool::new(false),
+        "s",
+        720,
+        &HashMap::new(),
+        &|_: &QueueItem| Err(DeckError::new(ErrorKind::ContextChanged, INSTANCE_GONE)),
+        &ok_persist,
+    );
+    TARGET_STANDS_FOR_TESTS.with(|c| c.set(None));
+    assert_eq!(
+        res,
+        SendResult::Failed {
+            session: "s".into(),
+            gave_up: true
+        }
+    );
+    let q = qm.lock_or_recover();
+    let it = &q.items[0];
+    assert!(item_dead(it), "never retried on its own");
+    assert_eq!(it.last_error.as_deref(), Some("instance-gone"));
+    assert!(
+        q.pending.is_empty(),
+        "nothing was sent: no uncertain delivery"
+    );
+    assert_eq!(it.worker_target, Some(bound_target()), "never rebound");
+}
+
+/// A bound line's session is never started for it: the instance went with
+/// the session, and a new agent is not its target.
+#[test]
+fn a_bound_line_never_starts_its_session() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let started = AtomicU32::new(0);
+    let ops = StartOps {
+        exists: &|_| false,
+        start: &|_| {
+            started.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        },
+        probe: &|_, _| ProbeResult::blocked(ContextStatus::Unavailable, ContextCode::ProbeFailed),
+        sleep: &|_| {},
+    };
+    let row = bound_row("a");
+    let Prepared::Probe(result) = prepare_context_with(&row, &|| false, &ops) else {
+        panic!("a bound line never reports a start");
+    };
+    assert_eq!(result.status, ContextStatus::SessionReplaced);
+    assert_eq!(result.code, ContextCode::SessionMissing);
+    assert_eq!(started.load(Ordering::SeqCst), 0);
 }

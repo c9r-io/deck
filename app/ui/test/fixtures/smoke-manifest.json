@@ -1083,6 +1083,16 @@
         "workers-exception": { "failureOnly": true }
       }
     },
+    "worker-bind": {
+      "terminal": "done",
+      "checks": {
+        "workers-client": {},
+        "interject-armed": {},
+        "interject-card": {},
+        "bind-closed": {},
+        "workers-exception": { "failureOnly": true }
+      }
+    },
     "worker-close": {
       "terminal": "done",
       "checks": {

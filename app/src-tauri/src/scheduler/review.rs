@@ -36,6 +36,8 @@
 //!   agy-trust (an agy row waits for the user to trust its folder in agy),
 //!   agy-working (an agy row waits for agy's turn to end: agy reports no
 //!   question, so a working agy may be asking one),
+//!   instance-gone (a worker line bound to an agent instance that no longer
+//!   runs in its pane: never sent to another, cancel it),
 //!   human, unknown) with its observation time and whether the row carries content
 //!   authority, so the webview never derives readiness from hook state.
 //! - `delivery_waits` is the same projection read for attention: per session,
@@ -543,6 +545,7 @@ pub(crate) fn plan_item(
             Hold::Human => "human",
             Hold::AgyUntrusted => "agy-trust",
             Hold::AgyWorking => "agy-working",
+            Hold::InstanceGone => "instance-gone",
         }
     } else if i.mode == "chain" && !interjected && quiet_remaining.is_some_and(|s| s > 0) {
         "quiet"

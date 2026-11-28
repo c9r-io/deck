@@ -1,0 +1,96 @@
+{
+ "startedAt": 1795879295,
+ "tag": "v482697ed",
+ "steps": [
+  {
+   "name": "initialize",
+   "ok": true,
+   "at": 0.0
+  },
+  {
+   "name": "tools-list-bind-mode",
+   "ok": true,
+   "at": 0.0,
+   "count": 42,
+   "modes": "{\"deck_worker_interject\": [\"episode\", \"instance\"], \"deck_worker_send\": [\"episode\", \"instance\"]}"
+  },
+  {
+   "name": "caller-is-a-card",
+   "ok": true,
+   "at": 0.0
+  },
+  {
+   "name": "worker-started",
+   "ok": true,
+   "at": 1.1,
+   "code": null
+  },
+  {
+   "name": "report-woke",
+   "ok": true,
+   "at": 30.6,
+   "reason": "report",
+   "episode": 1,
+   "state": "working",
+   "instance": true
+  },
+  {
+   "name": "worker-stop-after-report",
+   "ok": true,
+   "at": 52.7,
+   "episode": 2,
+   "same_instance": true
+  },
+  {
+   "name": "episode-bound-refused",
+   "ok": true,
+   "at": 52.7,
+   "code": "EPISODE_MOVED",
+   "queued": false,
+   "expected": 1,
+   "current": 2,
+   "current_state": "turn-done"
+  },
+  {
+   "name": "instance-bound-accepted",
+   "ok": true,
+   "at": 52.7,
+   "code": null,
+   "state": "committed"
+  },
+  {
+   "name": "replay-is-the-same-operation",
+   "ok": true,
+   "at": 52.7
+  },
+  {
+   "name": "delivery-exact",
+   "ok": true,
+   "at": 93.6,
+   "state": "delivered",
+   "seconds": 40.9
+  },
+  {
+   "name": "worker-followed-the-line",
+   "ok": true,
+   "at": 96.6,
+   "episode_file": false
+  },
+  {
+   "name": "old-line-base-refused",
+   "ok": true,
+   "at": 96.7,
+   "code": "LAST_LINE_MOVED"
+  },
+  {
+   "name": "closed-by-instance",
+   "ok": true,
+   "at": 99.8,
+   "code": null,
+   "state": "committed"
+  }
+ ],
+ "failures": [],
+ "stderrTail": "",
+ "finished": true
+}

@@ -282,7 +282,11 @@ evolution; it makes scope expansion deliberate.
   its list that wait for nothing but theirs; every other hold and the
   session gap still apply, it stays bound to that orchestrator card until
   sent, and agy takes none (`scheduler/select.rs` "Interjected lines",
-  `mcp/workers.rs` `queue_line`); it starts only the worker types the user listed (Codex only
+  `mcp/workers.rs` `queue_line`); a worker line may instead of an episode
+  be bound to the agent instance and newest line its client saw
+  (`bind_mode: instance`, 2026-11-28): a target proof, never readiness or
+  authority, and it goes to that exact instance or nowhere (never rebound,
+  its session never restarted for it: `scheduler::WorkerTarget`); it starts only the worker types the user listed (Codex only
   with `--no-daemon`; agy, approved 2026-11-23, only while Deck's agy hooks
   entry is on, its lines typed like Claude's under agy's own
   first-interaction gate, `agent_agy.rs`, `scheduler/select.rs` `row_agy`;

@@ -460,6 +460,7 @@ const SMOKE_CHECKS: &[&str] = &[
     "interject-card",
     "interject-order",
     "interject-held",
+    "bind-closed",
     "close-armed",
     "close-card",
     "close-label",

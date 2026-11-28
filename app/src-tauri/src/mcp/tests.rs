@@ -9132,6 +9132,347 @@ fn an_agent_leaves_notes_only_in_its_own_card() {
     drop(root);
 }
 
+/// A worker line bound to the agent instance (`bind_mode: instance`,
+/// `workers.rs` `queue_line`): the field symptom was a Codex worker's own
+/// turn ending (`turn-done`, a new episode) between the orchestrator's read
+/// and its interjection, refused with `EPISODE_MOVED` and sent once read
+/// again. The episode-bound line keeps that refusal exactly (nothing is
+/// queued, and the answer says so); the instance-bound one passes the
+/// same turn ending, and is refused only for another instance, a shell in
+/// front, a moved line base or an ill-formed binding. Replay comes first,
+/// and the default mode keeps an old request's identity.
+#[test]
+fn a_line_bound_to_the_instance_survives_the_turn_ending_and_nothing_else() {
+    let (runtime, _runner, root) = fixture("interject-instance", "svc_test");
+    let _board = crate::documents::test_door::hold();
+    let call = |card: Option<&str>, tool: &str, args: Value| {
+        let _as = super::origin::enter_as(card);
+        route(&runtime, request(tool, args))
+    };
+    set_permissions(&runtime, false, true, false);
+    let worker = |card: &str, lines: &[&str]| Worker {
+        card_id: card.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{card}"),
+        automation_id: "worker-type:codex".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: Some("OA".into()),
+        reported: 0,
+        model: None,
+        lines: lines.iter().map(|l| (*l).to_owned()).collect(),
+        acknowledged: None,
+    };
+    runtime
+        .write(|doc| {
+            doc.workers
+                .extend([worker("W1", &[]), worker("W2", &["op_l1"])]);
+            Ok(())
+        })
+        .unwrap();
+    let card = |id: &str, cmd: &str| {
+        json!({"id": id, "session": format!("deck-{}", id.to_lowercase()), "title": id,
+               "cmd": cmd, "dir": "/tmp", "projectId": "P1", "columnId": "C1"})
+    };
+    crate::documents::test_door::commit(
+        json!({"projects": [], "cards": [
+            card("OA", ""), card("W1", "codex --no-daemon"), card("W2", "codex --no-daemon")
+        ]}),
+        true,
+    );
+    let observe = |state: &'static str, episode: u64, instance: u64, shell: bool| {
+        let seen: HashMap<String, Seen> = [
+            (
+                "deck-w1".to_owned(),
+                instance_seen_for_tests(Some(state), episode, 0x11, instance, shell),
+            ),
+            (
+                "deck-w2".to_owned(),
+                instance_seen_for_tests(Some(state), episode, 0x12, 0x31, false),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(seen)));
+    };
+    let token = token_for_tests(0x11, 0x21);
+    let code = |out: &Value| out["error"]["code"].as_str().unwrap_or_default().to_owned();
+    let by_episode = |request: &str, episode: u64| {
+        json!({"request_id": request, "send_sequence": 0, "card_id": "W1",
+               "after_episode": episode, "text": "also run the cheap check"})
+    };
+    let by_instance = |request: &str, token: &str, last: Value| {
+        json!({"request_id": request, "send_sequence": 0, "card_id": "W1",
+               "bind_mode": "instance", "instance": token, "last_line": last,
+               "text": "also run the cheap check"})
+    };
+    // the orchestrator read the card while its agent worked (episode 65)...
+    observe("working", 65, 0x21, false);
+    // ...and the worker's own turn ended (another pane took 66..86)
+    observe("turn-done", 87, 0x21, false);
+    let moved = call(Some("OA"), "deck_worker_interject", by_episode("e1", 65));
+    assert_eq!(code(&moved), "EPISODE_MOVED", "{moved}");
+    assert_eq!(
+        moved["error"]["queued"], false,
+        "a clear refusal: nothing was queued"
+    );
+    assert_eq!(moved["error"]["stage"], "admission");
+    assert_eq!(moved["error"]["afterEpisode"], 65);
+    assert_eq!(moved["error"]["currentEpisode"], 87);
+    assert_eq!(moved["error"]["currentState"], "turn-done");
+    // bound to the instance and the line base it saw: the turn ending does
+    // not refuse it (in this test, the next step is the queue, which the
+    // fixture has none of)
+    let passed = call(
+        Some("OA"),
+        "deck_worker_interject",
+        by_instance("i1", &token, json!(null)),
+    );
+    assert_eq!(code(&passed), "CONTEXT_CHANGED", "{passed}");
+    assert_eq!(passed["error"]["message"], "Deck's queue is not available");
+    // nor a new turn of the same agent, nor its needs-input word at this
+    // step (the queue's holds decide those)
+    observe("working", 140, 0x21, false);
+    assert_eq!(
+        code(&call(
+            Some("OA"),
+            "deck_worker_send",
+            by_instance("s1", &token, json!(null))
+        )),
+        "CONTEXT_CHANGED"
+    );
+    // another instance in front: refused, with what is there now
+    observe("working", 141, 0x22, false);
+    let other = call(
+        Some("OA"),
+        "deck_worker_interject",
+        by_instance("i2", &token, json!(null)),
+    );
+    assert_eq!(code(&other), "INSTANCE_CHANGED", "{other}");
+    assert_eq!(other["error"]["queued"], false);
+    assert_eq!(
+        other["error"]["currentInstance"],
+        token_for_tests(0x11, 0x22)
+    );
+    assert_eq!(other["error"]["agentRunning"], true);
+    // the pane's own shell in front (the agent exited): no agent takes it
+    observe("turn-done", 141, 0x21, true);
+    let shell = call(
+        Some("OA"),
+        "deck_worker_interject",
+        by_instance("i3", &token, json!(null)),
+    );
+    assert_eq!(code(&shell), "INSTANCE_CHANGED", "{shell}");
+    assert_eq!(shell["error"]["agentRunning"], false);
+    // the session gone: nothing to bind to
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = Some(Some(HashMap::new())));
+    assert_eq!(
+        code(&call(
+            Some("OA"),
+            "deck_worker_interject",
+            by_instance("i4", &token, json!(null))
+        )),
+        "INSTANCE_CHANGED"
+    );
+    observe("working", 142, 0x21, false);
+    // the line base: W1 has none; naming one it does not have is refused,
+    // and so is null for W2, which has one
+    let base = call(
+        Some("OA"),
+        "deck_worker_interject",
+        by_instance("i5", &token, json!("op_l1")),
+    );
+    assert_eq!(code(&base), "LAST_LINE_MOVED", "{base}");
+    assert_eq!(base["error"]["queued"], false);
+    assert!(base["error"]["currentLastLine"].is_null());
+    let mut w2 = by_instance("i6", &token_for_tests(0x12, 0x31), json!(null));
+    w2["card_id"] = json!("W2");
+    let w2_null = call(Some("OA"), "deck_worker_interject", w2.clone());
+    assert_eq!(code(&w2_null), "LAST_LINE_MOVED");
+    assert_eq!(w2_null["error"]["currentLastLine"], "op_l1");
+    w2["last_line"] = json!("op_l1");
+    w2["request_id"] = json!("i7");
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_interject", w2)),
+        "CONTEXT_CHANGED"
+    );
+    // ill-formed bindings, each refused before anything is read
+    for bad in [
+        json!({"request_id": "b1", "send_sequence": 0, "card_id": "W1", "bind_mode": "instance",
+               "instance": token, "text": "x"}),
+        json!({"request_id": "b2", "send_sequence": 0, "card_id": "W1", "bind_mode": "instance",
+               "instance": token, "last_line": null, "after_episode": 3, "text": "x"}),
+        json!({"request_id": "b3", "send_sequence": 0, "card_id": "W1", "bind_mode": "instance",
+               "instance": "nope", "last_line": null, "text": "x"}),
+        json!({"request_id": "b4", "send_sequence": 0, "card_id": "W1", "bind_mode": "instance",
+               "last_line": null, "text": "x"}),
+        json!({"request_id": "b5", "send_sequence": 0, "card_id": "W1", "text": "x"}),
+        json!({"request_id": "b6", "send_sequence": 0, "card_id": "W1", "after_episode": 3,
+               "instance": token, "text": "x"}),
+        json!({"request_id": "b7", "send_sequence": 0, "card_id": "W1", "bind_mode": "latest",
+               "text": "x"}),
+    ] {
+        let out = call(Some("OA"), "deck_worker_interject", bad.clone());
+        assert_eq!(code(&out), "INVALID_ARGUMENTS", "{bad} → {out}");
+    }
+    // identity: an old client's request (no bind_mode) hashes as before the
+    // choice existed, and `bind_mode: episode` hashes as omitted
+    let old = json!({"request_id": "h1", "send_sequence": 0, "card_id": "W1",
+                     "after_episode": 7, "text": "t"});
+    let parsed: WorkerSendArgs = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(
+        request_hash("deck_worker_interject", &parsed),
+        request_hash("deck_worker_interject", &old),
+        "the request hash of an old client's line is unchanged"
+    );
+    // replay before every precondition: an accepted instance-bound line
+    // answers as itself even once its instance is gone and its base moved
+    let mut accepted = by_instance("r1", &token, json!(null));
+    let recorded_args: WorkerSendArgs = serde_json::from_value(accepted.clone()).unwrap();
+    runtime
+        .write(|doc| {
+            doc.operations.push(Operation {
+                operation_id: "op_r1".into(),
+                request_id: "r1".into(),
+                request_hash: request_hash("deck_worker_interject", &recorded_args),
+                result: Some(
+                    json!({"cardId": "W1", "mode": "interject", "bindMode": "instance",
+                                    "instance": token, "lastLine": null,
+                                    "orchestratorCardId": "OA"}),
+                ),
+                ..operation(WORKER_SEND_KIND, "committed")
+            });
+            push_line(doc, "client_a", "W1", "op_r1");
+            Ok(())
+        })
+        .unwrap();
+    observe("working", 150, 0x23, false);
+    let replayed = call(Some("OA"), "deck_worker_interject", accepted.clone());
+    assert_eq!(replayed["operationId"], "op_r1", "{replayed}");
+    assert_eq!(replayed["result"]["bindMode"], "instance");
+    // the same request id with another binding is another decision
+    accepted["instance"] = json!(token_for_tests(0x11, 0x23));
+    assert_eq!(
+        code(&call(Some("OA"), "deck_worker_interject", accepted)),
+        "REQUEST_ID_CONFLICT"
+    );
+    // the words are the shared list the adapter's schema enum is held to
+    let fixture = mcp_fixture!("report-status.json");
+    let words: Vec<String> = serde_json::from_value(fixture["bind_modes"].clone()).unwrap();
+    assert_eq!(words, ["episode", "instance"]);
+    for word in &words {
+        assert!(
+            serde_json::from_value::<BindMode>(json!(word)).is_ok(),
+            "{word}"
+        );
+    }
+    // and an explicit `bind_mode: episode` is the old request itself
+    let recorded_old: WorkerSendArgs = serde_json::from_value(by_episode("r2", 150)).unwrap();
+    runtime
+        .write(|doc| {
+            doc.operations.push(Operation {
+                operation_id: "op_r2".into(),
+                request_id: "r2".into(),
+                request_hash: request_hash("deck_worker_interject", &recorded_old),
+                result: Some(
+                    json!({"cardId": "W1", "afterEpisode": 150, "mode": "interject",
+                                    "orchestratorCardId": "OA"}),
+                ),
+                ..operation(WORKER_SEND_KIND, "committed")
+            });
+            Ok(())
+        })
+        .unwrap();
+    let mut explicit = by_episode("r2", 150);
+    explicit["bind_mode"] = json!("episode");
+    assert_eq!(
+        call(Some("OA"), "deck_worker_interject", explicit)["operationId"],
+        "op_r2"
+    );
+    OBSERVE_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
+    drop(root);
+}
+
+/// The line base is compared where the line is appended, in one ledger
+/// write: of lines written concurrently after the same base for one card,
+/// exactly one is accepted and the others are told the base moved; other
+/// cards' lines are unaffected; and an accepted line is never refused later
+/// because a newer one moved the base (nothing compares it again).
+#[test]
+fn of_two_lines_after_one_base_exactly_one_is_appended() {
+    let (runtime, _runner, root) = fixture("line-base", "svc_test");
+    let worker = |card: &str| Worker {
+        card_id: card.into(),
+        client_id: "client_a".into(),
+        operation_id: format!("op_{card}"),
+        automation_id: "worker-type:codex".into(),
+        created_at: 1,
+        held: false,
+        orchestrator: Some("OA".into()),
+        reported: 0,
+        model: None,
+        lines: Vec::new(),
+        acknowledged: None,
+    };
+    runtime
+        .write(|doc| {
+            doc.workers.extend([worker("W1"), worker("W2")]);
+            Ok(())
+        })
+        .unwrap();
+    let results: Vec<(String, bool)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let runtime = &runtime;
+                scope.spawn(move || {
+                    let card = if n % 2 == 0 { "W1" } else { "W2" };
+                    let op = format!("op_{n}");
+                    let ok = runtime
+                        .write(|doc| {
+                            Ok(line_base(doc, "client_a", card, None)
+                                .map(|()| push_line(doc, "client_a", card, &op))
+                                .is_ok())
+                        })
+                        .unwrap();
+                    (card.to_owned(), ok)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for card in ["W1", "W2"] {
+        let accepted = results.iter().filter(|(c, ok)| c == card && *ok).count();
+        assert_eq!(accepted, 1, "{card}: {results:?}");
+    }
+    // a later line after the newest base is accepted; the first one stays
+    // accepted (its record is untouched)
+    let (first, newest) = runtime
+        .read(|doc| {
+            let w = doc.workers.iter().find(|w| w.card_id == "W1").unwrap();
+            (w.lines[0].clone(), w.lines.last().cloned())
+        })
+        .unwrap();
+    runtime
+        .write(|doc| {
+            line_base(doc, "client_a", "W1", newest.as_ref()).unwrap();
+            push_line(doc, "client_a", "W1", "op_later");
+            Ok(())
+        })
+        .unwrap();
+    let lines = runtime
+        .read(|doc| {
+            doc.workers
+                .iter()
+                .find(|w| w.card_id == "W1")
+                .unwrap()
+                .lines
+                .clone()
+        })
+        .unwrap();
+    assert_eq!(lines, vec![first, "op_later".to_owned()]);
+    drop(root);
+}
+
 /// `deck_worker_interject` (`workers.rs`, approved 2026-11-27): only the
 /// orchestrator card that started a worker card may interject into it —
 /// proven from the kernel, never named by the client — and only into an

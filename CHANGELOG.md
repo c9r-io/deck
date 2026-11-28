@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Interjecting into a worker that is ending its turn: a line can now be
+  bound to the worker's agent instance and the newest line you saw
+  (`bind_mode: "instance"` with `instance` and `last_line`) instead of an
+  episode, so the worker's own Stop right after its report no longer
+  refuses it (`EPISODE_MOVED`, which made orchestrators read and retry).
+  The line is refused only when another program runs there
+  (`INSTANCE_CHANGED`) or a newer line was accepted (`LAST_LINE_MOVED`), and
+  once queued it goes to that instance or nowhere (stage `instance-gone`;
+  never to a new agent, never by send-now or retry). Every other check
+  (needs-input, your takeover, first-send, Codex trust) is unchanged; the
+  default episode binding behaves as before and now says
+  `"queued": false` with the episode and state Deck saw. queue.json takes
+  v15 while such a line waits, so an older Deck leaves it untouched.
 - Closing a worker card: `after_episode: 0` no longer closes a card whose
   agent is still running but which Deck cannot observe (after a Deck
   restart); every close mode stands on the same checks — the program in

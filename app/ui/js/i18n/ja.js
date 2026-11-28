@@ -1168,6 +1168,7 @@ const dictionary = {
   "queue.stage.agyTrust": "保留中 · agy がこのフォルダーを信頼するか確認しています。カードを開いて agy で回答してください。信頼すると、このステップは自動で送信されます",
   "queue.stage.piHandover": "Pi を待機中 · 拡張機能が接続し、現在の実行が終わると、このステップは Deck の拡張機能を通じて Pi に渡されます",
   "queue.stage.agyWorking": "agy を待機中 · agy は作業中で、あなたに質問しても Deck には知らせません。そのため、このステップは agy がターンを終えてから送信されます。agy がカードで回答を待っている場合は、そこで回答してください",
+  "queue.stage.instanceGone": "未送信 · このステップはこのカードで当時動いていたエージェント宛てで、そのエージェントはもうここで動いていません。Deck は今動いているものには送りません。削除するか、書き直してください",
   "queue.stage.human": "待機中 · このカードを引き継いでいます。返した後に送信されます（「今すぐ送信」も使えます）",
   "queue.history.approved": "承認済みのステップ {step}",
   "queue.history.approvedMessage": "Slack のメッセージ内容を含む承認済みのステップ {step}",

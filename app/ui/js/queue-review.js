@@ -47,6 +47,7 @@ const stageKeys = {
   'pi-input-unverified': 'queue.stage.piInputUnverified',
   'agy-trust': 'queue.stage.agyTrust',
   'agy-working': 'queue.stage.agyWorking',
+  'instance-gone': 'queue.stage.instanceGone',
   'pi-handover': 'queue.stage.piHandover',
   human: 'queue.stage.human',
   'authority-unverified': 'queue.stage.authorityUnverified',

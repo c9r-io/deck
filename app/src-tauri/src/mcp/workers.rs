@@ -52,8 +52,30 @@
 //!   external path (`scheduler::worker_queue_add`), its authority the
 //!   client's delegation (`ContentClass::Delegated`). It refuses, never
 //!   holds, when the card's episode is not the one the client named
-//!   (`EPISODE_MOVED`): Signal may refuse a send, never release one. Every
-//!   scheduler hold still decides when it goes out.
+//!   (`EPISODE_MOVED`, nothing queued): Signal may refuse a send, never
+//!   release one. Every scheduler hold still decides when it goes out.
+//!   The episode is Deck's one process-wide observation counter
+//!   (`agent_status` `NEXT_EPISODE`), never a per-card turn count, and a
+//!   report does not end a turn: the worker's own Stop after its report is
+//!   enough to move it (the 2026-11-28 field case: a Codex worker at 65,
+//!   one `turn-done` drawn as 87, three interjections refused and sent once
+//!   read again). So a line may instead be bound to the agent instance
+//!   (`bind_mode: instance`, `BoundTo`): the `instance` token the views
+//!   carry and the card's `lastLine` (explicitly null when it has none).
+//!   Before it is accepted the token must be the pane's current
+//!   foreground generation and no shell (`observe_target`;
+//!   `INSTANCE_CHANGED`), and the line base must be the card's newest
+//!   accepted line, compared in the same ledger write that appends this
+//!   line (`line_base`, `push_line`; `LAST_LINE_MOVED`), so of two lines
+//!   after one base one wins; it is never compared again (the accepted
+//!   line moves the base itself). The instance's own turns refuse nothing.
+//!   The row carries the kernel facts (`scheduler::WorkerTarget`), which
+//!   the queue's add and every send check again: it goes to that instance
+//!   or nowhere, never rebound (stage `instance-gone`). Neither mode is a
+//!   force: needs-input, the human hold, the delegation, the orchestrator
+//!   binding and every readiness rule still decide. Replay comes before
+//!   every precondition, and an omitted (or `episode`) mode hashes as an
+//!   old client's request.
 //! - `deck_worker_interject` is the same line without the chain's quiet
 //!   time (`queue_line` with `Line::Interject`): only from the orchestrator
 //!   card that started the card (`opened_by`, never `own_card`'s wider
@@ -643,6 +665,79 @@ fn instance_key(parts: &str) -> u64 {
 fn instance_token(seen: &Seen) -> Option<String> {
     (seen.pane != 0 && seen.instance != 0)
         .then(|| format!("{:016x}{:016x}", seen.pane, seen.instance))
+}
+
+/// The token of a pane key and an instance key (`instance_token`).
+fn instance_token_of(pane: u64, instance: u64) -> Option<String> {
+    (pane != 0 && instance != 0).then(|| format!("{pane:016x}{instance:016x}"))
+}
+
+/// The card's Signal-target pane and its foreground generation as kernel
+/// and tmux facts, with the keys a client's token names
+/// (`observe_target`).
+pub(super) struct TargetNow {
+    pane: u64,
+    instance: u64,
+    shell: bool,
+    target: crate::scheduler::WorkerTarget,
+}
+
+/// One listing of `session`'s Signal-target pane and the generation in
+/// front of it (the same keys `seen_in` folds), for a line bound to an
+/// instance. Outer `None`: tmux could not be read; inner: the session has
+/// no single target pane, or its foreground could not be read.
+fn observe_target(session: &str) -> Option<Option<TargetNow>> {
+    #[cfg(test)]
+    if let Some(forced) = OBSERVE_FOR_TESTS.with(|cell| cell.borrow().clone()) {
+        return forced.map(|seen| {
+            seen.get(session)
+                .filter(|s| s.pane != 0 && s.instance != 0)
+                .map(|s| TargetNow {
+                    pane: s.pane,
+                    instance: s.instance,
+                    shell: s.shell,
+                    target: crate::scheduler::WorkerTarget {
+                        server_pid: 1,
+                        session_id: "$1".into(),
+                        pane_id: "%1".into(),
+                        pane_pid: 2,
+                        pid: 3,
+                        start_seconds: s.instance,
+                        start_micros: 0,
+                    },
+                })
+        });
+    }
+    let rows = crate::tmux::list_panes().ok()?;
+    let targets = crate::agent_status::signal_targets(&rows);
+    let Some(row) = targets.get(session) else {
+        return Some(None);
+    };
+    let pane = instance_key(&format!(
+        "pane\0{}\0{}\0{}\0{}",
+        row.server_pid, row.session_id, row.pane_id, row.pane_pid
+    ));
+    let Some(generation) = crate::agent_status::live_generation(row.pane_pid) else {
+        return Some(None);
+    };
+    let (seconds, micros) = generation.birth();
+    Some(Some(TargetNow {
+        pane,
+        instance: instance_key(&format!(
+            "instance\0{pane:016x}\0{}\0{seconds}\0{micros}",
+            generation.pid()
+        )),
+        shell: generation.pid() == row.pane_pid,
+        target: crate::scheduler::WorkerTarget {
+            server_pid: row.server_pid,
+            session_id: row.session_id.clone(),
+            pane_id: row.pane_id.clone(),
+            pane_pid: row.pane_pid,
+            pid: generation.pid(),
+            start_seconds: seconds,
+            start_micros: micros,
+        },
+    }))
 }
 
 /// A token back into its pane and instance keys.
@@ -1688,6 +1783,121 @@ fn interject_unsupported() -> Value {
     )
 }
 
+/// What a worker line rests on (`WorkerSendArgs.bind_mode`): the
+/// observation snapshot its client decided on, or the agent instance it
+/// chose and the newest line Deck accepted for the card when it wrote this
+/// one (`None`: the card had none). Never a range, a tolerance or "the
+/// latest": each is compared exactly, the episode and the instance before
+/// the line is accepted, the line base where it is appended, and the
+/// instance again by the queue and at every send (`QueueItem.worker_target`).
+enum BoundTo {
+    Episode(u64),
+    Instance {
+        token: String,
+        last_line: Option<String>,
+    },
+}
+
+/// The binding a line's arguments name, or why their shape is refused.
+fn bind_shape(args: &WorkerSendArgs) -> Result<BoundTo, Value> {
+    match args.bind_mode {
+        None | Some(BindMode::Episode) => match (args.after_episode, &args.instance, &args.last_line) {
+            (Some(episode), None, None) => Ok(BoundTo::Episode(episode)),
+            _ => Err(error_value(
+                "INVALID_ARGUMENTS",
+                "bind_mode episode (the default) takes after_episode, and neither instance nor last_line",
+                "Name the card's agent.episode as after_episode, or use bind_mode: instance with the card's instance and lastLine.",
+            )),
+        },
+        Some(BindMode::Instance) => match (args.after_episode, &args.instance, &args.last_line) {
+            (None, Some(token), Some(last_line))
+                if parse_instance(token).is_some()
+                    && last_line.as_deref().is_none_or(valid_id) =>
+            {
+                Ok(BoundTo::Instance {
+                    token: token.clone(),
+                    last_line: last_line.clone(),
+                })
+            }
+            _ => Err(error_value(
+                "INVALID_ARGUMENTS",
+                "bind_mode instance takes instance and last_line (null when the card's lastLine is null), never after_episode",
+                "Copy the card's instance and lastLine from deck_worker_list or deck_worker_wait; pass last_line: null when lastLine is null. A card whose instance is null runs no agent Deck can bind to.",
+            )),
+        },
+    }
+}
+
+/// The line base check of a line bound to an instance: the newest line Deck
+/// accepted for `client`'s `card` must be `expected` (`None`: none yet).
+/// Called in the same ledger write that appends the line (`push_line`), so
+/// of two lines written after one base the first appended wins.
+pub(super) fn line_base(
+    doc: &DiskDoc,
+    client: &str,
+    card: &str,
+    expected: Option<&String>,
+) -> Result<(), Value> {
+    let current = doc
+        .workers
+        .iter()
+        .find(|w| w.card_id == card && w.client_id == client)
+        .and_then(|w| w.lines.last());
+    if current == expected {
+        return Ok(());
+    }
+    Err(json!({"ok": false, "error": {
+        "code": "LAST_LINE_MOVED",
+        "message": "Deck accepted another line for this card after the lastLine this one was written after; nothing was queued",
+        "nextAction": "Read the card again (deck_worker_list lastLine and sends) and decide whether this line still applies after the newer one; send it with that lastLine and a fresh request_id.",
+        "stage": "admission",
+        "queued": false,
+        "lastLine": expected,
+        "currentLastLine": current,
+    }}))
+}
+
+/// Record `operation` as the newest line accepted for `client`'s `card`.
+pub(super) fn push_line(doc: &mut DiskDoc, client: &str, card: &str, operation: &str) {
+    if let Some(record) = doc
+        .workers
+        .iter_mut()
+        .find(|w| w.card_id == card && w.client_id == client)
+    {
+        record.lines.push(operation.to_owned());
+        let over = record.lines.len().saturating_sub(LINES_KEPT);
+        record.lines.drain(..over);
+    }
+}
+
+/// `INSTANCE_CHANGED`: the agent instance a line is bound to is not the one
+/// in front of the card's pane (`now`, `None` when the session has no
+/// single pane or is gone), at `stage`. Nothing was queued.
+fn instance_changed(now: Option<&TargetNow>, stage: &str) -> Value {
+    json!({"ok": false, "error": {
+        "code": "INSTANCE_CHANGED",
+        "message": "the agent instance this line was bound to is no longer the program in front of the card's pane; nothing was queued",
+        "nextAction": "Read the card again (deck_worker_list instance and liveness): a new agent there is a new decision, sent with its own instance and a fresh request_id; a shell runs no agent to take the line.",
+        "stage": stage,
+        "queued": false,
+        "currentInstance": now.and_then(|n| instance_token_of(n.pane, n.instance)),
+        "agentRunning": now.map(|n| !n.shell),
+    }})
+}
+
+/// A refused worker line in app.log, content-free: the tool, the code, the
+/// card's session tag and, when read, the Signal state and episode Deck
+/// held for it — enough to put the refusal on the card's Signal timeline.
+fn note_refused(line: Line, code: &str, session: &str, now: Option<&Seen>) {
+    crate::applog::applog(&format!(
+        "[mcp] {} refused s={} code={code} state={} e={}",
+        line.tool(),
+        crate::applog::session_tag(session),
+        now.and_then(|s| s.state).unwrap_or("-"),
+        now.map_or(0, |s| s.episode),
+    ));
+}
+
 pub(super) fn worker_send(
     runtime: &Runtime,
     client_id: &str,
@@ -1717,7 +1927,13 @@ fn queue_line(
     arguments: Value,
     line: Line,
 ) -> Result<Value, Value> {
-    let args: WorkerSendArgs = parse(arguments)?;
+    let mut args: WorkerSendArgs = parse(arguments)?;
+    // `episode` is the default: hashed as omitted, so an old client's
+    // request keeps its identity
+    if args.bind_mode == Some(BindMode::Episode) {
+        args.bind_mode = None;
+    }
+    let bound_to = bind_shape(&args)?;
     if !valid_id(&args.request_id)
         || args.text.trim().is_empty()
         || args.text.len() > MAX_SEND_BYTES
@@ -1790,23 +2006,62 @@ fn queue_line(
     if line == Line::Interject && !interject_agent(&target.cmd) {
         return Err(interject_unsupported());
     }
-    // the episode the client decided on must still be the card's: a turn
-    // that moved on since makes this line stale (refused, never held)
-    let seen = observe_sessions().ok_or_else(|| {
-        map_error(DeckError::new(
-            ErrorKind::ContextChanged,
-            "Deck could not read the card's terminal",
-        ))
-    })?;
-    let current = seen.get(&target.session).map_or(0, |s| s.episode);
-    if current != args.after_episode {
-        return Err(json!({"ok": false, "error": {
-            "code": "EPISODE_MOVED",
-            "message": "the card's Agent observation is no longer the episode this line was written after; nothing was queued",
-            "nextAction": "Read the card again (deck_worker_wait or deck_worker_list) and decide on its current state before sending.",
-            "currentEpisode": current
-        }}));
+    // a first answer on the line base; the write that appends the line
+    // decides (`line_base`)
+    if let BoundTo::Instance { last_line, .. } = &bound_to {
+        runtime
+            .read(|doc| line_base(doc, client_id, &worker.card_id, last_line.as_ref()))
+            .map_err(map_error)??;
     }
+    // what the client decided on must still stand (`BoundTo`): the episode
+    // it saw, or the instance it chose (its line base is compared below,
+    // where the line is appended). Refused, never held; nothing is queued.
+    let target_now = match &bound_to {
+        BoundTo::Episode(expected) => {
+            let seen = observe_sessions().ok_or_else(|| {
+                map_error(DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "Deck could not read the card's terminal",
+                ))
+            })?;
+            let now = seen.get(&target.session);
+            let current = now.map_or(0, |s| s.episode);
+            if current != *expected {
+                note_refused(line, "EPISODE_MOVED", &target.session, now);
+                return Err(json!({"ok": false, "error": {
+                    "code": "EPISODE_MOVED",
+                    "message": "the card's Agent observation is no longer the episode this line was written after; nothing was queued",
+                    "nextAction": "Read the card again (deck_worker_wait or deck_worker_list) and decide on its current state before sending. To send to the same agent whatever its turns do meanwhile, bind the line with bind_mode: instance and the card's instance and lastLine.",
+                    "stage": "admission",
+                    "queued": false,
+                    "afterEpisode": expected,
+                    "currentEpisode": current,
+                    "currentState": now.and_then(|s| s.state),
+                }}));
+            }
+            None
+        }
+        BoundTo::Instance { token, .. } => {
+            let now = observe_target(&target.session).ok_or_else(|| {
+                map_error(DeckError::new(
+                    ErrorKind::ContextChanged,
+                    "Deck could not read the card's terminal",
+                ))
+            })?;
+            match now {
+                Some(now)
+                    if instance_token_of(now.pane, now.instance).as_deref() == Some(token)
+                        && !now.shell =>
+                {
+                    Some(now.target)
+                }
+                other => {
+                    note_refused(line, "INSTANCE_CHANGED", &target.session, None);
+                    return Err(instance_changed(other.as_ref(), "admission"));
+                }
+            }
+        }
+    };
     let queue = queues(runtime).ok_or_else(|| {
         map_error(DeckError::new(
             ErrorKind::ContextChanged,
@@ -1856,17 +2111,34 @@ fn queue_line(
             if let Some(open) = open_close(doc, client_id, &worker.card_id) {
                 return Ok(Err(worker_closing(&open.operation_id)));
             }
+            // the line base the client saw, compared where the line is
+            // appended, under the same write: of two lines written after
+            // the same base, the first appended moves it and the second is
+            // refused. Only here: once accepted, a line moves the base
+            // itself, and nothing later asks for the old one again.
+            if let BoundTo::Instance { last_line, .. } = &bound_to {
+                if let Err(moved) = line_base(doc, client_id, &worker.card_id, last_line.as_ref()) {
+                    return Ok(Err(moved));
+                }
+            }
             reserve_operation(runtime, doc, client_id, Slot::Ordinary)?;
-            let result = match caller {
+            let mut result = match caller {
                 Some(caller) => json!({
                     "cardId": worker.card_id,
-                    "afterEpisode": args.after_episode,
                     "mode": INTERJECT_MODE,
                     // `origin::RESULT_KEY`: the binding the line rests on
                     "orchestratorCardId": caller,
                 }),
-                None => json!({"cardId": worker.card_id, "afterEpisode": args.after_episode}),
+                None => json!({"cardId": worker.card_id}),
             };
+            match &bound_to {
+                BoundTo::Episode(episode) => result["afterEpisode"] = json!(episode),
+                BoundTo::Instance { token, last_line } => {
+                    result["bindMode"] = json!("instance");
+                    result["instance"] = json!(token);
+                    result["lastLine"] = json!(last_line);
+                }
+            }
             let operation = Operation {
                 result: Some(result),
                 ..Operation::new(
@@ -1879,15 +2151,7 @@ fn queue_line(
                 )
             };
             super::admit::accept(doc, client_id, orchestrator, binding, &operation);
-            if let Some(record) = doc
-                .workers
-                .iter_mut()
-                .find(|w| w.card_id == worker.card_id && w.client_id == client_id)
-            {
-                record.lines.push(operation.operation_id.clone());
-                let over = record.lines.len().saturating_sub(LINES_KEPT);
-                record.lines.drain(..over);
-            }
+            push_line(doc, client_id, &worker.card_id, &operation.operation_id);
             doc.operations.push(operation.clone());
             Ok(Ok(operation))
         })
@@ -1924,6 +2188,7 @@ fn queue_line(
             cmd: &target.cmd,
             text: &args.text,
             interject: caller,
+            target: target_now.clone(),
         },
         false,
         first_send_allowed(runtime, client_id),
@@ -1951,6 +2216,9 @@ fn queue_line(
                             // the card's bound, decided in the queue's own
                             // transaction (another line took the place)
                             ErrorKind::RequestConflict => "CAPACITY_EXCEEDED",
+                            // the instance left between the call's check
+                            // and the queue's own (`worker_queue_add`)
+                            ErrorKind::ContextChanged if target_now.is_some() => "INSTANCE_CHANGED",
                             _ => "QUEUE_REFUSED",
                         }
                         .into(),
@@ -3807,6 +4075,7 @@ pub(super) fn settle_start(runtime: &Runtime, operation_id: &str, session: &str)
                 cmd: &cmd,
                 text: &text,
                 interject: None,
+                target: None,
             },
             true,
             first_send,

@@ -329,6 +329,10 @@ pub(crate) struct QueueAddArgs {
     /// No Tauri command, channel, Connector or template path can carry it.
     #[serde(skip)]
     pub(crate) interject: Option<Interject>,
+    /// Set only by `worker_queue_add`: the instance a worker line is bound
+    /// to (`QueueItem.worker_target`). No other path can carry it.
+    #[serde(skip)]
+    pub(crate) worker_target: Option<WorkerTarget>,
 }
 
 /// Format (Unicode Cf) characters: invisible, so they must not hide what
@@ -712,6 +716,7 @@ pub(super) fn add_item_bound(
         readiness_override: args.first_send_granted,
         channel_first_send: args.channel_first_send_granted,
         interject: args.interject,
+        worker_target: args.worker_target,
     });
     if let (Some(id), Some(fingerprint)) = (operation_id, operation_fingerprint) {
         let item = q.items.last().expect("queue item just appended");
@@ -852,6 +857,9 @@ pub(crate) struct WorkerSend<'a> {
     /// the call came from, which `mcp/workers.rs` already checked started
     /// this card. The row is then an interjected line (`QueueItem.interject`).
     pub(crate) interject: Option<&'a str>,
+    /// `bind_mode: instance`: the exact agent instance the client chose
+    /// (`QueueItem.worker_target`), re-read here and at every send.
+    pub(crate) target: Option<WorkerTarget>,
 }
 
 /// The backend's one enqueue path, for a worker card's delegated line: the
@@ -930,7 +938,18 @@ pub(crate) fn worker_queue_add(
         interject: send.interject.map(|orchestrator| Interject {
             orchestrator: orchestrator.into(),
         }),
+        worker_target: send.target.clone(),
     };
+    // the queue's own admission of a line bound to an instance: the
+    // instance the client chose must still be in front of the pane now (the
+    // client's call already proved the pane and the instance; every send
+    // proves both again)
+    if send.target.as_ref().is_some_and(|t| !t.instance_stands()) {
+        return Err(DeckError::new(
+            ErrorKind::ContextChanged,
+            "the agent instance this line is bound to is no longer in front of the card's pane",
+        ));
+    }
     admit_worker(&mut args)?;
     validate_add(&args)?;
     args.first_send_granted = first_send.then(|| ReadinessOverride {

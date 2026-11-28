@@ -3552,6 +3552,15 @@ export async function verifyWorkerInterject() {
   await runWorkersSmoke({ interjecting: true });
 }
 
+// A worker line bound to the agent instance (workers-smoke.mjs, scenario
+// `interject` with binding): a Codex worker reports, ends its turn, and the
+// orchestrator's instance-bound interjection still reaches it; the client
+// (scripts/mcp-bind-e2e.py) closes the worker itself.
+export async function verifyWorkerBind() {
+  const { runWorkersSmoke } = await import('./workers-smoke.mjs');
+  await runWorkersSmoke({ interjecting: true, binding: true });
+}
+
 // A worker that reports and then ends its turn is closed by its
 // orchestrator's instance-bound close; its label says the report waits
 // until acknowledged (workers-smoke.mjs, scenario `close`).
