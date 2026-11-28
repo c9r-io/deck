@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.45 — 2026-11-28 (Nightly)
+
+- Usage quota for each agent account. Turn on Settings › Agents &
+  notifications › Usage quota and the sidebar shows every Claude Code,
+  Codex and agy account once, with a bar per usage window (5 hours, 7
+  days, agy's buckets), when it resets and how old the numbers are; the
+  terminal head of a card shows the account it runs under. A second
+  Claude account (its own `CLAUDE_CONFIG_DIR`) is its own row; two folders
+  signed in to one account are one row. The switch puts Deck's helper in
+  front of the statusLine in `~/.claude/settings.json` and agy's
+  `settings.json`: a statusLine command you have keeps running with the
+  same input, and turning the switch off puts the files back as they
+  were. Codex is read from its own session files. An orchestrator sees
+  the accounts of its own cards in `deck_worker_list` (`quota`). Quota is
+  only shown: it never holds, sends, notifies or colours anything.
+- Local notifications: any program on this Mac can hand Deck a
+  notification with the bundled `deck-notify` command (a CI watcher, a
+  backup script). They appear on the new Notifications page beside Slack
+  mentions, and a local rule can open a card for one, by your click or,
+  if you ticked it, on its own.
+- Orchestrators can wait for a report in one call, up to 25 minutes
+  (`deck_worker_wait` `until: "report"`), without a stream of "nothing
+  changed" answers; a cancelled or lost wait costs nothing. A worker's
+  report may carry its status, branch, commit and report path, and the
+  line it answers. Several start, send and close requests of one
+  orchestrator card can go at once (`lane_epoch`), each still accepted at
+  most once, and a refused request now says exactly which counter it was
+  behind or ahead of.
+- An agy worker card never gets a line typed while agy says it is
+  working: agy keeps that state while it shows a permission question, and
+  a line typed then could answer it.
+- The window no longer freezes while a terminal attaches, starts or
+  closes on a slow disk: that work left the window's main thread, an
+  attach gives up after 10 s with a retry button, and a watchdog records
+  where the main thread was if it ever stalls.
+- A notification rule, an orchestrator's structured report or a list from
+  concurrent requests cannot be opened by Deck 0.8.44 or earlier, which
+  leaves those files untouched.
+
 ## 0.8.44 — 2026-11-27 (Nightly)
 
 - An orchestrator Agent can change a worker card's goal or next step while
