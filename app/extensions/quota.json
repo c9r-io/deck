@@ -1,0 +1,7 @@
+{
+  "id": "quota",
+  "kind": "settings",
+  "ui": "extension-quota.js",
+  "order": 38,
+  "selected": false
+}

@@ -3769,6 +3769,20 @@ export async function verifyHooksLive() {
   await runHooksLiveSmoke();
 }
 
+// The Quota switch on the global Claude Code and agy settings of a home the
+// operator gave this carrier (quota-smoke.mjs).
+export async function verifyQuotaSwitch() {
+  const { runQuotaSwitchSmoke } = await import('./quota-smoke.mjs');
+  await runQuotaSwitchSmoke();
+}
+
+// Usage quota from real Claude Code and Codex cards: one entry per account,
+// the area, the chip (quota-smoke.mjs).
+export async function verifyQuotaLive() {
+  const { runQuotaLiveSmoke } = await import('./quota-smoke.mjs');
+  await runQuotaLiveSmoke();
+}
+
 // Pi work status in the real window with a real interactive Pi, under a home
 // the operator gave this carrier: the Settings switch, Pi loading Deck's
 // observer, the card and the attention list, the scheduler's Pi hold, Send

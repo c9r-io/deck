@@ -1635,6 +1635,8 @@ pub(crate) fn poll_observing_bells(
     // agent-hook state lives exactly as long as the pane generation and
     // foreground process generation that reported it
     crate::agent_status::reconcile(&rows, &table);
+    // usage-window links end with their pane's agent (`quota.rs`)
+    crate::quota::retain(&rows);
     let agents = crate::agent_status::projections(&rows);
     let facts = crate::agent_status::facts(&rows);
     let evidence = crate::agent_status::generation_evidence(

@@ -389,6 +389,31 @@
         "hooks-signal-off": {}
       }
     },
+    "quota-switch": {
+      "terminal": "done",
+      "checks": {
+        "quota-sw-clean": {},
+        "quota-sw-decline": {},
+        "quota-sw-on": {},
+        "quota-sw-reopen": {},
+        "quota-sw-off": {},
+        "quota-exception": { "failureOnly": true }
+      }
+    },
+    "quota-live": {
+      "terminal": "done",
+      "checks": {
+        "quota-clean": {},
+        "quota-claude": {},
+        "quota-dedupe": {},
+        "quota-codex": {},
+        "quota-area": {},
+        "quota-chip": {},
+        "quota-detail": {},
+        "quota-armed": {},
+        "quota-exception": { "failureOnly": true }
+      }
+    },
     "pi-live": {
       "terminal": "done",
       "checks": {

@@ -139,6 +139,7 @@ fn note(id: &str) -> &'static str {
         "claude-reentry" => "When observed (lifecycle: true on claude-code), Deck can resume Claude sessions after the shell service restarts or is lost.",
         "codex-reentry" => "When observed (lifecycle: true on codex), Deck can resume Codex sessions after the shell service restarts.",
         "away-notifications" => "Notifies only while Deck's window is not in front, and only when macOS allows Deck to notify (osPermission authorized).",
+        "quota" => "Usage windows per agent account need Deck's statusLine entry for Claude Code and agy (state on; user means another statusLine command holds the slot and the switch wraps it when turned on); Codex is read from its own session files without it. accounts is how many accounts were observed since Deck started. Presentation only.",
         "slack-reactions" => "Badge rules need badgesEnabled, the user token and a live connection; channel rules need channelEnabled, the bot and App tokens. Token validity is not checked here.",
         "model-api" => "Used by Draft title and turn summaries. check is the last recorded verification (none since Deck started: null).",
         "connector" => "The Phone Connector serves paired, trusted devices only while enabled and running.",
@@ -264,6 +265,15 @@ pub(super) fn items(settings: Option<&Value>, live: &Live, locale: &str) -> Vec<
                 "osPermission": live.os_notifications,
             }),
         ),
+        ("quota", {
+            let status =
+                serde_json::to_value(crate::quota::install::status_now()).unwrap_or(Value::Null);
+            json!({
+                "claudeCode": status["claude"],
+                "agy": status["agy"],
+                "accounts": crate::quota::snapshot().accounts.len(),
+            })
+        }),
         (
             "slack-reactions",
             json!({

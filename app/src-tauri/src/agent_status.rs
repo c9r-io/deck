@@ -284,6 +284,14 @@
 //! handling apply to both. An adapter's optional `reentry` capability is
 //! static data: registered is not enabled, approved or trusted.
 //!
+//! # A fourth family: usage windows (`quota.rs`)
+//! A line with `protocol: deck-quota` comes from the status helper's
+//! statusLine tee (`deck-status-helper --quota`). `dispatch` hands it to
+//! `quota::hand` before the hook parser: it carries no Signal word, never
+//! reaches the store or any Signal consumer, and grants nothing; its sender
+//! must execute the bundled helper (kernel), and its refusals are counted
+//! here under `quota-*`.
+//!
 //! # A third family: a Pi observer's messages
 //! Pi runs no helper per event. Its observer is an extension inside the Pi
 //! process that speaks to this socket itself, one message per connection
@@ -1291,6 +1299,18 @@ pub(crate) fn pane_state(
 /// whose episode may be projected again — and nothing else: a stale episode
 /// that no longer exists is a no-op, never "whatever is current". Returns
 /// whether an episode was (or already had been) marked.
+/// The panes whose last accepted word came from Codex (server pid, pane
+/// id): `quota::retain` links them to the Codex account. Presentation only.
+pub(crate) fn codex_panes() -> Vec<(u32, String)> {
+    with_agents(|agents| {
+        agents
+            .iter()
+            .filter(|(_, entry)| entry.codex)
+            .map(|(key, _)| (key.server_pid, key.pane_id.clone()))
+            .collect()
+    })
+}
+
 pub(crate) fn mark_viewed(session: &str, episode: EpisodeId) -> bool {
     with_agents(|agents| {
         agents
@@ -2190,6 +2210,12 @@ const DROP_REASONS: &[&str] = &[
     "pi-stale",
     "pi-no-challenge",
     "pi-sender-mismatch",
+    // the usage-window family (`quota.rs`)
+    "quota-malformed",
+    "quota-no-peer",
+    "quota-no-helper",
+    "quota-foreign-sender",
+    "quota-busy",
 ];
 
 /// How often the drop summary may be written.
@@ -2378,6 +2404,14 @@ fn dispatch(
     // parser nor the lifecycle mailbox.
     if crate::agent_pi::is_family(&line) {
         pi.hand(stream, line, place);
+        return;
+    }
+    // A fourth: the statusLine tee's usage windows (`quota.rs`). Never a
+    // Signal word; the quota module checks its sender and lets it go.
+    if crate::quota::is_family(&line) {
+        if let Err(reason) = crate::quota::hand(&line, stream) {
+            note(drops, Some(reason));
+        }
         return;
     }
     // A separate closed protocol family on the same socket: a lifecycle

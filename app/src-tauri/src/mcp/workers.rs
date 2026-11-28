@@ -830,12 +830,36 @@ pub(super) fn worker_list(
     Ok(json!({
         "ok": true,
         "workers": rows.iter().map(|row| view(runtime, client_id, row, seen, plans)).collect::<Vec<_>>(),
+        "quota": quota_view(&rows),
         "observed": seen.is_some(),
         "mayReadReplies": replies,
         "workerTypes": types,
         "nextSendSequence": next,
         "laneEpoch": lane_epoch(runtime, client_id),
     }))
+}
+
+/// The usage windows of the accounts the caller's own card and its listed
+/// worker cards run under (`quota.rs` `projection`): deduplicated by
+/// account, presentation only — nothing here reads it for a decision.
+fn quota_view(rows: &[WorkerRow]) -> Vec<Value> {
+    let mut cards: std::collections::HashMap<String, String> = rows
+        .iter()
+        .filter_map(|row| {
+            Some((
+                row.target.as_ref()?.session.clone(),
+                row.worker.card_id.clone(),
+            ))
+        })
+        .collect();
+    if let Some(own) = super::origin::orchestrator() {
+        if let Some(target) =
+            crate::documents::card_targets(false).and_then(|targets| targets.get(&own).cloned())
+        {
+            cards.insert(target.session, own);
+        }
+    }
+    crate::quota::projection(&cards)
 }
 
 /// What a `deck_worker_wait` returns for (`until`).

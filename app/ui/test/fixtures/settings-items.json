@@ -361,6 +361,36 @@
       }
     },
     {
+      "id": "quota",
+      "section": "agents",
+      "path": {
+        "en": [
+          "Agents & notifications",
+          "Usage quota"
+        ],
+        "zh-Hans": [
+          "Agent 与通知",
+          "用量额度"
+        ],
+        "ja": [
+          "Agent と通知",
+          "利用枠"
+        ],
+        "ko": [
+          "Agent 및 알림",
+          "사용량 한도"
+        ],
+        "es": [
+          "Agents y notificaciones",
+          "Cuota de uso"
+        ],
+        "de": [
+          "Agents & Mitteilungen",
+          "Nutzungskontingent"
+        ]
+      }
+    },
+    {
       "id": "mcp",
       "section": "mcp",
       "path": {

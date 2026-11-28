@@ -1212,6 +1212,14 @@ pub(crate) fn bundled_lifecycle_helper() -> Option<PathBuf> {
     Some(exe.parent()?.join(LIFECYCLE_HELPER_NAME)).filter(|helper| helper.is_file())
 }
 
+/// The status helper a quota line's sender must be executing
+/// (`quota::hand`): the sidecar beside this very executable. Only its file
+/// identity is compared.
+pub(crate) fn bundled_status_helper() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join(HELPER_NAME)).filter(|helper| helper.is_file())
+}
+
 /// The explicit project-bound experiment's observation, when that mode is
 /// configured. `None` means ordinary global settings; `Err` preserves the
 /// existing fail-closed answer for an invalid experiment argument.

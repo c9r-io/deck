@@ -47,7 +47,7 @@ initializeExtensionContributions({
 const initialCalls = calls.slice();
 
 test('registry validation rejects duplicate extension and control identities', () => {
-  assert.deepEqual(extensionContributions().map(entry => entry.id), ['claude-code', 'codex', 'pi', 'agy', 'slack', 'model-api', 'bergamot', 'connector', 'mcp', 'voice']);
+  assert.deepEqual(extensionContributions().map(entry => entry.id), ['claude-code', 'codex', 'pi', 'agy', 'quota', 'slack', 'model-api', 'bergamot', 'connector', 'mcp', 'voice']);
   assert.throws(() => validateExtensionContributions([{ id: 'x' }, { id: 'x' }]), /duplicate/);
   assert.throws(() => validateExtensionContributions([
     { id: 'x', agentControls: [{ boxId: 'same' }] }, { id: 'y', agentControls: [{ boxId: 'same' }] },
@@ -184,8 +184,8 @@ test('lifecycle reaches subsequent controllers after synchronous and asynchronou
     };
     const results = await runExtensionLifecycle('close');
     assert.deepEqual(reached, ids);
-    // slack, model-api, bergamot, connector, mcp, voice
-    assert.deepEqual(results.map(result => result.status), ['rejected', 'fulfilled', 'rejected', 'fulfilled', 'fulfilled', 'fulfilled']);
+    // quota, slack, model-api, bergamot, connector, mcp, voice
+    assert.deepEqual(results.map(result => result.status), ['fulfilled', 'rejected', 'fulfilled', 'rejected', 'fulfilled', 'fulfilled', 'fulfilled']);
   } finally {
     ids.forEach((id, index) => { extensionController(id).close = originals[index]; });
   }

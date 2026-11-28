@@ -24,6 +24,7 @@ import { registerSessionPopup } from './session-tools.js';
 import { initAttention, openFromNotification, refreshAttention } from './attention.js';
 import { initMentions, showMentions, startMentions } from './slack-mentions.js';
 import { initNotices, startNotices } from './notices.js';
+import { initQuota, startQuota } from './quota.js';
 import { initWorkers, startWorkers } from './workers.js';
 import { initProposals, startProposals } from './proposals.js';
 import { initMissedOnce, startMissedOnce } from './missed-once.js';
@@ -529,6 +530,7 @@ function initModules() {
   initAttention({ pollNow, provider, render, switchProject, leaveSessionView, closeBuffer, openBuffer, openSession, openSettings, closeSelectedCards, queueFollowUp });
   initMentions({ provider, render, switchProject, leaveSessionView, closeBuffer });
   initNotices({ provider, render, switchProject, leaveSessionView, closeBuffer, showMentions });
+  initQuota({ provider, openSession });
   initWorkers({ render });
   const editRule = async ruleId => {
     await openAutomations();
@@ -629,6 +631,7 @@ const offerBoardExit = createBoardExit({
     startInbound();
     startMentions();
     startNotices();
+    startQuota();
     startWorkers();
     startProposals();
     startMissedOnce();
@@ -759,7 +762,7 @@ export async function boot() {
      again (inbound.js `startInbound`) */
   if (!loadErr) startInbound();
   if (!loadErr) startMentions();
-  if (!loadErr) startNotices();
+  if (!loadErr) { startNotices(); startQuota(); }
   if (!loadErr) startWorkers();
   if (!loadErr) startProposals();
   if (!loadErr) startMissedOnce();

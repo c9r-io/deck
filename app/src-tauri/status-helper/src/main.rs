@@ -50,6 +50,23 @@
 //! the pane's own process. The helper therefore keeps the connection open
 //! until deck closes it (bounded by a 2 s read timeout) instead of exiting
 //! right after the write.
+//!
+//! A fourth mode, `--quota <source> [--quiet]`, is deck's statusLine entry
+//! for Claude Code and agy (`quota.rs` owns the contract). The agent hands
+//! its statusLine command the session JSON on stdin; the helper is a TEE:
+//! it copies stdin to stdout unchanged (into the user's own statusLine
+//! command, which deck's entry pipes it to, or nowhere with `--quiet`),
+//! closes stdout before anything else, and only then reads the usage
+//! windows out of what it kept: Claude Code's top-level `rate_limits`
+//! (every member with `used_percentage` and `resets_at`) or agy's `quota`
+//! (each bucket's `remaining_fraction` and `reset_in_seconds`), plus the
+//! account the windows belong to — Claude Code's config folder (this
+//! process's own `CLAUDE_CONFIG_DIR`, the default when unset) or agy's
+//! signed-in `email` and `plan_tier`. Nothing else of the payload is read;
+//! the line (`protocol: deck-quota`) carries names, numbers, the folder and
+//! the account, and deck turns the account into an opaque key at once. It
+//! never spawns anything and never runs the user's command: the agent's
+//! own shell runs the pipe.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -444,12 +461,300 @@ fn build_reply_message(
     Some(plain)
 }
 
+/// The argument that selects the statusLine tee (module header).
+const QUOTA_FLAG: &str = "--quota";
+/// The tee's flag for "there is no user command after me": print nothing.
+const QUIET_FLAG: &str = "--quiet";
+/// The sources whose statusLine payload deck reads.
+const QUOTA_SOURCES: [&str; 2] = ["claude-code", "agy"];
+/// The most windows one line carries.
+const MAX_WINDOWS: usize = 8;
+
+/// `--quota <source>` or `--quota <source> --quiet`: (source, quiet).
+fn quota_mode(args: &[String]) -> Option<(&str, bool)> {
+    if args.get(1).map(String::as_str) != Some(QUOTA_FLAG) {
+        return None;
+    }
+    let source = args.get(2)?.as_str();
+    match (args.len(), args.get(3).map(String::as_str)) {
+        (3, None) => Some((source, false)),
+        (4, Some(QUIET_FLAG)) => Some((source, true)),
+        _ => None,
+    }
+}
+
+/// One usage window as the line carries it: a name, the percent used and
+/// the reset instant (epoch seconds).
+#[derive(Debug, PartialEq)]
+struct Window {
+    name: String,
+    used: f64,
+    resets_at: u64,
+}
+
+/// What the tee keeps of a statusLine payload.
+#[derive(Debug, Default, PartialEq)]
+struct Usage {
+    windows: Vec<Window>,
+    account: Option<String>,
+    plan: Option<String>,
+}
+
+/// `[a-z0-9_-]{1,40}`: a window or bucket name.
+fn window_name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 40
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+/// A signed-in account's email as agy reports it: printable ASCII without
+/// quotes or spaces, one `@`, at most 254 bytes. Anything else: none.
+fn email_ok(s: &str) -> bool {
+    s.len() <= 254
+        && s.bytes().filter(|b| *b == b'@').count() == 1
+        && s.bytes()
+            .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+}
+
+fn percent(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(0.0, 100.0))
+}
+
+/// The windows and account of one statusLine payload, `now` the epoch
+/// seconds agy's relative reset is counted from. A payload that does not
+/// parse, or has no windows, yields an empty `Usage`.
+fn usage_from(source: &str, payload: &[u8], now: u64) -> Usage {
+    if payload.len() > MAX_PAYLOAD {
+        return Usage::default();
+    }
+    let Ok(root) = serde_json::from_slice::<serde_json::Value>(payload) else {
+        return Usage::default();
+    };
+    let mut usage = Usage::default();
+    match source {
+        "claude-code" => {
+            let Some(limits) = root.get("rate_limits").and_then(|v| v.as_object()) else {
+                return usage;
+            };
+            for (name, window) in limits {
+                let (Some(used), Some(resets_at)) = (
+                    window.get("used_percentage").and_then(percent),
+                    window.get("resets_at").and_then(|v| v.as_u64()),
+                ) else {
+                    continue;
+                };
+                if window_name_ok(name) && resets_at > 0 {
+                    usage.windows.push(Window {
+                        name: name.clone(),
+                        used,
+                        resets_at,
+                    });
+                }
+            }
+        }
+        "agy" => {
+            let Some(buckets) = root.get("quota").and_then(|v| v.as_object()) else {
+                return usage;
+            };
+            for (name, bucket) in buckets {
+                if bucket.get("disabled").and_then(|v| v.as_bool()) == Some(true) {
+                    continue;
+                }
+                let (Some(remaining), Some(seconds)) = (
+                    bucket
+                        .get("remaining_fraction")
+                        .and_then(|v| v.as_f64())
+                        .filter(|v| v.is_finite()),
+                    bucket.get("reset_in_seconds").and_then(|v| v.as_u64()),
+                ) else {
+                    continue;
+                };
+                if window_name_ok(name) {
+                    usage.windows.push(Window {
+                        name: name.clone(),
+                        used: ((1.0 - remaining.clamp(0.0, 1.0)) * 100.0).clamp(0.0, 100.0),
+                        resets_at: now.saturating_add(seconds),
+                    });
+                }
+            }
+            usage.account = root
+                .get("email")
+                .and_then(|v| v.as_str())
+                .filter(|s| email_ok(s))
+                .map(str::to_owned);
+            usage.plan = root
+                .get("plan_tier")
+                .and_then(|v| v.as_str())
+                .filter(|s| window_name_ok(&s.to_ascii_lowercase()))
+                .map(str::to_owned);
+        }
+        _ => {}
+    }
+    usage.windows.truncate(MAX_WINDOWS);
+    usage
+}
+
+/// An absolute config folder without `..` or control bytes, at most 512
+/// bytes: the only `CLAUDE_CONFIG_DIR` the line carries.
+fn root_ok(s: &str) -> bool {
+    s.starts_with('/')
+        && s.len() <= 512
+        && !s.split('/').any(|part| part == "..")
+        && !s.bytes().any(|b| b < 0x20 || b == 0x7f)
+}
+
+/// The quota line: `{protocol: deck-quota, v: 1, source, windows, root?,
+/// account?, plan?, socket?, server_pid?, pane?}`; None without windows.
+fn build_quota_message(
+    source: &str,
+    usage: &Usage,
+    root: Option<&str>,
+    tmux: Option<(&str, &str)>,
+) -> Option<String> {
+    if usage.windows.is_empty() || !QUOTA_SOURCES.contains(&source) {
+        return None;
+    }
+    let windows: Vec<serde_json::Value> = usage
+        .windows
+        .iter()
+        .map(|w| serde_json::json!({"name": w.name, "used": w.used, "resets_at": w.resets_at}))
+        .collect();
+    let mut line = serde_json::json!({
+        "protocol": "deck-quota",
+        "v": 1,
+        "source": source,
+        "windows": windows,
+    });
+    let object = line.as_object_mut()?;
+    if let Some(root) = root.filter(|r| root_ok(r) && source == "claude-code") {
+        object.insert("root".into(), root.into());
+    }
+    if let Some(account) = &usage.account {
+        object.insert("account".into(), account.as_str().into());
+    }
+    if let Some(plan) = &usage.plan {
+        object.insert("plan".into(), plan.as_str().into());
+    }
+    if let Some((tmux, pane)) = tmux {
+        if let (Some((socket, server_pid)), true) = (parse_tmux_env(tmux), pane_ok(pane)) {
+            object.insert("socket".into(), socket.into());
+            object.insert("server_pid".into(), server_pid.into());
+            object.insert("pane".into(), pane.into());
+        }
+    }
+    let mut text = serde_json::to_string(&line).ok()?;
+    text.push('\n');
+    (text.len() <= MAX_WIRE_LINE).then_some(text)
+}
+
+/// Copy `input` to `output` (unless `quiet`), keeping at most
+/// `MAX_PAYLOAD + 1` bytes; a failed write stops the copying, never the
+/// draining.
+fn tee(mut input: impl Read, mut output: impl Write, quiet: bool) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut writing = !quiet;
+    loop {
+        match input.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if writing && output.write_all(&chunk[..n]).is_err() {
+                    writing = false;
+                }
+                let room = (MAX_PAYLOAD + 1).saturating_sub(kept.len());
+                kept.extend_from_slice(&chunk[..n.min(room)]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = output.flush();
+    kept
+}
+
+/// Close stdout so the user's command behind the pipe sees its end now,
+/// and put /dev/null in its place so fd 1 is never another file.
+fn close_stdout() {
+    use std::os::fd::FromRawFd;
+    let _ = std::io::stdout().flush();
+    // SAFETY: fd 1 is this process's stdout, which nothing writes after
+    // this point; the std handle is flushed and never used again.
+    drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(1) });
+    // the lowest free descriptor is 1 again: /dev/null takes it
+    std::mem::forget(std::fs::File::open("/dev/null"));
+}
+
+fn quota_main(source: &str, quiet: bool) {
+    let payload = tee(std::io::stdin().lock(), std::io::stdout().lock(), quiet);
+    close_stdout();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let usage = usage_from(source, &payload, now);
+    drop(payload);
+    let root = std::env::var("CLAUDE_CONFIG_DIR").ok();
+    let (tmux, pane) = (std::env::var("TMUX").ok(), std::env::var("TMUX_PANE").ok());
+    let Some(message) = build_quota_message(
+        source,
+        &usage,
+        root.as_deref(),
+        tmux.as_deref().zip(pane.as_deref()),
+    ) else {
+        return;
+    };
+    send(
+        &message,
+        Duration::from_millis(300),
+        Duration::from_millis(800),
+    );
+}
+
+/// Write one line to deck's socket and wait for deck to close it (the
+/// kernel proof of the sender needs this process alive), within `write`
+/// and `read` bounds. Deck not running: nothing.
+fn send(message: &str, write: Duration, read: Duration) {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let env_sock = std::env::var("DECK_STATUS_SOCK").ok();
+    let path = socket_path(env_sock.as_deref(), std::path::Path::new(&home));
+    let Ok(mut stream) = UnixStream::connect(path) else {
+        return;
+    };
+    let _ = stream.set_write_timeout(Some(write));
+    let _ = stream.write_all(message.as_bytes());
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(read));
+    let mut ack = [0u8; 64];
+    while let Ok(n) = stream.read(&mut ack) {
+        if n == 0 {
+            break;
+        }
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some((source, quiet)) = quota_mode(&args) {
+        return quota_main(source, quiet);
+    }
+    if args.get(1).map(String::as_str) == Some(QUOTA_FLAG) {
+        // a statusLine entry deck does not recognize: still never break it
+        let _ = tee(std::io::stdin().lock(), std::io::stdout().lock(), false);
+        return;
+    }
+    hook_main(args);
+}
+
+fn hook_main(args: Vec<String>) {
     // The ONE allowlisted id is read from this buffer below; it is dropped
     // right after.
     let payload = read_payload(std::io::stdin().lock());
 
-    let args: Vec<String> = std::env::args().collect();
     let (Some(source), Some(state)) = (args.get(1), args.get(2)) else {
         return;
     };
@@ -478,35 +783,152 @@ fn main() {
     let Some(message) = message else {
         return;
     };
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
-    };
-    let env_sock = std::env::var("DECK_STATUS_SOCK").ok();
-    let path = socket_path(env_sock.as_deref(), std::path::Path::new(&home));
-    // deck not running (or an old deck without the socket) — silently done
-    let Ok(mut stream) = UnixStream::connect(path) else {
-        return;
-    };
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.write_all(message.as_bytes());
     // Stay alive until deck closes the connection: deck binds the event to
     // this pane by walking this process's parent chain through the kernel,
     // which needs this process to still exist. deck closes as soon as it has
     // read the line and the chain (well under a millisecond); the timeout
-    // only bounds a deck that stalls.
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut ack = [0u8; 64];
-    while let Ok(n) = stream.read(&mut ack) {
-        if n == 0 {
-            break;
-        }
-    }
+    // only bounds a deck that stalls. Deck not running: silently done.
+    send(&message, Duration::from_secs(1), Duration::from_secs(2));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn quota_mode_takes_only_the_two_forms() {
+        let h = "deck-status-helper";
+        assert_eq!(
+            quota_mode(&words(&[h, "--quota", "claude-code"])),
+            Some(("claude-code", false))
+        );
+        assert_eq!(
+            quota_mode(&words(&[h, "--quota", "agy", "--quiet"])),
+            Some(("agy", true))
+        );
+        assert_eq!(quota_mode(&words(&[h, "--quota"])), None);
+        assert_eq!(quota_mode(&words(&[h, "--quota", "agy", "--loud"])), None);
+        assert_eq!(quota_mode(&words(&[h, "claude-code", "working"])), None);
+    }
+
+    #[test]
+    fn the_tee_passes_every_byte_and_keeps_a_bounded_copy() {
+        let input: Vec<u8> = (0..(MAX_PAYLOAD + 5000)).map(|i| (i % 251) as u8).collect();
+        let mut out = Vec::new();
+        let kept = tee(&input[..], &mut out, false);
+        assert_eq!(
+            out, input,
+            "the user's command sees the payload byte for byte"
+        );
+        assert_eq!(kept.len(), MAX_PAYLOAD + 1);
+        let mut quiet = Vec::new();
+        let kept = tee(&b"{}"[..], &mut quiet, true);
+        assert!(quiet.is_empty());
+        assert_eq!(kept, b"{}");
+    }
+
+    #[test]
+    fn a_failed_write_still_drains_the_input() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(tee(&b"abc"[..], Broken, false), b"abc");
+    }
+
+    #[test]
+    fn claude_windows_are_read_generically_and_nothing_else() {
+        let payload = br#"{"session_id":"s","cwd":"/secret","cost":{"total_cost_usd":3},
+            "rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1738425600},
+                           "seven_day":{"used_percentage":141,"resets_at":1738857600},
+                           "Bad Name":{"used_percentage":1,"resets_at":1},
+                           "no_reset":{"used_percentage":1}}}"#;
+        let usage = usage_from("claude-code", payload, 0);
+        assert_eq!(
+            usage.windows,
+            vec![
+                Window {
+                    name: "five_hour".into(),
+                    used: 23.5,
+                    resets_at: 1738425600
+                },
+                Window {
+                    name: "seven_day".into(),
+                    used: 100.0,
+                    resets_at: 1738857600
+                },
+            ]
+        );
+        assert_eq!(usage.account, None);
+        let line = build_quota_message("claude-code", &usage, Some("/Users/u/.claude-work"), None)
+            .expect("a line");
+        assert!(!line.contains("secret") && !line.contains("session") && !line.contains("cost"));
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["protocol"], "deck-quota");
+        assert_eq!(value["root"], "/Users/u/.claude-work");
+        assert!(value.get("pane").is_none());
+    }
+
+    #[test]
+    fn agy_buckets_become_used_percent_and_absolute_resets() {
+        let payload = br#"{"email":"dev@example.com","plan_tier":"Pro","transcript_path":"/t",
+            "quota":{"gemini-weekly":{"remaining_fraction":0.75,"reset_time":"2026-07-06T07:50:32Z","reset_in_seconds":100},
+                     "off":{"remaining_fraction":0.1,"reset_in_seconds":5,"disabled":true},
+                     "amount":{"remaining_amount":3,"reset_in_seconds":5}}}"#;
+        let usage = usage_from("agy", payload, 1000);
+        assert_eq!(
+            usage.windows,
+            vec![Window {
+                name: "gemini-weekly".into(),
+                used: 25.0,
+                resets_at: 1100
+            }]
+        );
+        assert_eq!(usage.account.as_deref(), Some("dev@example.com"));
+        assert_eq!(usage.plan.as_deref(), Some("Pro"));
+        let line = build_quota_message(
+            "agy",
+            &usage,
+            Some("/Users/u/.claude"),
+            Some(("/private/tmp/tmux-501/deck,4242,0", "%3")),
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(
+            value.get("root").is_none(),
+            "a Claude folder is never agy's"
+        );
+        assert_eq!(value["pane"], "%3");
+        assert_eq!(value["server_pid"], 4242);
+        assert!(!line.contains("transcript"));
+    }
+
+    #[test]
+    fn no_windows_or_bad_input_send_nothing() {
+        for payload in [&b"not json"[..], b"{}", b"{\"rate_limits\":3}", b"[]"] {
+            let usage = usage_from("claude-code", payload, 0);
+            assert!(build_quota_message("claude-code", &usage, None, None).is_none());
+        }
+        let usage = usage_from(
+            "claude-code",
+            br#"{"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":2}}}"#,
+            0,
+        );
+        assert!(build_quota_message("codex", &usage, None, None).is_none());
+        assert!(!root_ok("relative/.claude"));
+        assert!(!root_ok("/Users/u/../etc"));
+        assert!(!email_ok("a b@c"));
+        assert!(!email_ok("no-at"));
+    }
 
     #[test]
     fn words_accept_only_the_closed_alphabet() {

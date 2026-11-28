@@ -28,6 +28,7 @@ const CARRIERS = {
   'mentions-live-smoke.mjs': ['mentions-live'],
   'local-notify-smoke.mjs': ['local-notify', 'local-notify-relaunch'],
   'hooks-live-smoke.mjs': ['hooks-live'],
+  'quota-smoke.mjs': ['quota-switch', 'quota-live'],
   'pi-live-smoke.mjs': ['pi-live'],
   'pi-layout-smoke.mjs': ['pi-layout'],
   'locale-layout-smoke.mjs': ['locale-layout'],

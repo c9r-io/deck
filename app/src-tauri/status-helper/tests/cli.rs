@@ -408,3 +408,73 @@ fn a_host_that_never_closes_is_left_after_the_read_timeout() {
         started.elapsed()
     );
 }
+
+/// The statusLine tee: the payload passes to stdout byte for byte, stdout
+/// ends before deck answers (the user's command behind the pipe is never
+/// held up), and the line carries the windows and the folder only.
+#[test]
+fn the_quota_tee_passes_the_payload_on_and_ends_stdout_first() {
+    let home = Private::new();
+    let socket = home.0.join("status.sock");
+    let listener = home.listen(&socket);
+    let payload = r#"{"session_id":"SENTINEL","rate_limits":{"five_hour":{"used_percentage":62,"resets_at":1796342926}}}"#;
+    let mut child = run(
+        helper(
+            &home,
+            &["--quota", "claude-code"],
+            &[
+                ("TMUX", TMUX),
+                ("TMUX_PANE", "%7"),
+                ("DECK_STATUS_SOCK", socket.to_str().unwrap()),
+                ("CLAUDE_CONFIG_DIR", "/Users/u/.claude-work"),
+            ],
+        ),
+        payload,
+    );
+    let mut stream = accept(&listener, Duration::from_secs(3)).expect("the helper connects");
+    // deck has not closed yet: stdout must already be at its end
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    assert_eq!(out, payload);
+    let line = read_line(&mut stream);
+    let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(value["protocol"], "deck-quota");
+    assert_eq!(value["root"], "/Users/u/.claude-work");
+    assert_eq!(value["windows"][0]["name"], "five_hour");
+    assert_eq!(value["pane"], "%7");
+    assert!(!line.contains("SENTINEL"));
+    drop(stream);
+    let output = finish(child, Duration::from_secs(3));
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+}
+
+/// `--quiet` prints nothing; no deck listening is still a silent success;
+/// an unknown statusLine form still passes its input on.
+#[test]
+fn the_quiet_tee_prints_nothing_and_never_fails() {
+    let home = Private::new();
+    let payload = r#"{"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":2}}}"#;
+    let output = finish(
+        run(
+            helper(&home, &["--quota", "claude-code", "--quiet"], &[]),
+            payload,
+        ),
+        Duration::from_secs(3),
+    );
+    assert_silent_success(&output);
+    let output = finish(
+        run(
+            helper(&home, &["--quota", "codex", "--strange"], &[]),
+            payload,
+        ),
+        Duration::from_secs(3),
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), payload);
+}

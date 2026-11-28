@@ -49,6 +49,7 @@ mod procinfo;
 mod project_env;
 mod prompt_delivery;
 mod pty;
+mod quota;
 mod redact;
 mod relaunch;
 mod reminder;
@@ -204,6 +205,8 @@ pub(crate) const SMOKE_ENTRIES: &[(&str, &str)] = &[
     ("local-notify", "m.verifyLocalNotify()"),
     ("local-notify-relaunch", "m.verifyLocalNotifyRelaunch()"),
     ("hooks-live", "m.verifyHooksLive()"),
+    ("quota-switch", "m.verifyQuotaSwitch()"),
+    ("quota-live", "m.verifyQuotaLive()"),
     ("pi-live", "m.verifyPiLive()"),
     ("pi-layout", "m.verifyPiLayout()"),
     ("locale-layout", "m.verifyLocaleLayout()"),
@@ -345,6 +348,7 @@ fn main() {
             // This also retires an unreferenced legacy hook helper; it never
             // installs hooks or a Pi extension the user did not enable.
             agent_status::migrate_agents_on_boot();
+            quota::install::migrate_on_boot();
             // Away notifications + Dock badge (notify.rs): the click
             // delegate and the saved switch, before the first hook event.
             {
@@ -600,6 +604,9 @@ fn main() {
             scheduler::queue_clear_sessions,
             drops::save_dropped_file,
             agent_status::agent_hooks_status,
+            quota::quota_snapshot,
+            quota::install::quota_status,
+            quota::install::quota_set,
             agent_status::agent_hooks_set,
             agent_status::turn_summary_status,
             agent_status::turn_summary_set,

@@ -193,6 +193,43 @@ textarea[rows="4"] { --ta-rows: 4; }
 #update-btn[disabled], #tmux-restart-btn[disabled] { opacity: 0.7; cursor: default; }
 body.side-collapsed #update-btn, body.side-collapsed #tmux-restart-btn { padding: var(--sp-8) 0; margin: 0 var(--sp-8); }
 body.side-collapsed #update-btn .label, body.side-collapsed #tmux-restart-btn .label { display: none; }
+/* the Quota area (quota.js): one row per agent account, one thin bar per
+   usage window; presentation only, so its colours never reach a card */
+#quota-area { display: flex; flex-direction: column; gap: var(--sp-2); padding-bottom: var(--sp-6); }
+#quota-area[hidden] { display: none; }
+#quota-list { display: flex; flex-direction: column; gap: var(--sp-2); padding: 0 var(--sp-8); }
+.quota-row { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-4) var(--sp-8); border-radius: 6px; text-align: left; color: var(--muted); font-size: var(--fs-11); }
+.quota-row:hover { background: var(--hover); color: var(--text); }
+.quota-row-head { display: flex; gap: var(--sp-6); align-items: baseline; min-width: 0; }
+.quota-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-asof { margin-left: auto; color: var(--faint); font-size: var(--fs-10); white-space: nowrap; }
+.quota-wins { display: flex; flex-direction: column; gap: var(--sp-2); }
+.quota-win { display: grid; grid-template-columns: calc(24 * var(--u)) 1fr calc(30 * var(--u)); align-items: center; gap: var(--sp-6); font-family: var(--mono); font-size: var(--fs-10); }
+.quota-win-pct { text-align: right; }
+.quota-bar { position: relative; height: 4px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.quota-fill { position: absolute; inset: 0 auto 0 0; background: var(--muted); }
+.quota-warn .quota-fill { background: var(--wait); }
+.quota-danger .quota-fill { background: var(--danger); }
+.quota-stale.quota-bar { background: repeating-linear-gradient(90deg, var(--border-soft) 0 3px, transparent 3px 6px); }
+.quota-stale .quota-fill { opacity: 0.5; }
+.quota-note { color: var(--faint); font-size: var(--fs-10); padding: 0 var(--sp-8); }
+.quota-ring { display: none; align-self: center; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--muted); color: var(--muted); font-family: var(--mono); font-size: var(--fs-10); align-items: center; justify-content: center; }
+.quota-ring.quota-warn { border-color: var(--wait); color: var(--wait); }
+.quota-ring.quota-danger { border-color: var(--danger); color: var(--danger); }
+body.side-collapsed #quota-list, body.side-collapsed #quota-area .side-group { display: none; }
+body.side-collapsed .quota-ring { display: flex; }
+.quota-pop { position: fixed; z-index: 60; width: calc(300 * var(--u)); padding: var(--sp-12); display: flex; flex-direction: column; gap: var(--sp-6); background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-menu); font-size: var(--fs-12); color: var(--text); }
+.quota-pop-title { font-size: var(--fs-13); margin: 0; }
+.quota-pop-plan, .quota-pop-meta { color: var(--muted); font-size: var(--fs-11); overflow-wrap: anywhere; }
+.quota-pop-win { display: flex; flex-direction: column; gap: var(--sp-2); }
+.quota-pop-reset { color: var(--muted); font-size: var(--fs-11); }
+.quota-pop-sub { color: var(--faint); font-size: var(--fs-11); }
+.quota-pop-card { text-align: left; color: var(--accent); font-size: var(--fs-12); padding: var(--sp-2) 0; }
+.quota-pop-card:hover { text-decoration: underline; }
+.quotachip { margin-right: var(--sp-6); padding: var(--sp-2) var(--sp-8); border-radius: 10px; border: 1px solid var(--border); color: var(--muted); font-size: var(--fs-11); white-space: nowrap; }
+.quotachip.quota-warn { border-color: var(--wait); color: var(--wait); }
+.quotachip.quota-danger { border-color: var(--danger); color: var(--danger); }
+.quotachip.quota-stale { border-style: dashed; }
 
 body.side-collapsed #sidebar { width: calc(50 * var(--u)); }
 body.side-collapsed .side-top { padding: var(--sp-16) 0 var(--sp-10); justify-content: center; }

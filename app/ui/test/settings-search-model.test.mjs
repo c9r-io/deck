@@ -50,7 +50,7 @@ test('every setting has a unique stable id, a real section, translated labels an
       for (const dictionary of Object.values(dictionaries)) assert.ok(dictionary[key], `${item.id}: ${key}`);
     for (const keyword of item.keywords) assert.equal(keyword, normalizeSearchQuery(keyword), 'keywords are stored normalized');
   }
-  assert.deepEqual(sectionItems('agents').map(item => item.id), ['agent-status', 'claude-reentry', 'codex-reentry', 'away-notifications']);
+  assert.deepEqual(sectionItems('agents').map(item => item.id), ['agent-status', 'claude-reentry', 'codex-reentry', 'away-notifications', 'quota']);
   assert.deepEqual(sectionItems('remote').map(item => item.id), ['connector']);
   assert.deepEqual(sectionItems('mcp').map(item => item.id), ['mcp']);
 });
@@ -130,7 +130,7 @@ test('matching is case-insensitive, trims whitespace and needs every term', () =
 test('a section title shows that section when no setting names the query', () => {
   assert.deepEqual(search('Data & privacy'), [{ section: 'data', items: ['history', 'shell-data', 'logs'] }]);
   assert.deepEqual(search('数据与隐私'), [{ section: 'data', items: ['history', 'shell-data', 'logs'] }]);
-  assert.deepEqual(search('agents & notifications'), [{ section: 'agents', items: ['agent-status', 'claude-reentry', 'codex-reentry', 'away-notifications'] }]);
+  assert.deepEqual(search('agents & notifications'), [{ section: 'agents', items: ['agent-status', 'claude-reentry', 'codex-reentry', 'away-notifications', 'quota'] }]);
   assert.deepEqual(search('About & updates'), [{ section: 'about', items: ['updates'] }]);
 });
 

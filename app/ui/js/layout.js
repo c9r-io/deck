@@ -91,6 +91,7 @@ import { appendInputCleanup, createTerminalDataHandler } from './terminal-input.
 import { wireImeProbe } from './terminal-ime-probe.js';
 import { forwardTerminalClick, keepLocalTerminalMouse } from './terminal-mouse.js';
 import { paintFollowUps } from './follow-up-bar.js';
+import { onQuotaChange, paintQuotaChip } from './quota.js';
 import { attachFailure, paneNotice, retryAllowed, startFailure, startFailureToastKey, TERMINAL_WAITS } from './pane-wait-model.js';
 import { createTerminalFind } from './terminal-find.js';
 import { noteHumanInput, paintWorkerButton } from './workers.js';
@@ -812,6 +813,8 @@ export function updatePaneChrome(card) {
   if (name && name.textContent !== card.title) name.textContent = card.title;
   /* scrollback chip: the ONLY visual clue that the view is frozen history
      (the tmux position badge is deliberately off) */
+  /* the account this card's agent runs under (quota.js): presentation only */
+  paintQuotaChip(p.el.querySelector('.spane-head'), card.session);
   let chip = p.el.querySelector('.spane-head .scrollchip');
   if (card.scrolled) {
     if (!chip) {
@@ -1351,6 +1354,7 @@ export function renderSessionView() {
 /* DOM wiring, run once at boot (app.js) so the module can be imported
    without a document. */
 export function initLayout() {
+  onQuotaChange(() => { for (const p of panes.values()) updatePaneChrome(provider.get(p.sid)); });
   listen('menu-clear', clearFocusedTerminal).catch(() => uev('listen-fail', 'menu-clear'));
   onThemeChange(({ terminal }) => panes.forEach(pane => { pane.term.options.theme = terminal; }));
 
