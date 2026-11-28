@@ -1067,6 +1067,7 @@ mod tests {
             state,
             episode,
             viewed: false,
+            failure: None,
         };
         observe_with(n, native, session, seen, away, locale);
     }
@@ -1122,6 +1123,7 @@ mod tests {
             state: TURN_DONE,
             episode: 7,
             viewed: false,
+            failure: None,
         };
         observe_with(&mut n, &fake, "deck-card-ab12", ended, true, "en");
         observe_word(&mut n, &fake, "deck-card-cd34", NEEDS_INPUT, true, "en");
@@ -1403,6 +1405,7 @@ mod tests {
             state: TURN_DONE,
             episode,
             viewed,
+            failure: None,
         }
     }
 
@@ -1427,6 +1430,7 @@ mod tests {
                 state: "working",
                 episode: 8,
                 viewed: false,
+                failure: None,
             },
             true,
             "en",
@@ -1465,6 +1469,7 @@ mod tests {
                 state: "working",
                 episode: 4,
                 viewed: false,
+                failure: None,
             },
             true,
             "en",

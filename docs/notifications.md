@@ -16,7 +16,10 @@ prompt; it does not prove the agent is still waiting when you look.
 **Turn ended** (`turn-done`) says an interaction ended; it does not mean the
 task is complete or successful, that the agent is idle, or that its program
 or background work finished — Claude Code, for example, resumes by itself
-when a background command it started completes. Unread/viewed is Deck's
+when a background command it started completes. A Claude Code turn that an
+API error ended (its `StopFailure` hook) is a **turn ended** too, with
+"API error: <kind>" beside it on the card; it notifies and badges exactly
+like any other turn ending, and Deck retries nothing. Unread/viewed is Deck's
 attention bookkeeping about whether you have looked, and an *old snapshot*
 is about freshness of the last poll; neither is agent state.
 

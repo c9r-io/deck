@@ -206,6 +206,11 @@ export function createAttentionTracker() {
              current episode, so a new turn drops it */
           summary: episode != null && typeof info.summary === 'string' && info.summary.trim()
             ? info.summary.trim().slice(0, 200) : null,
+          /* a turn an API error ended (Claude Code's StopFailure): the
+             error's closed kind, sent only with that turn's ending episode.
+             Presentation only: no hold, send, close or retry reads it */
+          failure: episode != null && typeof info.agent_failure === 'string' && /^[a-z_]{1,32}$/.test(info.agent_failure)
+            ? info.agent_failure : null,
           /* and, for a card with follow-ups, which one the model would pick
              (1-based) and why: it marks a button, nothing more */
           followChoice: episode != null && Number.isInteger(info.follow_choice) ? info.follow_choice : null,

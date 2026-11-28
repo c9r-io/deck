@@ -7,6 +7,14 @@
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
 
+## API 错误结束的回合：Claude Code `StopFailure` → `turn-failed`（2026-11-28）
+
+Claude Code 的三种 hook 表都加了 `StopFailure` → `claude-code turn-failed`（不带 `--reply`；开机迁移给已有安装补上）。helper 只转发 `prompt_id` 和封闭列表里的错误种类（`failure`），不读 `last_assistant_message`/`error_details`；Deck 把它当作同一交互的 `turn-done`（同一准入、同一交互追踪器，迟到的失败不会结束新回合），种类带到 poll（`agent_failure`）、注意力行（"API error: …"）和 MCP worker 视图（`agent.failure`）。不算 Claude 交互证据，不是最终回复，不重试、不发送。
+
+- 隔离探针（本机，Claude Code 2.1.332，独立 HOME 与 `CLAUDE_CONFIG_DIR`、假 API key、本机回环 API 一律回 400）：`StopFailure` 触发、`Stop` 未触发；载荷字段 `session_id`、`transcript_path`、`cwd`、`prompt_id`（与该回合 `UserPromptSubmit` 相同）、`hook_event_name`、`error`（此例为 `unknown`）、`last_assistant_message`（"API Error: 400 …"）；`error_details` 此例缺省。401 时 Claude Code 一直重试到 120 秒超时，未触发 `StopFailure`。
+- 门禁（本机）：单元/集成测试、census、`scripts/ui-tests`、`check-js-syntax.py`、`check.mjs`。
+- **UNRUN**：Deck 内真实 Claude Code 卡片收到 `StopFailure` 的原生链路（helper → socket → 卡片）；release 载体；`error` 为非 `unknown` 的真实种类（rate_limit/overloaded 等）。Codex 0.172.0 无此事件；agy 1.5.19 未见文档化事件；Pi 的 observer 已对失败的 run 发 `turn-done`，但不带种类。
+
 ## 编排者第二轮：worktree 直接开卡、handoff、按实例关闭、报告接收确认（2026-11-28）
 
 项目多目录完整往返；客户端开关「自动允许已授权项目的关联工作树」（`Client.auto_worktrees`，取代未发布的逐项目规则：仓库锚点来自项目自己的根目录，进程内 `O_NOFOLLOW` 双向核对 Git 指针文件，无子进程，无父目录白名单）让任意位置的 linked worktree 直接开工人卡/托管 session，所有项目模式下新增项目自动适用；所有 MCP 启动在首次原生副作用前再做一次最终准入（`admit_launch_locked`）；`STATUS_WORDS` 加 `handoff`，adapter schema 真 enum；`deck_worker_close close_mode: instance`（实例 + 最新行绑定）、关闭进行中拒绝新行与重复关闭、前置与 admission 拒绝均带阶段与观察快照；`deck_worker_reports_ack` 与卡片「最新报告待编排者接收」。mcp.json sticky v22/v23。证据：`docs/evidence/orchestrator-round2-20261128/`。

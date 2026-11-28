@@ -1,7 +1,9 @@
 //! Signal consumer census (Signal Integrity FR-SI-01). The agent hook words
 //! are INTERACTION observations (`agent_status.rs` header): `working` = an
 //! interaction is active, `needs-input` = the agent requested input,
-//! `turn-done` = an interaction boundary was observed. None of them is
+//! `turn-done` = an interaction boundary was observed (`turn-failed`, the
+//! wire word of Claude Code's `StopFailure`, is a `turn-done` an API error
+//! ended, with a closed error kind: `failure`). None of them is
 //! lifecycle or readiness authority. Regression: a clock automation with
 //! "close the card" retired a live Claude Code session ~7 s after its first
 //! `turn-done` and killed a background command the agent was still running
@@ -74,6 +76,10 @@ fn sites(source: &str, token: &str, ident: fn(char) -> bool) -> Vec<usize> {
 
 const RUST_TOKENS: &[&str] = &[
     "TURN_DONE",
+    "TURN_FAILED",
+    "\"turn-failed\"",
+    "FAILURE_KINDS",
+    ".failure",
     "NEEDS_INPUT",
     "WORKING",
     "\"turn-done\"",
@@ -141,6 +147,46 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
     // and Codex's PermissionRequest (two)
     ("agent_status/hooks.rs", "", "\"needs-input\"", 8, Producer),
     ("agent_status/hooks.rs", "", "\"working\"", 5, Producer),
+    // A failed turn (Claude Code's StopFailure): the wire word, its closed
+    // kinds and the hook entry that runs it, in all three Claude tables.
+    // The parser takes it as a `turn-done` of its interaction with a kind;
+    // the store keeps the kind with the observation, the projections carry
+    // it out, and `ingest_line` refuses a failure that brings a final
+    // message — producer facts, no authority, no hold
+    ("agent_status.rs", "", "TURN_FAILED", 1, Producer),
+    ("agent_status.rs", "", "\"turn-failed\"", 1, Producer),
+    ("agent_status.rs", "", "FAILURE_KINDS", 1, Producer),
+    ("agent_status.rs", "parse_event", "TURN_FAILED", 1, Producer),
+    ("agent_status.rs", "parse_event", "TURN_DONE", 1, Producer),
+    (
+        "agent_status.rs",
+        "parse_event",
+        "FAILURE_KINDS",
+        1,
+        Producer,
+    ),
+    ("agent_status.rs", "projected", ".failure", 1, Producer),
+    (
+        "agent_status.rs",
+        "ingest_accepted",
+        ".failure",
+        5,
+        Producer,
+    ),
+    ("agent_status.rs", "pi_signal", ".failure", 2, Producer),
+    ("agent_status.rs", "ingest_line", ".failure", 1, Producer),
+    ("agent_status/hooks.rs", "", "\"turn-failed\"", 3, Producer),
+    // the poll hands the kind to the webview beside `agent` (the
+    // attention line); the MCP worker view names it (`agent.failure`).
+    // Read for nothing else.
+    (
+        "commands.rs",
+        "poll_observing_bells",
+        ".failure",
+        1,
+        Presentation,
+    ),
+    ("mcp/workers.rs", "seen_in", ".failure", 2, Presentation),
     // FR-SI-04: the interaction tracker admits words per source interaction
     // (refuses late/ended/mismatched ones); it grants nothing
     ("agent_status.rs", "admit", "NEEDS_INPUT", 4, Producer),
@@ -477,6 +523,8 @@ const RUST: &[(&str, &str, &str, usize, Class)] = &[
 
 const JS_TOKENS: &[&str] = &[
     "finish_fg",
+    "agent_failure",
+    "snapshot.failure",
     "'turn-done'",
     "'needs-input'",
     "'working'",
@@ -708,6 +756,22 @@ const JS: &[(&str, &str, &str, usize, Class)] = &[
         Presentation,
     ),
     ("attention.js", "sourceText", ".agent", 1, Presentation),
+    // a turn an API error ended: its kind on the snapshot and after the
+    // turn-ending text, nothing more (no hold, send, close or retry)
+    (
+        "attention-model.js",
+        "record",
+        "agent_failure",
+        3,
+        Attention,
+    ),
+    (
+        "attention.js",
+        "attentionStatusText",
+        "snapshot.failure",
+        2,
+        Presentation,
+    ),
     // "ended 3 h ago" beside a turn ending (the backend's episode start)
     ("attention.js", "endedText", ".agent", 1, Presentation),
     ("attention.js", "endedText", "'turn-done'", 1, Presentation),
@@ -831,7 +895,19 @@ const PI_OBSERVER: &[(&str, &str, &str, usize, Class)] = &[
 
 // ----------------------------------------------------------------- checks
 
-const TURN_DONE_TOKENS: &[&str] = &["TURN_DONE", "\"turn-done\"", "'turn-done'"];
+/// A turn ending's words, a failed one's included (`turn-failed` and its
+/// kind): none of them may be read on a side-effect path.
+const TURN_DONE_TOKENS: &[&str] = &[
+    "TURN_DONE",
+    "\"turn-done\"",
+    "'turn-done'",
+    "TURN_FAILED",
+    "\"turn-failed\"",
+    "FAILURE_KINDS",
+    ".failure",
+    "agent_failure",
+    "snapshot.failure",
+];
 
 fn assert_pinned(what: &str, found: &Census, allowed: &[(&str, &str, &str, usize, Class)]) {
     let mut violations = Vec::new();

@@ -150,6 +150,7 @@ const dictionary = {
   "attention.stopped": "已停止",
   "attention.doneRead": "本轮结束 · 已读",
   "attention.doneUnread": "本轮结束 · 未读",
+  "attention.apiError": "API 错误：{kind}",
   "attention.noSignal": "未收到有效 agent 状态",
   "attention.noSignalHint": "未收到有效 agent 状态；输出活动不代表已就绪",
   "attention.quiet": "安静 · 无有效 agent 状态",

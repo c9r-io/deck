@@ -25,6 +25,14 @@
 //! same way for both reply forms; Deck reads which one the file holds and
 //! makes no summary for the forward-only form.
 //!
+//! Every Claude Code form also carries `StopFailure` → `turn-failed` (an
+//! API error ended the turn, INSTEAD of `Stop`; `agent_status.rs` "A failed
+//! turn"). That entry is the same in all three forms and never carries
+//! `--reply`: the switch is read from the `Stop` hook alone. It joined
+//! later (`joined_later`): an install without it still reads as installed,
+//! and the boot migration adds it, as for `PostToolUse` and
+//! `PermissionRequest`; uninstall takes it out with the rest.
+//!
 //! Only a stable installed bundle may write global hooks. The explicit debug
 //! re-entry experiment may edit its bound project Lifecycle hooks only.
 //! Migration visits only unambiguous registered adapters and updates an already
@@ -157,26 +165,41 @@ type HookSpec = (&'static str, Option<&'static str>, &'static str);
 /// approves the tool or answers the question (probed). The Notification
 /// stays: the same (prompt, word) keeps its episode. The helper prints
 /// nothing, so it never decides the request.
+///
+/// `StopFailure` (joined 2026-11-28) fires INSTEAD of `Stop` when an API
+/// error ended the turn (rate limit, overload, authentication, billing, a
+/// server error, ...): before it a card stayed `working` after such a turn
+/// for good. Runtime proof (2.1.332, isolated `claude -p` against a loopback
+/// API answering 400): `StopFailure` fired, `Stop` did not, and its payload
+/// carried the same top-level `prompt_id` as the turn's `UserPromptSubmit`,
+/// plus `error` (one of Claude Code's matcher values, `unknown` there) and
+/// `last_assistant_message` (the rendered error text). It is main-thread
+/// only (Claude Code returns before a subagent's). Deck's entry runs
+/// `claude-code turn-failed`: the helper forwards the prompt id and the
+/// error KIND from a closed list, never the text — the entry never carries
+/// `--reply`, so no reply, summary or worker reply can come from it.
 const CLAUDE_HOOKS: &[HookSpec] = &[
     ("UserPromptSubmit", None, "working"),
     ("Notification", Some("permission_prompt"), "needs-input"),
     ("PermissionRequest", None, "needs-input"),
     ("PostToolUse", None, "working --after-tool"),
     ("Stop", None, "turn-done"),
+    ("StopFailure", None, "turn-failed"),
 ];
 
 /// Whether `event` was added to the spec table `specs` after it first
-/// shipped: Claude Code's `PostToolUse` (2026-11-23) and `PermissionRequest`
-/// (2026-11-27). An install made before one joined still counts as
-/// installed (`hooks_installed`), so the boot migration and the Settings
-/// toggle see it and the migration adds the event; whether it is CURRENT
+/// shipped: Claude Code's `PostToolUse` (2026-11-23), `PermissionRequest`
+/// (2026-11-27) and `StopFailure` (2026-11-28). An install made before one
+/// joined still counts as installed (`hooks_installed`), so the boot
+/// migration and the Settings toggle see it and the migration adds the
+/// event; whether it is CURRENT
 /// still needs every event (`hooks_are_current`). Codex's `PermissionRequest`
 /// is one of its first events: a Codex install without it is partial.
 fn joined_later(specs: &[HookSpec], event: &str) -> bool {
     let claude = specs
         .iter()
         .any(|(name, matcher, _)| *name == "Notification" && *matcher == Some("permission_prompt"));
-    event == "PostToolUse" || (claude && event == "PermissionRequest")
+    event == "PostToolUse" || (claude && (event == "PermissionRequest" || event == "StopFailure"))
 }
 
 /// The flag the Stop hook carries while turn summaries are on: with it the
@@ -193,6 +216,7 @@ const CLAUDE_HOOKS_WITH_REPLY: &[HookSpec] = &[
     ("PermissionRequest", None, "needs-input"),
     ("PostToolUse", None, "working --after-tool"),
     ("Stop", None, "turn-done --reply"),
+    ("StopFailure", None, "turn-failed"),
 ];
 
 /// The word after `--reply` that says the message is forwarded for worker
@@ -209,6 +233,7 @@ const CLAUDE_HOOKS_WITH_WORKER_REPLY: &[HookSpec] = &[
     ("PermissionRequest", None, "needs-input"),
     ("PostToolUse", None, "working --after-tool"),
     ("Stop", None, "turn-done --reply workers"),
+    ("StopFailure", None, "turn-failed"),
 ];
 
 /// What deck's Stop hook in a hooks file forwards, read from the file

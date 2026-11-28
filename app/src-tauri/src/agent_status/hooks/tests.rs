@@ -703,6 +703,72 @@ fn an_install_from_before_permission_request_is_installed_and_migrates_to_it() {
     );
 }
 
+/// An install made before StopFailure joined Claude Code's tables
+/// (2026-11-28) still reads as installed and migrates to it, in all three
+/// forms: `turn-failed`, never `--reply` (the switch stays the Stop hook's,
+/// read as found), and uninstall takes it out with the rest.
+#[test]
+fn an_install_from_before_stop_failure_is_installed_and_migrates_to_it() {
+    for (specs, mode) in [
+        (CLAUDE_HOOKS, ReplyHook::Off),
+        (CLAUDE_HOOKS_WITH_REPLY, ReplyHook::Summaries),
+        (CLAUDE_HOOKS_WITH_WORKER_REPLY, ReplyHook::Workers),
+    ] {
+        let older: Vec<HookSpec> = specs
+            .iter()
+            .copied()
+            .filter(|(event, _, _)| !matches!(*event, "StopFailure" | "PermissionRequest"))
+            .collect();
+        assert_eq!(older.len(), specs.len() - 2);
+        let old = hooks_with_install(
+            serde_json::json!({}),
+            &older,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER,
+        )
+        .unwrap();
+        assert!(old["hooks"].get("StopFailure").is_none());
+        assert!(hooks_installed(&old, specs), "still installed");
+        assert_eq!(reply_hook(&old), mode, "the switch is read as found");
+        assert!(!hooks_are_current(
+            &old,
+            specs,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
+        let migrated =
+            hooks_with_install(old, specs, "claude-code", HookStyle::Exec, HELPER).unwrap();
+        assert!(hooks_are_current(
+            &migrated,
+            specs,
+            "claude-code",
+            HookStyle::Exec,
+            HELPER
+        ));
+        let hook = &migrated["hooks"]["StopFailure"][0];
+        assert!(hook.get("matcher").is_none(), "every error kind");
+        assert_eq!(
+            hook["hooks"][0]["args"],
+            serde_json::json!(["claude-code", "turn-failed"])
+        );
+        assert_eq!(reply_hook(&migrated), mode, "the switch is unchanged");
+        let removed = hooks_with_uninstall(migrated);
+        assert_eq!(removed, serde_json::json!({}), "uninstall takes it out too");
+    }
+    // a file with StopFailure alone is not an install
+    let alone = serde_json::json!({ "hooks": { "StopFailure": [
+        { "hooks": [ { "type": "command", "command": HELPER, "args": ["claude-code", "turn-failed"] } ] }
+    ] } });
+    assert!(!hooks_installed(&alone, CLAUDE_HOOKS));
+    // Codex has no such event: none of its tables names one
+    assert!(!CODEX_HOOKS
+        .iter()
+        .chain(CODEX_HOOKS_WITH_REPLY)
+        .any(|(event, _, _)| *event == "StopFailure"));
+}
+
 /// A hook the user keeps in the SAME group as deck's is theirs. It does
 /// not make deck's hook stale (so the boot migration leaves the file
 /// alone), and install and uninstall take deck's hook out from beside it:
