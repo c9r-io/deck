@@ -1,0 +1,313 @@
+{
+ "startedAt": 1795872225,
+ "tag": "v3600dad3",
+ "phase": "1",
+ "steps": [
+  {
+   "name": "initialize",
+   "ok": true,
+   "at": 1795872226.0
+  },
+  {
+   "name": "tools-list",
+   "ok": true,
+   "at": 1795872226.0,
+   "count": 42,
+   "close_modes": "episode,instance,gone"
+  },
+  {
+   "name": "caller-is-a-card",
+   "ok": true,
+   "at": 1795872226.0
+  },
+  {
+   "name": "worker-started",
+   "ok": true,
+   "at": 1795872227.0,
+   "state": "committed",
+   "code": null
+  },
+  {
+   "name": "worker-busy",
+   "ok": true,
+   "at": 1795872257.1,
+   "state": "working"
+  },
+  {
+   "name": "line-a-queued",
+   "ok": true,
+   "at": 1795872257.1,
+   "state": "committed",
+   "code": null
+  },
+  {
+   "name": "line-a-waits",
+   "ok": true,
+   "at": 1795872261.1,
+   "state": "queued",
+   "waiting": "gap",
+   "quiet": 10,
+   "checked": true
+  },
+  {
+   "name": "interject-1",
+   "ok": true,
+   "at": 1795872322.0,
+   "n": 1,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 3
+  },
+  {
+   "name": "interject-2",
+   "ok": true,
+   "at": 1795872382.8,
+   "n": 2,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 4
+  },
+  {
+   "name": "interject-3",
+   "ok": true,
+   "at": 1795872443.6,
+   "n": 3,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 5
+  },
+  {
+   "name": "interject-4",
+   "ok": true,
+   "at": 1795872506.4,
+   "n": 4,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 6
+  },
+  {
+   "name": "interject-5",
+   "ok": true,
+   "at": 1795872569.2,
+   "n": 5,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 7
+  },
+  {
+   "name": "interject-6",
+   "ok": true,
+   "at": 1795872632.0,
+   "n": 6,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 8
+  },
+  {
+   "name": "interject-7",
+   "ok": true,
+   "at": 1795872694.8,
+   "n": 7,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 8
+  },
+  {
+   "name": "interject-8",
+   "ok": true,
+   "at": 1795872757.6,
+   "n": 8,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 9
+  },
+  {
+   "name": "interject-9",
+   "ok": true,
+   "at": 1795872820.4,
+   "n": 9,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 9
+  },
+  {
+   "name": "a-past-the-history",
+   "ok": true,
+   "at": 1795872820.4,
+   "delivered_shown": 8,
+   "unsent": 1
+  },
+  {
+   "name": "a-canceled",
+   "ok": true,
+   "at": 1795872820.5,
+   "outcome": "canceled",
+   "code": null
+  },
+  {
+   "name": "cancel-replay",
+   "ok": true,
+   "at": 1795872820.5,
+   "replayed": true
+  },
+  {
+   "name": "cancel-id-conflict",
+   "ok": true,
+   "at": 1795872820.5,
+   "code": "REQUEST_ID_CONFLICT"
+  },
+  {
+   "name": "b-delivered",
+   "ok": true,
+   "at": 1795872883.2,
+   "state": "delivered"
+  },
+  {
+   "name": "b-replay-is-one-line",
+   "ok": true,
+   "at": 1795872883.2,
+   "replayed": true
+  },
+  {
+   "name": "after-the-turn",
+   "ok": true,
+   "at": 1795872888.3,
+   "a": "canceled",
+   "b": "delivered",
+   "active": "{\"queued\": 0, \"sending\": 0, \"uncertain\": 0}"
+  }
+ ],
+ "card": "W81c8ebf17154257ccd2b931094e70b2f",
+ "interjects": [
+  {
+   "n": 1,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 3
+  },
+  {
+   "n": 2,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 4
+  },
+  {
+   "n": 3,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 5
+  },
+  {
+   "n": 4,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 6
+  },
+  {
+   "n": 5,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 7
+  },
+  {
+   "n": 6,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 8
+  },
+  {
+   "n": 7,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 8
+  },
+  {
+   "n": 8,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 9
+  },
+  {
+   "n": 9,
+   "state": "delivered",
+   "code": null,
+   "aListed": "queued",
+   "aQueued": 1,
+   "aDelivery": "queued",
+   "aWaiting": "gap",
+   "sends": 9
+  }
+ ],
+ "instance": "416337d1d3c96557bdb178c078d83e21",
+ "lastLine": "op_28060a9a7b9060011768c682783c7a54",
+ "adapterStderrBytes": 0,
+ "failures": []
+}

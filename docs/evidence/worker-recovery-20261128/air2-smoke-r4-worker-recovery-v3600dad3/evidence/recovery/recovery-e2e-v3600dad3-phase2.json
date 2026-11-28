@@ -1,0 +1,83 @@
+{
+ "startedAt": 1795872906,
+ "tag": "v3600dad3",
+ "phase": "2",
+ "steps": [
+  {
+   "name": "initialize",
+   "ok": true,
+   "at": 1795872906.4
+  },
+  {
+   "name": "tools-list",
+   "ok": true,
+   "at": 1795872906.4,
+   "count": 42,
+   "close_modes": "episode,instance,gone"
+  },
+  {
+   "name": "caller-is-a-card",
+   "ok": true,
+   "at": 1795872906.4
+  },
+  {
+   "name": "restart-facts",
+   "ok": true,
+   "at": 1795872906.4,
+   "liveness": "alive",
+   "state": "unavailable",
+   "why": "no-turn-seen",
+   "kind": "program",
+   "before": true,
+   "deck": 1795872900,
+   "started": 1795872226
+  },
+  {
+   "name": "no-mode-closes-an-unobserved-agent",
+   "ok": true,
+   "at": 1795872906.5,
+   "refusals": "{\"episode-0\": [\"OBSERVATION_UNKNOWN\", \"precheck\", false], \"instance\": [\"OBSERVATION_UNKNOWN\", \"precheck\", false], \"gone\": [\"SESSION_PRESENT\", \"precheck\", false]}"
+  },
+  {
+   "name": "one-worker-session",
+   "ok": true,
+   "at": 1795872906.5,
+   "sessions": 2
+  },
+  {
+   "name": "seen-gone",
+   "ok": true,
+   "at": 1795872906.5,
+   "liveness": "gone",
+   "instance": null
+  },
+  {
+   "name": "gone-close-accepted",
+   "ok": true,
+   "at": 1795872906.5,
+   "state": "accepted",
+   "code": null
+  },
+  {
+   "name": "gone-close-committed",
+   "ok": true,
+   "at": 1795872907.5,
+   "state": "committed",
+   "code": null
+  },
+  {
+   "name": "gone-replay-same",
+   "ok": true,
+   "at": 1795872907.6,
+   "state": "committed"
+  },
+  {
+   "name": "card-left-the-list",
+   "ok": true,
+   "at": 1795872907.6
+  }
+ ],
+ "card": "W81c8ebf17154257ccd2b931094e70b2f",
+ "adapterStderrBytes": 0,
+ "failures": []
+}

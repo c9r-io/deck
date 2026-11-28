@@ -1,0 +1,80 @@
+{
+  "run": "v895271c0",
+  "root": "/private/tmp/deck-verify-v895271c0",
+  "socket": "/private/tmp/deck-verify-v895271c0/t/tmux-501/deck-smoke-v895271c0",
+  "mode": "worker-recovery",
+  "head": "e9a6d59c",
+  "dirty": [
+    "M docs/evidence/worker-recovery-20261128/run_e2e.py",
+    "?? docs/evidence/worker-recovery-20261128/air2-smoke-r4-worker-recovery-v3600dad3/",
+    "?? docs/evidence/worker-recovery-20261128/run-r4.out",
+    "?? docs/evidence/worker-recovery-20261128/run-sf2.out",
+    "?? research_notes/"
+  ],
+  "binMtime": "2026-11-28 21:49:11",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "13",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "访达",
+  "claudeAuth": true,
+  "version": "0.8.46",
+  "trustAdded": "add True",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-v895271c0/experiment.json"
+  ],
+  "caffeinatePid": "82704",
+  "appPid": "82711",
+  "registerApp": [
+    0,
+    "registered process pid 82711 started Sat Nov 28 22:43:51 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 82724 started Sat Nov 28 22:43:52 2026"
+  ],
+  "stopfailure": {
+    "serverPid": "84493",
+    "registerServer": [
+      0,
+      "registered process pid 84493 started Sat Nov 28 22:43:57 2026"
+    ],
+    "pane": "bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin TERM=dumb TMUX=\"$TMUX\" TMUX_PANE=\"\n$TMUX_PANE\" DECK_STATUS_SOCK=\"$DECK_STATUS_SOCK\" HOME=/private/tmp/deck-verify-v\n895271c0/sf/home CLAUDE_CONFIG_DIR=/private/tmp/deck-verify-v895271c0/sf/cfg ANT\nHROPIC_API_KEY=sk-ant-deck-probe-fake ANTHROPIC_BASE_URL=http://127.0.0.1:18154 \nCLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 \"$(command -v c\nlaude)\" -p 'say hi' --model claude-sonnet-4-5; echo SF-EXIT=$?\n",
+    "payload": null,
+    "requests": "6",
+    "agentStatus": [
+      "1795873475 [agent-status] claude-code working s=sess-4de19 target=1 v=2 e=1",
+      "1795873475 [agent-status] claude-code turn-done failed=unknown s=sess-4de19 target=1 v=2 e=2"
+    ],
+    "stopServer": [
+      0,
+      "process pid 84493 started Sat Nov 28 22:43:57 2026: running\nstopped process pid 84493"
+    ]
+  },
+  "seconds": 1000039,
+  "finished": false,
+  "verdict": "FAIL (exit 1)",
+  "verdictDetail": [
+    "smoke-verdict worker-recovery: FAIL (2/4 expected checkpoints, 2 lines)",
+    "  FAIL recovery-card: missing",
+    "  FAIL done: not the last checkpoint (last is recovery-armed)"
+  ],
+  "checksOfInterest": [
+    "smoke-check workers-client a=1 b=0\n",
+    "smoke-check recovery-armed a=1 b=0\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 82711 started Sat Nov 28 22:43:51 2026: running\ntmux-server pid 82724 started Sat Nov 28 22:43:52 2026 socket /private/tmp/deck-verify-v895271c0/t/tmux-501/deck-smoke-v895271c0: running\nprocess pid 84493 started Sat Nov 28 22:43:57 2026: gone"
+  ],
+  "cleanup": [
+    0,
+    "process pid 82711 started Sat Nov 28 22:43:51 2026: running\ntmux-server pid 82724 started Sat Nov 28 22:43:52 2026 socket /private/tmp/deck-verify-v895271c0/t/tmux-501/deck-smoke-v895271c0: running\nprocess pid 84493 started Sat Nov 28 22:43:57 2026: gone\nstopped tmux-server pid 82724\nstopped process pid 82711"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 5400",
+  "rootTrashed": true,
+  "trustRemoved": "remove False",
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

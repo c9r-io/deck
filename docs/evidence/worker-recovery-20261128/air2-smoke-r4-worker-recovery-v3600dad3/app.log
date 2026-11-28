@@ -1,0 +1,60 @@
+1795872220 [tmux] using the bundled sidecar
+1795872220 [notify] boot not-determined
+1795872220 [notify] configured not-determined
+1795872220 [evt] ping emitted ok=true
+1795872220 [ui] ping-recv
+1795872220 [extensions] services started (1)
+1795872222 [agent-hooks] worker replies unchanged (release-only)
+1795872222 [ui] smoke-check workers-client a=1 b=0
+1795872222 [start] created sess-ae4e7 gate=39ms create=13ms cmd=0ms total=52ms restored=false
+1795872222 [ui] smoke-check recovery-armed a=1 b=0
+1795872223 [tmux-control] read channel connected
+1795872226 [start] created sess-cfce1 gate=55ms create=7ms cmd=8ms total=70ms restored=false
+1795872226 [ui] smoke-check recovery-card a=1 b=0
+1795872226 [ui] smoke-check done a=1 b=3
+1795872246 [queue] first-send stabilization started for sess-cfce1
+1795872252 [queue] first-send stabilization finished for sess-cfce1 (6389ms)
+1795872253 [queue] sent to sess-cfce1 (369B, mode at, approved delegated step, first send without readiness confirmation)
+1795872253 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872321 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872321 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872382 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872382 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872443 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872443 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872504 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872504 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872567 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872567 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872629 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872629 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872692 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872692 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872755 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872755 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872818 [queue] sent to sess-cfce1 (28B, mode chain, approved delegated step)
+1795872818 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=1
+1795872820 [queue] worker line canceled by its client
+1795872820 [mcp] refused deck_worker_cancel code=REQUEST_ID_CONFLICT relation=-
+1795872839 [agent-status] claude-code turn-done s=sess-cfce1 target=1 v=2 e=2
+1795872839 [summary] kept as written
+1795872881 [queue] sent to sess-cfce1 (50B, mode chain, approved delegated step)
+1795872881 [agent-status] claude-code working s=sess-cfce1 target=1 v=2 e=3
+1795872885 [agent-status] claude-code turn-done s=sess-cfce1 target=1 v=2 e=4
+1795872885 [summary] kept as written
+1795872894 [exit] termination signal
+1795872900 [tmux] using the bundled sidecar
+1795872901 [notify] boot not-determined
+1795872901 [notify] configured not-determined
+1795872901 [evt] ping emitted ok=true
+1795872901 [ui] ping-recv
+1795872901 [extensions] services started (1)
+1795872901 [tmux-control] read channel connected
+1795872903 [ui] smoke-check recovery-restored a=1 b=3
+1795872906 [mcp] refused deck_worker_close code=OBSERVATION_UNKNOWN relation=-
+1795872906 [mcp] refused deck_worker_close code=OBSERVATION_UNKNOWN relation=-
+1795872906 [mcp] refused deck_worker_close code=SESSION_PRESENT relation=-
+1795872907 [ui] smoke-check recovery-cleared a=1 b=0
+1795872920 [agent-status] claude-code working s=sess-0861c target=1 v=2 e=1
+1795873090 [agent-status] claude-code turn-done failed=server_error s=sess-0861c target=1 v=2 e=2
+1795873147 [ui] smoke-check done a=1 b=4

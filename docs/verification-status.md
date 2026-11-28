@@ -1,11 +1,19 @@
 # 当前验证索引
 
-更新：2026-11-28（编排者第二轮：关联工作树开关直接开卡与启动前最终准入、项目多目录、报告 handoff、按实例关闭工人卡与两阶段关闭诊断、最新报告接收确认；退出超时的 Claude 卡由 late exit 重入；用量额度：每个 Agent 账号一份，statusLine 包一层 + Codex rollout，侧栏、卡片标签、worker 列表；编排者 MCP：报告长等待、结构化报告、lane epoch 并发提交、agy 工作中不打字；本机通知：`deck-notify` CLI → 本机 socket → 持久收件箱 → 通知页 → 本机通知规则）；2026-11-27（窗口冻结修复：attach/启动/关闭等移出主线程、主线程看门狗、同步命令普查；插队消息：编排卡不等 quiet 给自己开的子卡发一行）；2026-11-26（重入/崩溃恢复后的 Claude 以启动器名运行，排队的行能送达）；2026-11-18（跨项目移卡；MCP 整理卡片）；2026-11-17（Codex 最终回复进入 Deck：快照、worker、手机；卡片快照：MCP 客户端读卡片并给出收尾建议；回合结束显示时长）；2026-11-12（体检第一轮：正确性修复；第二轮：结构整理；第三轮：文档与文案）；2026-11-11（worker 卡升级后自动重入；编排者标记 Slack 提及；一个客户端绑定多个或所有项目；同一客户端的多个编排者按编排卡分组；Slack 提及交给编排者；一个授权对话框与工作卡类型）；2026-11-10（工作卡：编排型 Agent 驱动自己开的卡）；2026-11-06（Slack 提及一览：@你 的消息在 Deck 里列出，手动路由到 Slack 表情规则；升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
+更新：2026-11-28（关闭保护一致与 gone 清理、排队行精确查询与取消、报告接收状态、独立额度读取、API 错误结束的回合；编排者第二轮：关联工作树开关直接开卡与启动前最终准入、项目多目录、报告 handoff、按实例关闭工人卡与两阶段关闭诊断、最新报告接收确认；退出超时的 Claude 卡由 late exit 重入；用量额度：每个 Agent 账号一份，statusLine 包一层 + Codex rollout，侧栏、卡片标签、worker 列表；编排者 MCP：报告长等待、结构化报告、lane epoch 并发提交、agy 工作中不打字；本机通知：`deck-notify` CLI → 本机 socket → 持久收件箱 → 通知页 → 本机通知规则）；2026-11-27（窗口冻结修复：attach/启动/关闭等移出主线程、主线程看门狗、同步命令普查；插队消息：编排卡不等 quiet 给自己开的子卡发一行）；2026-11-26（重入/崩溃恢复后的 Claude 以启动器名运行，排队的行能送达）；2026-11-18（跨项目移卡；MCP 整理卡片）；2026-11-17（Codex 最终回复进入 Deck：快照、worker、手机；卡片快照：MCP 客户端读卡片并给出收尾建议；回合结束显示时长）；2026-11-12（体检第一轮：正确性修复；第二轮：结构整理；第三轮：文档与文案）；2026-11-11（worker 卡升级后自动重入；编排者标记 Slack 提及；一个客户端绑定多个或所有项目；同一客户端的多个编排者按编排卡分组；Slack 提及交给编排者；一个授权对话框与工作卡类型）；2026-11-10（工作卡：编排型 Agent 驱动自己开的卡）；2026-11-06（Slack 提及一览：@你 的消息在 Deck 里列出，手动路由到 Slack 表情规则；升级重启失败：两个 Agent 退出慢让整次重启失败，已退出的 Claude 也没有重入；Claude 以选择列表或 `-c` 启动时认不出）；2026-11-05（进程表只装下最新的约四分之一进程：重入只认出 2 个 Claude 会话；四个改动前就失败的原生 smoke；装文字的宽度随字号缩放；间距与字号统一；终端单击交给要了鼠标的程序；多行文本框统一；预设后续；成批关闭；轮次摘要；起草卡片标题；测试 tmux socket 遗留；Slack 补漏轮询的失败计数；模型 API 密钥扩展；手机任务预设编辑器的退出路径：Mac mini 原生）。这里汇总近期改进的验证范围与下一次验证触发条件，
 不是对所有功能的重新认证，也不替代各模块头部契约。
 
 状态：**PASS** 只对所列代码和环境成立；**沿用** 表示没有在本轮重跑原生场景；
 **待观测** 表示现有结果不足以证明间歇问题消失；**BLOCKED / UNRUN** 保留原记录的含义。
 一次 CI 通过不会把原生验证、发布安装或上游能力缺口自动变成 PASS。
+
+## 关闭保护一致、排队行精确查询/取消、报告接收状态（2026-11-28）
+
+所有关闭模式共用一套检查（`workers::shared_verdict`）：前台程序须是决定时那个、正在运行的程序须有 Agent 观察（`OBSERVATION_UNKNOWN`，`after_episode: 0` 不能绕过）、本卡没有排队/发送中/结果不明/已接受未入队的行；新增 `close_mode: gone` 清理 session 已不存在的卡（session 重现即 `SESSION_PRESENT`）。工人行以队列行为准（不再被最近 8 条历史挤出），每卡上限在加行的队列事务里判定；`deck_operation_get` 给出 `delivery`；新工具 `deck_worker_cancel`；报告 `receiptState`。
+
+- **PASS（air2 debug 载体，真实 Claude Code 2.1.332 工人，`docs/evidence/worker-recovery-20261128/air2-smoke-r4-*`，两阶段 smoke-verdict 均 PASS）**：A 在 9 条插话全部送达后仍列出、计数、`deck_operation_get` 为 queued（waiting `gap`，带 checkedAt/剩余时间）；取消 A 得 canceled，同一请求重放同一结果、同一 request id 换目标被拒；新 request id 插话 B 只送达一次；回合结束后 A 仍 canceled、无未结行。Deck GUI 重启（tmux 与 Agent 存活）后工人为 alive / unavailable / no-turn-seen、`foreground.beforeDeckStarted: true`；episode 0 与 instance 关闭均 `OBSERVATION_UNKNOWN`，gone 为 `SESSION_PRESENT`，提示不再建议换弱模式；结束其 session 后 `liveness: gone`、`instance: null`，`close_mode: gone` committed，重放同一操作，卡片离开 Board。
+- 门禁（本机）：`cargo fmt`、clippy（CI 形式）、`cargo test --workspace`（隔离 HOME、短 TMPDIR；`agent_reentry::tests::unapproved_cards_never_receive_bypass` 在全量高负载下偶发 Unconfirmed，单独重跑 152/152 通过，两个子分支也各自遇到）、`scripts/ui-tests` 1072/1072、`check-js-syntax.py`、`check.mjs`、`extension_catalog --check`。
+- **UNRUN**：release 载体；真实窗口里人工查看报告 unknown/pending/acknowledged 标签与额度权限勾选；编排者真实客户端（用户的隧道 adapter）刷新后的 tools/list；`deck_quota_snapshot` 的真实 Codex rollout / statusLine 端到端（只有单元 fixture）。
 
 ## API 错误结束的回合：Claude Code `StopFailure` → `turn-failed`（2026-11-28）
 
@@ -13,7 +21,8 @@ Claude Code 的三种 hook 表都加了 `StopFailure` → `claude-code turn-fail
 
 - 隔离探针（本机，Claude Code 2.1.332，独立 HOME 与 `CLAUDE_CONFIG_DIR`、假 API key、本机回环 API 一律回 400）：`StopFailure` 触发、`Stop` 未触发；载荷字段 `session_id`、`transcript_path`、`cwd`、`prompt_id`（与该回合 `UserPromptSubmit` 相同）、`hook_event_name`、`error`（此例为 `unknown`）、`last_assistant_message`（"API Error: 400 …"）；`error_details` 此例缺省。401 时 Claude Code 一直重试到 120 秒超时，未触发 `StopFailure`。
 - 门禁（本机）：单元/集成测试、census、`scripts/ui-tests`、`check-js-syntax.py`、`check.mjs`。
-- **UNRUN**：Deck 内真实 Claude Code 卡片收到 `StopFailure` 的原生链路（helper → socket → 卡片）；release 载体；`error` 为非 `unknown` 的真实种类（rate_limit/overloaded 等）。Codex 0.172.0 无此事件；agy 1.5.19 未见文档化事件；Pi 的 observer 已对失败的 run 发 `turn-done`，但不带种类。
+- **PASS（air2 debug 载体，2026-11-28）**：Deck 卡片 pane 里真实 Claude Code 2.1.332 的回合被回环 400 结束，经载体 helper 进入 Deck：app.log `claude-code working … e=1` → `claude-code turn-done failed=unknown … e=2`（`docs/evidence/worker-recovery-20261128/air2-smoke-sf2-*`）。
+- **UNRUN**：release 载体；`error` 为非 `unknown` 的真实种类（rate_limit/overloaded 等）。Codex 0.172.0 无此事件；agy 1.5.19 未见文档化事件；Pi 的 observer 已对失败的 run 发 `turn-done`，但不带种类。
 
 ## 编排者第二轮：worktree 直接开卡、handoff、按实例关闭、报告接收确认（2026-11-28）
 

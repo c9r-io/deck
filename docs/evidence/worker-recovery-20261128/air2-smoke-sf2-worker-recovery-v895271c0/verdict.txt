@@ -1,0 +1,3 @@
+smoke-verdict worker-recovery: FAIL (2/4 expected checkpoints, 2 lines)
+  FAIL recovery-card: missing
+  FAIL done: not the last checkpoint (last is recovery-armed)

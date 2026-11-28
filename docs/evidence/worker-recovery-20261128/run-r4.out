@@ -1,0 +1,128 @@
+{
+  "run": "v3600dad3",
+  "root": "/private/tmp/deck-verify-v3600dad3",
+  "socket": "/private/tmp/deck-verify-v3600dad3/t/tmux-501/deck-smoke-v3600dad3",
+  "mode": "worker-recovery",
+  "head": "e9a6d59c",
+  "dirty": [
+    "M docs/evidence/worker-recovery-20261128/run_e2e.py",
+    "?? docs/evidence/worker-recovery-20261128/run-r4.out",
+    "?? research_notes/"
+  ],
+  "binMtime": "2026-11-28 21:49:11",
+  "machineBefore": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de",
+  "idleSeconds": "6",
+  "lockMarkers": "\"IOConsoleLocked\" = No",
+  "frontBefore": "访达",
+  "claudeAuth": true,
+  "version": "0.8.46",
+  "trustAdded": "add True",
+  "registryInit": [
+    0,
+    "registry created: /private/tmp/deck-verify-v3600dad3/experiment.json"
+  ],
+  "caffeinatePid": "9011",
+  "appPid": "9044",
+  "registerApp": [
+    0,
+    "registered process pid 9044 started Sat Nov 28 22:23:38 2026"
+  ],
+  "frontAfterLaunch": "deck smoke",
+  "registerServer": [
+    0,
+    "registered tmux-server pid 9758 started Sat Nov 28 22:23:40 2026"
+  ],
+  "operator": {
+    "panesAtArmed": [
+      "deck-orch-r-bgb6 %0 zsh"
+    ],
+    "clientTypedAt": 0.7,
+    "evidence": "{\n \"startedAt\": 1795872225,\n \"tag\": \"v3600dad3\",\n \"phase\": \"1\",\n \"steps\": [\n  {\n   \"name\": \"initialize\",\n   \"ok\": true,\n   \"at\": 1795872226.0\n  },\n  {\n   \"name\": \"tools-list\",\n   \"ok\": true,\n   \"at\": 1795872226.0,\n   \"count\": 42,\n   \"close_modes\": \"episode,instance,gone\"\n  },\n  {\n   \"name\": \"caller-is-a-card\",\n   \"ok\": true,\n   \"at\": 1795872226.0\n  },\n  {\n   \"name\": \"worker-started\",\n   \"ok\": true,\n   \"at\": 1795872227.0,\n   \"state\": \"committed\",\n   \"code\": null\n  },\n  {\n   \"name\": \"worker-busy\",\n   \"ok\": true,\n   \"at\": 1795872257.1,\n   \"state\": \"working\"\n  },\n  {\n   \"name\": \"line-a-queued\",\n   \"ok\": true,\n   \"at\": 1795872257.1,\n   \"state\": \"committed\",\n   \"code\": null\n  },\n  {\n   \"name\": \"line-a-waits\",\n   \"ok\": true,\n   \"at\": 1795872261.1,\n   \"state\": \"queued\",\n   \"waiting\": \"gap\",\n   \"quiet\": 10,\n   \"checked\": true\n  },\n  {\n   \"name\": \"interject-1\",\n   \"ok\": true,\n   \"at\": 1795872322.0,\n   \"n\": 1,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 3\n  },\n  {\n   \"name\": \"interject-2\",\n   \"ok\": true,\n   \"at\": 1795872382.8,\n   \"n\": 2,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 4\n  },\n  {\n   \"name\": \"interject-3\",\n   \"ok\": true,\n   \"at\": 1795872443.6,\n   \"n\": 3,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 5\n  },\n  {\n   \"name\": \"interject-4\",\n   \"ok\": true,\n   \"at\": 1795872506.4,\n   \"n\": 4,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 6\n  },\n  {\n   \"name\": \"interject-5\",\n   \"ok\": true,\n   \"at\": 1795872569.2,\n   \"n\": 5,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 7\n  },\n  {\n   \"name\": \"interject-6\",\n   \"ok\": true,\n   \"at\": 1795872632.0,\n   \"n\": 6,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 8\n  },\n  {\n   \"name\": \"interject-7\",\n   \"ok\": true,\n   \"at\": 1795872694.8,\n   \"n\": 7,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 8\n  },\n  {\n   \"name\": \"interject-8\",\n   \"ok\": true,\n   \"at\": 1795872757.6,\n   \"n\": 8,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 9\n  },\n  {\n   \"name\": \"interject-9\",\n   \"ok\": true,\n   \"at\": 1795872820.4,\n   \"n\": 9,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 9\n  },\n  {\n   \"name\": \"a-past-the-history\",\n   \"ok\": true,\n   \"at\": 1795872820.4,\n   \"delivered_shown\": 8,\n   \"unsent\": 1\n  },\n  {\n   \"name\": \"a-canceled\",\n   \"ok\": true,\n   \"at\": 1795872820.5,\n   \"outcome\": \"canceled\",\n   \"code\": null\n  },\n  {\n   \"name\": \"cancel-replay\",\n   \"ok\": true,\n   \"at\": 1795872820.5,\n   \"replayed\": true\n  },\n  {\n   \"name\": \"cancel-id-conflict\",\n   \"ok\": true,\n   \"at\": 1795872820.5,\n   \"code\": \"REQUEST_ID_CONFLICT\"\n  },\n  {\n   \"name\": \"b-delivered\",\n   \"ok\": true,\n   \"at\": 1795872883.2,\n   \"state\": \"delivered\"\n  },\n  {\n   \"name\": \"b-replay-is-one-line\",\n   \"ok\": true,\n   \"at\": 1795872883.2,\n   \"replayed\": true\n  },\n  {\n   \"name\": \"after-the-turn\",\n   \"ok\": true,\n   \"at\": 1795872888.3,\n   \"a\": \"canceled\",\n   \"b\": \"delivered\",\n   \"active\": \"{\\\"queued\\\": 0, \\\"sending\\\": 0, \\\"uncertain\\\": 0}\"\n  }\n ],\n \"card\": \"W81c8ebf17154257ccd2b931094e70b2f\",\n \"interjects\": [\n  {\n   \"n\": 1,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 3\n  },\n  {\n   \"n\": 2,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 4\n  },\n  {\n   \"n\": 3,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 5\n  },\n  {\n   \"n\": 4,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 6\n  },\n  {\n   \"n\": 5,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 7\n  },\n  {\n   \"n\": 6,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 8\n  },\n  {\n   \"n\": 7,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 8\n  },\n  {\n   \"n\": 8,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 9\n  },\n  {\n   \"n\": 9,\n   \"state\": \"delivered\",\n   \"code\": null,\n   \"aListed\": \"queued\",\n   \"aQueued\": 1,\n   \"aDelivery\": \"queued\",\n   \"aWaiting\": \"gap\",\n   \"sends\": 9\n  }\n ],\n \"instance\": \"416337d1d3c96557bdb178c078d83e21\",\n \"lastLine\": \"op_28060a9a7b9060011768c682783c7a54\",\n \"adapterStderrBytes\": 0,\n \"failures\": []\n}",
+    "orchPane": "(⎈|BINARY-N/A:N/A)➜  work python3 /private/tmp/deck-verify-v3600dad3/scripts/mcp\n-recovery-e2e.py --phase 1 --adapter /private/tmp/deck-verify-v3600dad3/deck-smo\nke.app/Contents/MacOS/deck-mcp --socket /private/tmp/deck-verify-v3600dad3/run/d\nata/mcp-control.sock --client-id client_e063c110e424427ca099cbfb04b07277 --crede\nntial-file /private/tmp/deck-verify-v3600dad3/run/data/evidence/mcp-credential-c\nlient_e063c110e424427ca099cbfb04b07277 --evidence /private/tmp/deck-verify-v3600\ndad3/run/data/evidence/recovery --tag v3600dad3 --tmux /private/tmp/deck-verify-\nv3600dad3/deck-smoke.app/Contents/MacOS/tmux\nok   initialize \nok   tools-list count=42 close_modes=episode,instance,gone\nok   caller-is-a-card \nok   worker-started state=committed code=None\nok   worker-busy state=working\nok   line-a-queued state=committed code=None\nok   line-a-waits state=queued waiting=gap quiet=10 checked=True\nok   interject-1 n=1 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=3\nok   interject-2 n=2 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=4\nok   interject-3 n=3 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=5\nok   interject-4 n=4 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=6\nok   interject-5 n=5 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=7\nok   interject-6 n=6 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=8\nok   interject-7 n=7 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=8\nok   interject-8 n=8 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=9\nok   interject-9 n=9 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=9\nok   a-past-the-history delivered_shown=8 unsent=1\nok   a-canceled outcome=canceled code=None\nok   cancel-replay replayed=True\nok   cancel-id-conflict code=REQUEST_ID_CONFLICT\nok   b-delivered state=delivered\nok   b-replay-is-one-line replayed=True\nok   after-the-turn a=canceled b=delivered active={\"queued\": 0, \"sending\": 0, \"uncertain\": 0}\nPASS\n(⎈|BINARY-N/A:N/A)➜  work \n",
+    "ledger": "21 [('worker-cancel', 'committed', None)]",
+    "queueOps": "[]"
+  },
+  "seconds": 669,
+  "finished": true,
+  "killApp": [
+    0,
+    "process pid 9044 started Sat Nov 28 22:23:38 2026: running\nstopped process pid 9044"
+  ],
+  "phase1Lines": 45,
+  "panesAfterStop": [
+    "deck-orch-r-bgb6 zsh",
+    "deck-recovery-worker-0b2f 2.1.332"
+  ],
+  "appPid2": "58401",
+  "registerApp2": [
+    0,
+    "registered process pid 58401 started Sat Nov 28 22:35:00 2026"
+  ],
+  "operator2": {
+    "panesAtArmed": [
+      "deck-orch-r-bgb6 %0 zsh",
+      "deck-recovery-worker-0b2f %1 2.1.332"
+    ],
+    "clientTypedAt": 0.7,
+    "evidence": "{\n \"startedAt\": 1795872906,\n \"tag\": \"v3600dad3\",\n \"phase\": \"2\",\n \"steps\": [\n  {\n   \"name\": \"initialize\",\n   \"ok\": true,\n   \"at\": 1795872906.4\n  },\n  {\n   \"name\": \"tools-list\",\n   \"ok\": true,\n   \"at\": 1795872906.4,\n   \"count\": 42,\n   \"close_modes\": \"episode,instance,gone\"\n  },\n  {\n   \"name\": \"caller-is-a-card\",\n   \"ok\": true,\n   \"at\": 1795872906.4\n  },\n  {\n   \"name\": \"restart-facts\",\n   \"ok\": true,\n   \"at\": 1795872906.4,\n   \"liveness\": \"alive\",\n   \"state\": \"unavailable\",\n   \"why\": \"no-turn-seen\",\n   \"kind\": \"program\",\n   \"before\": true,\n   \"deck\": 1795872900,\n   \"started\": 1795872226\n  },\n  {\n   \"name\": \"no-mode-closes-an-unobserved-agent\",\n   \"ok\": true,\n   \"at\": 1795872906.5,\n   \"refusals\": \"{\\\"episode-0\\\": [\\\"OBSERVATION_UNKNOWN\\\", \\\"precheck\\\", false], \\\"instance\\\": [\\\"OBSERVATION_UNKNOWN\\\", \\\"precheck\\\", false], \\\"gone\\\": [\\\"SESSION_PRESENT\\\", \\\"precheck\\\", false]}\"\n  },\n  {\n   \"name\": \"one-worker-session\",\n   \"ok\": true,\n   \"at\": 1795872906.5,\n   \"sessions\": 2\n  },\n  {\n   \"name\": \"seen-gone\",\n   \"ok\": true,\n   \"at\": 1795872906.5,\n   \"liveness\": \"gone\",\n   \"instance\": null\n  },\n  {\n   \"name\": \"gone-close-accepted\",\n   \"ok\": true,\n   \"at\": 1795872906.5,\n   \"state\": \"accepted\",\n   \"code\": null\n  },\n  {\n   \"name\": \"gone-close-committed\",\n   \"ok\": true,\n   \"at\": 1795872907.5,\n   \"state\": \"committed\",\n   \"code\": null\n  },\n  {\n   \"name\": \"gone-replay-same\",\n   \"ok\": true,\n   \"at\": 1795872907.6,\n   \"state\": \"committed\"\n  },\n  {\n   \"name\": \"card-left-the-list\",\n   \"ok\": true,\n   \"at\": 1795872907.6\n  }\n ],\n \"card\": \"W81c8ebf17154257ccd2b931094e70b2f\",\n \"adapterStderrBytes\": 0,\n \"failures\": []\n}",
+    "orchPane": "(⎈|BINARY-N/A:N/A)➜  work python3 /private/tmp/deck-verify-v3600dad3/scripts/mcp\n-recovery-e2e.py --phase 1 --adapter /private/tmp/deck-verify-v3600dad3/deck-smo\nke.app/Contents/MacOS/deck-mcp --socket /private/tmp/deck-verify-v3600dad3/run/d\nata/mcp-control.sock --client-id client_e063c110e424427ca099cbfb04b07277 --crede\nntial-file /private/tmp/deck-verify-v3600dad3/run/data/evidence/mcp-credential-c\nlient_e063c110e424427ca099cbfb04b07277 --evidence /private/tmp/deck-verify-v3600\ndad3/run/data/evidence/recovery --tag v3600dad3 --tmux /private/tmp/deck-verify-\nv3600dad3/deck-smoke.app/Contents/MacOS/tmux\nok   initialize \nok   tools-list count=42 close_modes=episode,instance,gone\nok   caller-is-a-card \nok   worker-started state=committed code=None\nok   worker-busy state=working\nok   line-a-queued state=committed code=None\nok   line-a-waits state=queued waiting=gap quiet=10 checked=True\nok   interject-1 n=1 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=3\nok   interject-2 n=2 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=4\nok   interject-3 n=3 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=5\nok   interject-4 n=4 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=6\nok   interject-5 n=5 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=7\nok   interject-6 n=6 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=8\nok   interject-7 n=7 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=8\nok   interject-8 n=8 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=9\nok   interject-9 n=9 state=delivered code=None aListed=queued aQueued=1 aDelivery=queued aWaiting=gap sends=9\nok   a-past-the-history delivered_shown=8 unsent=1\nok   a-canceled outcome=canceled code=None\nok   cancel-replay replayed=True\nok   cancel-id-conflict code=REQUEST_ID_CONFLICT\nok   b-delivered state=delivered\nok   b-replay-is-one-line replayed=True\nok   after-the-turn a=canceled b=delivered active={\"queued\": 0, \"sending\": 0, \"uncertain\": 0}\nPASS\n(⎈|BINARY-N/A:N/A)➜  work python3 /private/tmp/deck-verify-v3600dad3/scripts/mcp\n-recovery-e2e.py --phase 2 --adapter /private/tmp/deck-verify-v3600dad3/deck-smo\nke.app/Contents/MacOS/deck-mcp --socket /private/tmp/deck-verify-v3600dad3/run/d\nata/mcp-control.sock --client-id client_e063c110e424427ca099cbfb04b07277 --crede\nntial-file /private/tmp/deck-verify-v3600dad3/run/data/evidence/mcp-credential-c\nlient_e063c110e424427ca099cbfb04b07277 --evidence /private/tmp/deck-verify-v3600\ndad3/run/data/evidence/recovery --tag v3600dad3 --tmux /private/tmp/deck-verify-\nv3600dad3/deck-smoke.app/Contents/MacOS/tmux\nok   initialize \nok   tools-list count=42 close_modes=episode,instance,gone\nok   caller-is-a-card \nok   restart-facts liveness=alive state=unavailable why=no-turn-seen kind=program before=True deck=1795872900 started=1795872226\nok   no-mode-closes-an-unobserved-agent refusals={\"episode-0\": [\"OBSERVATION_UNKNOWN\", \"precheck\", false], \"instance\": [\"OBSERVATION_UNKNOWN\", \"precheck\", false], \"gone\": [\"SESSION_PRESENT\", \"precheck\", false]}\nok   one-worker-session sessions=2\nok   seen-gone liveness=gone instance=None\nok   gone-close-accepted state=accepted code=None\nok   gone-close-committed state=committed code=None\nok   gone-replay-same state=committed\nok   card-left-the-list \nPASS\n(⎈|BINARY-N/A:N/A)➜  work \n",
+    "ledger": "21 [('worker-cancel', 'committed', None), ('worker-close', 'committed', None)]",
+    "queueOps": "[]"
+  },
+  "stopfailure": {
+    "serverPid": "58936",
+    "registerServer": [
+      0,
+      "registered process pid 58936 started Sat Nov 28 22:35:17 2026"
+    ],
+    "pane": "PASS\n(⎈|BINARY-N/A:N/A)➜  work cd /private/tmp/deck-verify-v3600dad3/sf/proj && HOME=\n/private/tmp/deck-verify-v3600dad3/sf/home CLAUDE_CONFIG_DIR=/private/tmp/deck-v\nerify-v3600dad3/sf/cfg ANTHROPIC_API_KEY=sk-ant-deck-probe-fake ANTHROPIC_BASE_U\nRL=http://127.0.0.1:18824 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUT\nOUPDATER=1 claude -p 'say hi'; echo SF-EXIT=$?\n",
+    "payload": null,
+    "requests": "",
+    "agentStatus": [
+      "1795872920 [agent-status] claude-code working s=sess-0861c target=1 v=2 e=1"
+    ],
+    "stopServer": [
+      0,
+      "process pid 58936 started Sat Nov 28 22:35:17 2026: running\nstopped process pid 58936"
+    ]
+  },
+  "relaunchFinished": true,
+  "verdict-phase1": [
+    "PASS",
+    [
+      "smoke-verdict worker-recovery: PASS (4/4 expected checkpoints, 4 lines)"
+    ]
+  ],
+  "verdict-phase2": [
+    "PASS",
+    [
+      "smoke-verdict worker-recovery-relaunch: PASS (3/3 expected checkpoints, 3 lines)"
+    ]
+  ],
+  "verdict": "PASS",
+  "verdictDetail": [
+    "smoke-verdict worker-recovery: PASS (4/4 expected checkpoints, 4 lines)"
+  ],
+  "checksOfInterest": [
+    "smoke-check workers-client a=1 b=0\n",
+    "smoke-check recovery-armed a=1 b=0\n",
+    "smoke-check recovery-card a=1 b=0\n",
+    "smoke-check done a=1 b=3\n",
+    "smoke-check recovery-restored a=1 b=3\n",
+    "smoke-check recovery-cleared a=1 b=0\n",
+    "smoke-check done a=1 b=4\n"
+  ],
+  "registryShow": [
+    0,
+    "process pid 9044 started Sat Nov 28 22:23:38 2026: gone\ntmux-server pid 9758 started Sat Nov 28 22:23:40 2026 socket /private/tmp/deck-verify-v3600dad3/t/tmux-501/deck-smoke-v3600dad3: running\nprocess pid 58401 started Sat Nov 28 22:35:00 2026: running\nprocess pid 58936 started Sat Nov 28 22:35:17 2026: gone"
+  ],
+  "cleanup": [
+    0,
+    "process pid 9044 started Sat Nov 28 22:23:38 2026: gone\ntmux-server pid 9758 started Sat Nov 28 22:23:40 2026 socket /private/tmp/deck-verify-v3600dad3/t/tmux-501/deck-smoke-v3600dad3: running\nprocess pid 58401 started Sat Nov 28 22:35:00 2026: running\nprocess pid 58936 started Sat Nov 28 22:35:17 2026: gone\nstopped tmux-server pid 9758\nstopped process pid 58401"
+  ],
+  "leftover": "",
+  "caffeinateStopped": "caffeinate -d -u -t 5400",
+  "rootTrashed": true,
+  "trustRemoved": "remove False",
+  "machineAfter": "drwx------@ 17 chenhan  staff  544 Nov 21 13:29 /Users/chenh\ndeck default \n1205 /Applications/deck.app/Contents/MacOS/deck-app\n1421 /Applications/deck.app/Contents/MacOS/tmux -u -f /Users/chenhan/.deck/tmux.conf -L de"
+}

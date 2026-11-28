@@ -1,0 +1,15 @@
+1795872900 [tmux] using the bundled sidecar
+1795872901 [notify] boot not-determined
+1795872901 [notify] configured not-determined
+1795872901 [evt] ping emitted ok=true
+1795872901 [ui] ping-recv
+1795872901 [extensions] services started (1)
+1795872901 [tmux-control] read channel connected
+1795872903 [ui] smoke-check recovery-restored a=1 b=3
+1795872906 [mcp] refused deck_worker_close code=OBSERVATION_UNKNOWN relation=-
+1795872906 [mcp] refused deck_worker_close code=OBSERVATION_UNKNOWN relation=-
+1795872906 [mcp] refused deck_worker_close code=SESSION_PRESENT relation=-
+1795872907 [ui] smoke-check recovery-cleared a=1 b=0
+1795872920 [agent-status] claude-code working s=sess-0861c target=1 v=2 e=1
+1795873090 [agent-status] claude-code turn-done failed=server_error s=sess-0861c target=1 v=2 e=2
+1795873147 [ui] smoke-check done a=1 b=4

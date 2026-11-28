@@ -1,0 +1,13 @@
+1795873432 [tmux] using the bundled sidecar
+1795873432 [notify] boot not-determined
+1795873432 [notify] configured not-determined
+1795873432 [evt] ping emitted ok=true
+1795873432 [ui] ping-recv
+1795873432 [extensions] services started (1)
+1795873434 [agent-hooks] worker replies unchanged (release-only)
+1795873434 [ui] smoke-check workers-client a=1 b=0
+1795873434 [start] created sess-4de19 gate=38ms create=8ms cmd=0ms total=46ms restored=false
+1795873434 [ui] smoke-check recovery-armed a=1 b=0
+1795873435 [tmux-control] read channel connected
+1795873475 [agent-status] claude-code working s=sess-4de19 target=1 v=2 e=1
+1795873475 [agent-status] claude-code turn-done failed=unknown s=sess-4de19 target=1 v=2 e=2

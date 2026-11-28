@@ -33,6 +33,7 @@ ap.add_argument("--host", default="air2")
 ap.add_argument("--mode", default="workers")
 ap.add_argument("--label", default="")
 ap.add_argument("--timeout", type=int, default=420)
+ap.add_argument("--sf-only", action="store_true", help="worker-recovery: only the StopFailure step in Orch R, then stop")
 ap.add_argument("--codex", action="store_true", help="cards-mcp: also a codex --no-daemon card")
 ap.add_argument("--run", default="", help="reuse this run id (its root prepared by --phase prepare)")
 ap.add_argument("--phase", default="all", choices=["all", "prepare", "run"],
@@ -42,7 +43,7 @@ HOST = OPTS.host
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", HOST]
 WORKTREE = Path("/Users/chenhan/c9r-io/deck"); TAURI = WORKTREE / "app/src-tauri"
 # built in its own target directory on the external disk (the gate runs in the default one)
-BIN = Path("/Volumes/Yotta/deck-round2-target/debug/deck-app")
+BIN = TAURI / "target/debug/deck-app"
 EDR = WORKTREE / "scripts/edr_runtime.py"
 SIDECARS = ["deck-status-helper", "deck-lifecycle-helper", "deck-mcp", "deck-mcp-runner"]
 PI_RESOURCES = sorted(p.name for p in (TAURI / "resources/pi").iterdir() if p.is_file())
@@ -355,11 +356,22 @@ def stopfailure_operator():
     spid = remote(f"nohup python3 {sf}/server.py {port} {sf}/requests.log >/dev/null 2>&1 & echo $!").strip()
     facts["serverPid"] = spid
     facts["registerServer"] = registry("add-process", f"--pid {spid}")
-    time.sleep(2)
+    # the fake API must answer before Claude's first request: a refused
+    # connection sends Claude into minutes of retries
+    for _ in range(30):
+        if remote(f"curl -s -o /dev/null -w %{{http_code}} -X POST http://127.0.0.1:{port}/v1/messages", check=False).strip() == "400":
+            break
+        time.sleep(1)
+    remote(f": > {sf}/requests.log")
     env = f"TMUX_TMPDIR={shlex.quote(TMUX_TMPDIR)}"
-    line = (f"cd {sf}/proj && HOME={sf}/home CLAUDE_CONFIG_DIR={sf}/cfg ANTHROPIC_API_KEY=sk-ant-deck-probe-fake "
+    # only what the helper needs from the pane (TMUX, TMUX_PANE, the status
+    # socket) and the probe's own variables: no proxy or credential of the
+    # login shell reaches this Claude
+    line = (f"cd {sf}/proj && /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin TERM=dumb "
+            f'TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" DECK_STATUS_SOCK="$DECK_STATUS_SOCK" '
+            f"HOME={sf}/home CLAUDE_CONFIG_DIR={sf}/cfg ANTHROPIC_API_KEY=sk-ant-deck-probe-fake "
             f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port} CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 "
-            f"claude -p 'say hi'; echo SF-EXIT=$?")
+            f'"$(command -v claude)" -p \'say hi\' --model claude-sonnet-4-5; echo SF-EXIT=$?')
     lines_before = int(remote(f"wc -l < {DATA}/app.log", check=False).strip() or 0)
     remote(f"{env} {shlex.quote(TMUX)} -L {SOCKET} send-keys -t {pane} -l {shlex.quote(line)} && "
            f"{env} {shlex.quote(TMUX)} -L {SOCKET} send-keys -t {pane} Enter")
@@ -910,7 +922,14 @@ def main():
         result["operator"] = interject_operator(t0)
     if MODE == "worker-close":
         result["operator"] = close_operator(t0)
-    if MODE == "worker-recovery":
+    if MODE == "worker-recovery" and OPTS.sf_only:
+        if wait_checkpoint("recovery-armed", 420):
+            panes = remote(f"TMUX_TMPDIR={shlex.quote(TMUX_TMPDIR)} {shlex.quote(TMUX)} -L {SOCKET} list-panes -a -F '#{{pane_id}}'", check=False).split()
+            RECOVERY_PANE["pane"] = panes[0] if len(panes) == 1 else None
+            result["stopfailure"] = stopfailure_operator()
+        finished = False
+        t0 -= 10 ** 6  # skip the wait for done: this run ends after the step
+    elif MODE == "worker-recovery":
         result["operator"] = recovery_operator(t0, 1)
     if MODE == "quota-live":
         result["operator"] = live_operator(t0)
