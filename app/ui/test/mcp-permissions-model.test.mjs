@@ -3,7 +3,7 @@
 // that mirror the backend's, and the row's summary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_TYPE_MODELS, MAX_WORKER_TYPES, claudeAddCommand, modelLines, codexConfig, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, workerTypeErrorKey, workerTypesProblem, heldRoot, initialWorktrees, worktreesPayload, worktreesProblem, worktreeErrorKey } from '../js/mcp-permissions-model.js';
+import { MAX_TYPE_MODELS, MAX_WORKER_TYPES, claudeAddCommand, modelLines, codexConfig, defaultWorkerTypes, initialPermissions, initialScope, permissionSummary, permissionsPayload, scopePayload, previewErrorKey, scopeProblem, workerTypeErrorKey, workerTypesProblem, heldRoot, initialWorktrees, worktreesPayload, worktreesProblem, worktreeErrorKey, worktreeRepos, withSuggestions } from '../js/mcp-permissions-model.js';
 
 const claude = { name: 'claude', cmd: 'claude --permission-mode auto', description: 'Write code' };
 
@@ -228,4 +228,19 @@ test('the worker capacity row: 1 to 32, the client number four times it, a memor
   for (const bad of ['0', '33', '1.5', '-2', '', 'x', '16abc']) {
     assert.equal(workerCapacityView(bad, gb).valid, false, bad);
   }
+});
+
+test('fill-in asks about each project repository and adds only new folders', () => {
+  // all projects: each project's default directory; a list: each row's directory, once
+  assert.deepEqual(worktreeRepos(true, [], [{ id: 'P1', dir: '/r1' }, { id: 'P2', dir: '' }, { id: 'P3', dir: ' /r3 ' }]),
+    [{ projectId: 'P1', repo: '/r1' }, { projectId: 'P3', repo: '/r3' }]);
+  assert.deepEqual(worktreeRepos(false, [{ projectId: 'P1', root: '/r1' }, { projectId: 'P1', root: '/r1' }, { projectId: '', root: '/x' }], []),
+    [{ projectId: 'P1', repo: '/r1' }]);
+  const rows = [{ projectId: 'P1', repo: '/r1', parent: '/w' }];
+  const out = withSuggestions(rows, [{ projectId: 'P1', repo: '/r1', parent: '/w', worktrees: 3 },
+    { projectId: 'P1', repo: '/r1', parent: '/w2', worktrees: 1 }]);
+  assert.deepEqual(out, { rows: [...rows, { projectId: 'P1', repo: '/r1', parent: '/w2' }], added: 1 });
+  assert.equal(withSuggestions(out.rows, [{ projectId: 'P1', repo: '/r1', parent: '/w2' }]).added, 0);
+  const full = Array.from({ length: 16 }, (_, i) => ({ projectId: 'P1', repo: '/r', parent: `/w${i}` }));
+  assert.equal(withSuggestions(full, [{ projectId: 'P1', repo: '/r', parent: '/new' }]).added, 0);
 });

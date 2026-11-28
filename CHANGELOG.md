@@ -12,7 +12,9 @@
   repository there, including ones created later, in the right project and
   with that project's environment; Deck verifies each one from the
   repository's own files and runs no `git`. Anything else in the folder is
-  refused with the reason.
+  refused with the reason. **Fill in worktree folders** finds those folders
+  from each repository's own worktree list, so one click and Save is
+  enough.
 - Worker reports may say `status: "handoff"`; the tool schema now lists the
   status words as a real enum.
 - `deck_worker_close close_mode: "instance"`: an orchestrator that is done

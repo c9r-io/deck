@@ -59,7 +59,7 @@ The shared waits are one list with the frontend (`ui/test/fixtures/limits.json`
 `tmux_available` (a `true` is remembered for the run), `write_clipboard`,
 `export_logs` (and the menu's export, on its own thread), `resolve_parent_dir`,
 `open_target`, `link_remote`, `open_remote_target`, `voice_open_settings`,
-`mcp_scope_preview`, `agent_hooks_status`, `agent_hooks_set`,
+`mcp_scope_preview`, `mcp_worktree_suggest` (2026-11-28), `agent_hooks_status`, `agent_hooks_set`,
 `agent_lifecycle_hooks_set`, `codex_replies_set`, `turn_summary_set`,
 `turn_summary_status`, `agent_pi_replies_set` (Agent config roots may be on any
 volume), `project_env_names`/`_set`/`_clear` (Keychain), `queue_send_now`,

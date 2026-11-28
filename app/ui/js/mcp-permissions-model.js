@@ -259,6 +259,33 @@ export function worktreesProblem(rows, reachable) {
   return null;
 }
 
+/* "Fill in worktree folders": the repositories to ask about — each scope
+   row's directory, or (all projects) each project's default directory */
+export function worktreeRepos(all, scopeRows, projects) {
+  const rows = all
+    ? (projects || []).filter(p => p?.id && typeof p.dir === 'string' && p.dir.trim().startsWith('/'))
+      .map(p => ({ projectId: p.id, repo: p.dir.trim() }))
+    : (scopeRows || []).filter(r => r.projectId && String(r.root || '').startsWith('/'))
+      .map(r => ({ projectId: r.projectId, repo: String(r.root) }));
+  const seen = new Set();
+  return rows.filter(r => { const key = `${r.projectId}\u0000${r.repo}`; if (seen.has(key)) return false; seen.add(key); return true; });
+}
+
+/* the rows after a fill-in: the existing ones, then each suggestion not
+   already there (same project, repository and folder), at most
+   MAX_WORKTREE_RULES; `added` says how many were new */
+export function withSuggestions(rows, suggestions) {
+  const out = (rows || []).filter(r => r.projectId || r.repo || r.parent).map(r => ({ ...r }));
+  let added = 0;
+  for (const s of suggestions || []) {
+    if (out.length >= MAX_WORKTREE_RULES) break;
+    if (out.some(r => r.projectId === s.projectId && r.repo === s.repo && r.parent === s.parent)) continue;
+    out.push({ projectId: s.projectId, repo: s.repo, parent: s.parent });
+    added++;
+  }
+  return { rows: out, added };
+}
+
 /* the backend's closed refusal word for a rule, as an i18n key */
 export function worktreeErrorKey(error) {
   const text = String(error);

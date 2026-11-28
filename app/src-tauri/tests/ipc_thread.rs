@@ -563,6 +563,7 @@ fn the_commands_that_froze_or_could_freeze_the_window_are_off_the_ipc_thread() {
         "open_remote_target",
         "voice_open_settings",
         "mcp_scope_preview",
+        "mcp_worktree_suggest",
         "agent_hooks_status",
         "agent_hooks_set",
         "project_env_names",

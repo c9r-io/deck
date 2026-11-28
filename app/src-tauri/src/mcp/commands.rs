@@ -307,6 +307,37 @@ pub(crate) fn mcp_scope_preview_now(root: String) -> ScopePreview {
     }
 }
 
+/// One repository the dialog asks folders for (`mcp_worktree_suggest`).
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WorktreeRepoInput {
+    pub(super) project_id: String,
+    pub(super) repo: String,
+}
+
+/// The dialog's "Fill in worktree folders": for each project and its
+/// repository, the folders its registered linked worktrees lie in
+/// (`grants::suggest_worktree_folders`). Reads only; off the IPC thread,
+/// since a repository or its worktrees may be on an external volume.
+#[tauri::command]
+pub(crate) async fn mcp_worktree_suggest(
+    repos: Vec<WorktreeRepoInput>,
+) -> Result<Vec<super::grants::WorktreeSuggestion>, crate::error::DeckError> {
+    crate::session_runtime::off_ipc_thread(
+        "mcp_worktree_suggest",
+        std::time::Duration::from_secs(5),
+        move || {
+            Ok(repos
+                .iter()
+                .take(MAX_PROJECTS_PER_CLIENT)
+                .filter(|r| valid_id(&r.project_id) && Path::new(&r.repo).is_absolute())
+                .flat_map(|r| super::grants::suggest_worktree_folders(&r.project_id, &r.repo))
+                .collect())
+        },
+    )
+    .await
+}
+
 #[tauri::command]
 pub(crate) fn mcp_enable() -> Result<(), DeckError> {
     let runtime = runtime()?;

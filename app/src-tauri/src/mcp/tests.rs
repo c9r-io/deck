@@ -10676,3 +10676,60 @@ fn a_worktree_rule_lets_later_worktrees_start_worker_cards_in_their_project() {
     super::grants::BOARD_PROJECTS_FOR_TESTS.with(|cell| *cell.borrow_mut() = None);
     drop(root);
 }
+
+/// "Fill in worktree folders" (`grants::suggest_worktree_folders`): the
+/// repository's own registry names its worktrees; each verified one counts
+/// for the folder it sits in, most first. One inside the repository, a
+/// one-way or broken entry and a folder that is gone are not proposed.
+#[test]
+fn worktree_folders_are_suggested_from_the_repositorys_own_registry() {
+    let root = test_root("worktree-suggest");
+    let base = std::fs::canonicalize(&*root).unwrap();
+    let repo = base.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let ext = base.join("ext");
+    let other = base.join("other");
+    fake_worktree(&repo, "a", &ext.join("a"));
+    fake_worktree(&repo, "b", &ext.join("b"));
+    fake_worktree(&repo, "c", &other.join("c"));
+    fake_worktree(&repo, "inside", &repo.join(".worktrees/inside"));
+    // registered, but its .git now names another worktree's metadata
+    fake_worktree(&repo, "moved", &ext.join("moved"));
+    std::fs::write(
+        ext.join("moved/.git"),
+        format!("gitdir: {}\n", repo.join(".git/worktrees/a").display()),
+    )
+    .unwrap();
+    // registered, its folder gone (a disk not connected)
+    let admin = repo.join(".git/worktrees/gone");
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+    std::fs::write(
+        admin.join("gitdir"),
+        "/Volumes/deck-test-no-such-volume/w/.git\n",
+    )
+    .unwrap();
+    let found = super::grants::suggest_worktree_folders("PG", &repo.display().to_string());
+    let seen: Vec<(String, usize)> = found
+        .iter()
+        .map(|s| (s.parent.clone(), s.worktrees))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            (ext.display().to_string(), 2),
+            (other.display().to_string(), 1)
+        ]
+    );
+    assert!(found
+        .iter()
+        .all(|s| s.project_id == "PG" && s.repo == repo.display().to_string()));
+    // each suggestion is a rule that saves and lets its worktrees in
+    let rule =
+        super::grants::checked_worktree_rule("PG", &found[0].repo, &found[0].parent).unwrap();
+    assert_eq!(rule.parent, ext.display().to_string());
+    // not a repository, or one without worktrees: nothing
+    assert!(super::grants::suggest_worktree_folders("PG", &ext.display().to_string()).is_empty());
+    assert!(super::grants::suggest_worktree_folders("PG", "/nonexistent-deck-test").is_empty());
+    drop(root);
+}

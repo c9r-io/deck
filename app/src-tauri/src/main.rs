@@ -688,6 +688,7 @@ fn main() {
             mcp::mcp_worker_take_over,
             mcp::mcp_worker_hand_back,
             mcp::mcp_scope_preview,
+            mcp::mcp_worktree_suggest,
             mcp::mcp_execution_grant,
             mcp::mcp_execution_revoke,
             mcp::mcp_pending,

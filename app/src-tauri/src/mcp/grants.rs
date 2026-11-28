@@ -860,6 +860,71 @@ pub(super) fn project_cwd(
     }
 }
 
+/// The most worktrees of one repository a suggestion reads.
+const MAX_SUGGESTED_WORKTREES: usize = 512;
+
+/// One folder `suggest_worktree_folders` proposes for a repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorktreeSuggestion {
+    pub(crate) project_id: String,
+    pub(crate) repo: String,
+    pub(crate) parent: String,
+    /// How many of the repository's registered worktrees lie there and verify.
+    pub(crate) worktrees: usize,
+}
+
+/// The worktree folders of repository `repo` (approved 2026-11-28, the
+/// dialog's "Fill in worktree folders"): the repository's own registry,
+/// `<repo>/.git/worktrees/<id>/gitdir`, read in-process (bounded, no `git`,
+/// no spawn), each named worktree's top directory verified as the rule
+/// would verify it (`verify_linked_worktree`), grouped by the folder it
+/// sits in. Worktrees inside the repository need no rule (its directory
+/// already holds them); a folder the root policy refuses (`/`, the home,
+/// `/Volumes` …) or that does not resolve now (a disk not connected) is not
+/// proposed. A proposal grants nothing: the user saves it.
+pub(crate) fn suggest_worktree_folders(project_id: &str, repo: &str) -> Vec<WorktreeSuggestion> {
+    let Some(repo) = std::fs::canonicalize(repo).ok().filter(|r| r.is_dir()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(repo.join(".git/worktrees")) else {
+        return Vec::new();
+    };
+    let mut folders: Vec<(PathBuf, usize)> = Vec::new();
+    for entry in entries.flatten().take(MAX_SUGGESTED_WORKTREES) {
+        let admin = entry.path();
+        let Ok(dot_git) = read_pointer(&admin.join("gitdir"), None, &admin) else {
+            continue;
+        };
+        let Some(top) = dot_git.parent().map(Path::to_path_buf) else {
+            continue;
+        };
+        let Some(folder) = top.parent().map(Path::to_path_buf) else {
+            continue;
+        };
+        if top.starts_with(&repo) || crate::mcp_fs::root_policy(&folder).is_err() {
+            continue;
+        }
+        if verify_linked_worktree(&repo, &folder, &top).as_deref() != Ok(top.as_path()) {
+            continue;
+        }
+        match folders.iter_mut().find(|(f, _)| *f == folder) {
+            Some((_, count)) => *count += 1,
+            None => folders.push((folder, 1)),
+        }
+    }
+    folders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    folders
+        .into_iter()
+        .map(|(folder, worktrees)| WorktreeSuggestion {
+            project_id: project_id.into(),
+            repo: repo.display().to_string(),
+            parent: folder.display().to_string(),
+            worktrees,
+        })
+        .collect()
+}
+
 /// A rule as the user saves it: the project in the client's reach, the
 /// repository a main checkout (a `.git` directory), the folder an existing
 /// directory that passes the root policy and is not the repository itself

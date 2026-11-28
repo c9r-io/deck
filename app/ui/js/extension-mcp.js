@@ -15,7 +15,7 @@ const PANEL_HTML = `
       <div id="set-mcp-clients"></div>
     </div>`;
 
-import { claudeAddCommand, codexConfig, defaultWorkerTypes, workerCapacityView, previewErrorKey, scopeProblem, heldRoot, initialPermissions, initialScope, initialWorktrees, modelLines, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem, worktreeErrorKey, worktreesPayload, worktreesProblem, MAX_WORKTREE_RULES } from './mcp-permissions-model.js';
+import { claudeAddCommand, codexConfig, defaultWorkerTypes, workerCapacityView, previewErrorKey, scopeProblem, heldRoot, initialPermissions, initialScope, initialWorktrees, modelLines, permissionsPayload, permissionSummary, scopePayload, workerTypeErrorKey, workerTypesProblem, worktreeErrorKey, worktreesPayload, worktreesProblem, worktreeRepos, withSuggestions, MAX_WORKTREE_RULES } from './mcp-permissions-model.js';
 import { tunnelActionKey, tunnelCode, tunnelFailureKey, tunnelSetupKey } from './tunnel-model.js';
 
 const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" aria-labelledby="mcp-auth-title">
@@ -34,7 +34,8 @@ const AUTHORIZATION_HTML = `<div id="mcp-auth" role="dialog" aria-modal="true" a
       <h3 class="mcp-perms-title" data-i18n="mcp.worktreeTitle">Linked Git worktrees</h3>
       <p class="set-hint" data-i18n="mcp.worktreeHint">For a project: its repository and the folder you make its worktrees in.</p>
       <div id="mcp-auth-worktree-rows"></div>
-      <div class="set-actions"><button class="btn" id="mcp-auth-worktree-add" type="button" data-i18n="mcp.worktreeAdd">Add worktree folder</button></div>
+      <div class="set-actions"><button class="btn" id="mcp-auth-worktree-fill" type="button" data-i18n="mcp.worktreeFill">Fill in worktree folders</button><button class="btn" id="mcp-auth-worktree-add" type="button" data-i18n="mcp.worktreeAdd">Add worktree folder</button></div>
+      <p class="set-hint" id="mcp-auth-worktree-note" role="status" hidden></p>
       <p class="mcp-field-error" id="mcp-auth-worktree-error" role="alert" hidden></p>
     </div>
     <p class="set-hint" id="mcp-auth-hint" data-i18n="mcp.authorizeHint">Choose the project and directory explicitly. A configured project directory is filled in but remains editable. Its canonical path will be shown again before Deck creates the authorization.</p>
@@ -160,7 +161,8 @@ export function createMcpSettings(host) {
         permissions.textContent = t('mcp.permissions');
         permissions.onclick = async () => {
           const chosen = await mcpAuthorizationDialog(store.projects, { client,
-            previewRoot: root => inv('mcp_scope_preview', { root }) });
+            previewRoot: root => inv('mcp_scope_preview', { root }),
+            suggestWorktrees: repos => inv('mcp_worktree_suggest', { repos }) });
           if (!chosen) return;
           try {
             await inv('mcp_client_permissions', { clientId: client.id, permissions: { ...chosen.permissions, ...scopePayload(chosen) } });
@@ -403,7 +405,9 @@ export function createMcpSettings(host) {
         ...moreRows.map(entry => ({ projectId: entry.select.value, root: entry.input.value.trim() }))] });
       /* the linked-worktree rules (mcp-permissions-model.js): one row each,
          shown in both scope modes */
-      const worktreeRows = initialWorktrees(editing);
+      let worktreeRows = initialWorktrees(editing);
+      const suggestWorktrees = options.suggestWorktrees || (async () => []);
+      const worktreeNote = $('mcp-auth-worktree-note');
       const worktreeError = $('mcp-auth-worktree-error');
       const paintWorktrees = () => {
         const list = $('mcp-auth-worktree-rows'); list.replaceChildren();
@@ -441,6 +445,25 @@ export function createMcpSettings(host) {
           list.appendChild(row);
         });
         $('mcp-auth-worktree-add').disabled = worktreeRows.length >= MAX_WORKTREE_RULES;
+      };
+      /* "Fill in worktree folders": Deck reads each repository's own list of
+         its linked worktrees (mcp/grants.rs `suggest_worktree_folders`) and
+         adds a row per folder they lie in; nothing is saved until Save */
+      $('mcp-auth-worktree-fill').onclick = async () => {
+        const fill = $('mcp-auth-worktree-fill');
+        if (fill.disabled) return;
+        fill.disabled = true; showError(worktreeError, null, '');
+        const repos = worktreeRepos(all.checked, scopeNow().rows, available);
+        let found = [];
+        try { found = repos.length ? await suggestWorktrees(repos) : []; } catch (_) { found = []; }
+        fill.disabled = false;
+        if (closed) return;
+        const next = withSuggestions(worktreeRows, found);
+        worktreeRows = next.rows;
+        paintWorktrees();
+        worktreeNote.textContent = next.added ? t('mcp.worktreeFilled', { count: formatNumber(next.added) })
+          : t(found.length ? 'mcp.worktreeFillSame' : 'mcp.worktreeFillNone');
+        worktreeNote.hidden = false;
       };
       $('mcp-auth-worktree-add').onclick = () => {
         worktreeRows.push({ projectId: '', repo: '', parent: '' });
@@ -550,6 +573,7 @@ export function createMcpSettings(host) {
       save.disabled = false;
       showError(permError, null, ''); showError(projectError, select, ''); showError(rootError, root, ''); showError(moreError, null, '');
       showError(worktreeError, null, '');
+      worktreeNote.hidden = true; worktreeNote.textContent = '';
       paintScope();
       paintPerms();
       paintWorktrees();
@@ -683,6 +707,7 @@ export function createMcpSettings(host) {
     $('set-mcp-add').onclick = async () => {
       const authorization = await mcpAuthorizationDialog(store.projects, {
         previewRoot: root => inv('mcp_scope_preview', { root }),
+        suggestWorktrees: repos => inv('mcp_worktree_suggest', { repos }),
         projectExists: projectId => store.projects.some(project => project.id === projectId),
       });
       if (!authorization) return;

@@ -155,6 +155,28 @@ test('MCP authorization requires an explicit project and shows its directory', a
   assert.equal(name.oninput, null);
 });
 
+test('one click fills in the worktree folders the repositories list, and Save sends them', async () => {
+  const asked = [];
+  const pending = mcpAuthorizationDialog([{ id: 'P1', name: 'Game', dir: '/repo' }], {
+    suggestWorktrees: async repos => { asked.push(repos); return [{ projectId: 'P1', repo: '/repo', parent: '/Volumes/X', worktrees: 4 }]; },
+  });
+  fakeDocument.getElementById('mcp-auth-all').checked = true;
+  fakeDocument.getElementById('mcp-auth-all').fire('change');
+  fakeDocument.getElementById('mcp-auth-worktree-fill').fire('click');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(asked, [[{ projectId: 'P1', repo: '/repo' }]]);
+  assert.equal(fakeDocument.getElementById('mcp-auth-worktree-rows').children.length, 1);
+  assert.equal(fakeDocument.getElementById('mcp-auth-worktree-note').hidden, false);
+  // the same click again adds nothing
+  fakeDocument.getElementById('mcp-auth-worktree-fill').fire('click');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(fakeDocument.getElementById('mcp-auth-worktree-rows').children.length, 1);
+  fakeDocument.getElementById('mcp-auth-yes').fire('click');
+  const chosen = await pending;
+  assert.deepEqual(chosen.permissions.worktrees, [{ projectId: 'P1', repo: '/repo', parent: '/Volumes/X' }]);
+  assert.equal(chosen.allProjects, true);
+});
+
 test('MCP authorization reaches several projects, refuses one twice, or all of them', async () => {
   const projects = [{ id: 'P1', name: 'Deck', dir: '/one' }, { id: 'P2', name: 'Site', dir: '/two' }];
   let pending = mcpAuthorizationDialog(projects);

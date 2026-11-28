@@ -40,7 +40,11 @@ item or background service is created.
    repository's own files to be a linked worktree OF that repository (or a
    folder inside one) may then be a worker card's or a managed session's
    directory in that project, worktrees you create later included, with no
-   further setting. The folder alone grants nothing: a separate clone, a
+   further setting. **Fill in worktree folders** does the typing: Deck
+   reads each reached project's repository's own list of its linked
+   worktrees (`.git/worktrees/*/gitdir`, no `git`) and adds a row for each
+   folder they lie in outside the project directory; nothing is saved
+   until you Save. The folder alone grants nothing: a separate clone, a
    submodule, another repository's worktree or a plain directory there is
    refused with the reason. Deck runs no `git` for it; it reads the
    worktree's `.git` file and the repository's `worktrees/<id>/gitdir` and
