@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.8.46 — 2026-11-28 (Nightly)
 
+- Restarting the shell service now re-enters a Claude Code card that was
+  held by its own "Background work is running" question when it was asked
+  to exit: Deck hangs up that exact client and resumes it in the session it
+  ended, instead of leaving the card stopped.
 - A project can have several directories for an MCP client: Permissions…
   shows every one (a row each) and saves them all; changing another choice
   no longer drops the extra ones, and a directory on a disk that is not
@@ -25,8 +29,10 @@
 - A worker card shows "new report · not yet received" until the
   orchestrator that started it acknowledges the newest report
   (`deck_worker_reports_ack`).
-- The MCP ledger moves to version 23 once it holds one of these; an older
-  Deck then refuses it untouched (MCP unavailable there until updated).
+- The MCP ledger moves to version 22 once it holds a handoff report or an
+  acknowledgment, and to 23 once a client has the worktree switch on; an
+  older Deck then refuses it untouched (MCP unavailable there until
+  updated).
 
 ## 0.8.45 — 2026-11-28 (Nightly)
 
